@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     JUSPAY_BASE_URL: str = ""  # Override base URL (e.g., HDFC SmartGateway)
     JUSPAY_ENVIRONMENT: JuspayEnvironment = JuspayEnvironment.SANDBOX
 
+    # ── Frontend ───────────────────────────────────────────────
+    FRONTEND_URL: str = "https://ikshan.in"
+
     # ── Google Sheets ──────────────────────────────────────────
     GOOGLE_SHEETS_WEBHOOK_URL: str = ""
 

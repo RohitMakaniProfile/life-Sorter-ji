@@ -12,6 +12,7 @@ POST /api/v1/payments/refund         — initiate refund
 
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import RedirectResponse
 
 from app.config import get_settings
 from app.middleware.rate_limit import limiter
