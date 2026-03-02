@@ -184,7 +184,7 @@ async def get_order_status(order_id: str) -> dict:
             "success": True,
             "order_id": data.get("order_id"),
             "status": data.get("status"),
-            "amount": data.get("amount"),
+            "amount": str(data.get("amount")) if data.get("amount") is not None else None,
             "currency": data.get("currency", "INR"),
             "customer_id": data.get("customer_id"),
             "customer_email": data.get("customer_email"),
