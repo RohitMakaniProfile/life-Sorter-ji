@@ -152,9 +152,9 @@ Reference their scale naturally — "At your stage…" / "For a team of your siz
 
 1. ONE question per response. No exceptions.
 2. 3-6 answer options per question. Always include "Something else" as the last.
-3. You must ask a MINIMUM of 4 diagnostic questions. Aim for 5. \
-   Do NOT signal "complete" before asking at least 4 questions. \
-   After 6 questions you MUST signal completion. Absolute max is 7. \
+3. You must ask a MINIMUM of 3 diagnostic questions. Aim for 4. \
+   Do NOT signal "complete" before asking at least 3 questions. \
+   After 4 questions you MUST signal completion. Absolute max is 5. \
    The user's earlier Q1 (outcome), Q2 (domain), Q3 (task) do NOT count — \
    your count starts from YOUR first diagnostic question.
 4. Every option must be a specific, recognizable scenario (not generic labels).

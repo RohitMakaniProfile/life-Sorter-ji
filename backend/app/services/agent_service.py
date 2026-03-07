@@ -875,3 +875,126 @@ Based on the user's profile and answers, select the most relevant tools from the
     except Exception as e:
         logger.error("Failed to generate recommendations", error=str(e))
         return {"extensions": [], "gpts": [], "companies": [], "summary": ""}
+
+
+# ── Business Insights + ICP Analysis ──────────────────────────
+
+INSIGHTS_SYSTEM_PROMPT = """You are an elite business strategist generating a crystal-clear diagnostic report for a business owner.
+
+You have the user's complete profile: their business goal, domain, task, diagnostic answers, website analysis, and business stage.
+
+Your job: Generate a report with 3 sections:
+
+SECTION 1 — SHARP INSIGHTS (exactly 5-6 points)
+Each insight must be:
+- 1 sentence max, punchy and specific to THIS user's situation
+- Contains a "highlight" — the single most impactful phrase (3-6 words) to bold
+- Actionable, not generic. The user should think "that's exactly my situation"
+- Mix of: what's working, what's broken, what's the hidden opportunity
+
+SECTION 2 — ICP ANALYSIS (Ideal Customer Profile)
+Based on crawl data + answers:
+- Who their ideal customer actually is (be specific: demographics, behavior, pain)
+- VERDICT: If you land on their business URL as their ideal customer, what would you feel? \
+  Be brutally honest but constructive. Would you trust them? Would you buy? What's missing?
+- 3 improvement areas for their site/business to better attract their ICP
+
+SECTION 3 — HOOK (catchy line before payment CTA)
+- A single sentence that creates urgency or reveals a counter-intuitive insight
+- Should make the user think "I need to see the rest of this"
+- Reference something specific from their diagnostic — not generic marketing copy
+- Max 15-20 words. Punchy. Memorable.
+
+OUTPUT FORMAT (strict JSON):
+{
+  "insights": [
+    {"point": "Your single-sentence insight", "highlight": "3-6 word key phrase to bold"},
+    ...
+  ],
+  "icp_analysis": {
+    "ideal_customer_profile": "2-3 sentences describing their ICP specifically",
+    "targeting_verdict": "2-3 sentences: honest verdict of what a customer feels landing on their URL",
+    "improvement_areas": ["Area 1 (1 sentence)", "Area 2", "Area 3"]
+  },
+  "hook": "Your catchy hook sentence here"
+}
+
+Return ONLY valid JSON."""
+
+
+async def generate_business_insights(
+    outcome_label: str,
+    domain: str,
+    task: str,
+    rca_history: list[dict],
+    business_profile: dict,
+    crawl_summary: dict,
+    crawl_raw: dict = None,
+) -> Optional[dict]:
+    """
+    Generate sharp business insights, ICP analysis, and catchy hook.
+    Uses all available session context for maximum personalization.
+    """
+    settings = get_settings()
+    client = _get_client()
+
+    # Build user message
+    parts = [
+        f"Growth Goal: {outcome_label}",
+        f"Domain: {domain}",
+        f"Task: {task}",
+    ]
+
+    if business_profile:
+        parts.append("\nBUSINESS PROFILE:")
+        for k, v in business_profile.items():
+            parts.append(f"  • {k.replace('_', ' ').title()}: {v}")
+
+    if crawl_summary and crawl_summary.get("points"):
+        parts.append("\nWEBSITE ANALYSIS (from crawling their site):")
+        for pt in crawl_summary["points"]:
+            parts.append(f"  • {pt}")
+
+    if crawl_raw:
+        if crawl_raw.get("tech_signals"):
+            parts.append(f"\nTech stack detected: {', '.join(crawl_raw['tech_signals'][:10])}")
+        if crawl_raw.get("cta_patterns"):
+            parts.append(f"CTAs found: {', '.join(crawl_raw['cta_patterns'][:5])}")
+        if crawl_raw.get("social_links"):
+            parts.append(f"Social links: {', '.join(crawl_raw['social_links'][:5])}")
+
+    if rca_history:
+        parts.append("\nDIAGNOSTIC Q&A:")
+        for i, qa in enumerate(rca_history, 1):
+            parts.append(f"  Q{i}: {qa.get('question', '')}")
+            parts.append(f"  A{i}: {qa.get('answer', '')}")
+
+    user_message = "\n".join(parts)
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": INSIGHTS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.6,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+
+        logger.info(
+            "Business insights generated",
+            insights_count=len(parsed.get("insights", [])),
+            has_icp=bool(parsed.get("icp_analysis")),
+            has_hook=bool(parsed.get("hook")),
+        )
+
+        return parsed
+
+    except Exception as e:
+        logger.error("Business insights generation failed", error=str(e))
+        return None

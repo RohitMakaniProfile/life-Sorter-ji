@@ -1172,6 +1172,11 @@ const ChatBotNew = ({ onNavigate }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [thinkingPhraseIndex, setThinkingPhraseIndex] = useState(0);
+
+  // Insights + ICP state
+  const [businessInsights, setBusinessInsights] = useState(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
 
 
   // User preferences state
@@ -1408,6 +1413,26 @@ const ChatBotNew = ({ onNavigate }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Rotate thinking phrases when loading
+  const THINKING_PHRASES = [
+    '🧠 Thinking...',
+    '🔍 Searching the best tools...',
+    '📊 Analyzing your space...',
+    '🎯 Matching to your needs...',
+    '⚡ Almost there...',
+  ];
+
+  useEffect(() => {
+    if (!taskClickProcessing) {
+      setThinkingPhraseIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setThinkingPhraseIndex(prev => (prev + 1) % THINKING_PHRASES.length);
+    }, 2200);
+    return () => clearInterval(interval);
+  }, [taskClickProcessing]);
 
   // Initialize voice recognition
   useEffect(() => {
@@ -2033,13 +2058,12 @@ const ChatBotNew = ({ onNavigate }) => {
             const nextQ = data.next_question;
             setDynamicQuestions(prev => [...prev, nextQ]);
 
-            // Build text: acknowledgment + insight + question
+            // Build text: insight + question (no acknowledgment)
             const insight = nextQ.insight || data.insight || '';
             const parts = [];
-            if (data.acknowledgment) parts.push(data.acknowledgment);
             if (insight) parts.push(`💡 *${insight}*`);
             parts.push(nextQ.question);
-            const botText = parts.length > 0 ? parts.join('\n\n') : nextQ.question;
+            const botText = parts.join('\n\n');
 
             const botMsg = {
               id: getNextMessageId(),
@@ -2265,12 +2289,11 @@ const ChatBotNew = ({ onNavigate }) => {
       const sectionLabel = firstQ.section_label || 'Diagnostic';
       const taskMatched = data.task_matched || task;
 
-      // Build text: insight (if available) + question
+      // Build text: insight (if available) + question (no acknowledgment)
       const insight = firstQ.insight || data.insight || '';
       let botText = '';
       if (isRca) {
         const parts = [];
-        if (data.acknowledgment) parts.push(data.acknowledgment);
         if (insight) parts.push(`💡 *${insight}*`);
         parts.push(firstQ.question);
         botText = parts.join('\n\n');
@@ -2333,14 +2356,22 @@ const ChatBotNew = ({ onNavigate }) => {
 
   const handleScaleFormSubmit = async () => {
     // Validate all questions answered
-    const allAnswered = scaleQuestions.every(q => scaleFormSelections[q.id]);
+    const allAnswered = scaleQuestions.every(q => {
+      const sel = scaleFormSelections[q.id];
+      return q.multiSelect
+        ? Array.isArray(sel) && sel.length > 0
+        : !!sel;
+    });
     if (!allAnswered) return;
 
     scaleAnswersRef.current = { ...scaleFormSelections };
     setScaleFormSubmitted(true);
 
     // Show summary as user message
-    const summaryLines = scaleQuestions.map(q => `${q.icon} ${scaleFormSelections[q.id]}`);
+    const summaryLines = scaleQuestions.map(q => {
+      const val = scaleFormSelections[q.id];
+      return `${q.icon} ${Array.isArray(val) ? val.join(', ') : val}`;
+    });
     const userMsg = {
       id: getNextMessageId(),
       text: summaryLines.join('\n'),
@@ -2404,7 +2435,6 @@ const ChatBotNew = ({ onNavigate }) => {
 
             const insight = firstQ.insight || diagData.insight || '';
             const parts = [];
-            if (diagData.acknowledgment) parts.push(diagData.acknowledgment);
             if (insight) parts.push(`💡 *${insight}*`);
             parts.push(firstQ.question);
 
@@ -2633,16 +2663,34 @@ const ChatBotNew = ({ onNavigate }) => {
 
     try {
       const sid = getSessionId();
-      const res = await fetch(`${API_BASE}/api/v1/agent/session/recommend`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid })
-      });
-      const data = await res.json();
+
+      // Fetch recommendations AND insights in parallel
+      const [recRes, insightsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/agent/session/recommend`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sid })
+        }),
+        fetch(`${API_BASE}/api/v1/agent/session/insights`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sid })
+        }).catch(() => null),
+      ]);
+
+      const data = await recRes.json();
+      let insightsData = null;
+      if (insightsRes && insightsRes.ok) {
+        insightsData = await insightsRes.json();
+      }
+
+      if (insightsData && insightsData.available) {
+        setBusinessInsights(insightsData);
+      }
 
       const domainLabel = selectedDomainName || 'General';
 
-      // Combine all tools into one flat list with category tags
+      // Separate tools into two groups: current-stack-enhancers and new-stack
       const allTools = [
         ...(data.extensions || []).map(t => ({ ...t, _type: 'tool' })),
         ...(data.gpts || []).map(t => ({ ...t, _type: 'gpt' })),
@@ -2664,6 +2712,9 @@ const ChatBotNew = ({ onNavigate }) => {
           summary: data.summary || '',
           domain: domainLabel,
           task: selectedCategory,
+          insights: insightsData?.insights || [],
+          icpAnalysis: insightsData?.icp_analysis || null,
+          hook: insightsData?.hook || '',
         },
         showFinalActions: true,
         showCopyPrompt: true,
@@ -4118,37 +4169,50 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
               {flowStage === 'task' && (
                 <>
-                  {/* Icon removed */}
-                  <h1>What task would you like help with?</h1>
-                  <div className="suggestions-grid">
-                    {getTasksForSelection().map((task, index) => (
-                      <div
-                        key={index}
-                        className={`suggestion-card ${taskClickProcessing ? 'disabled' : ''}`}
-                        onClick={() => !taskClickProcessing && handleTaskClick(task)}
-                        style={{
-                          animationDelay: `${index * 0.05}s`,
-                          animation: 'fadeIn 0.3s ease-out forwards',
-                          opacity: taskClickProcessing ? 0.5 : undefined,
-                          pointerEvents: taskClickProcessing ? 'none' : undefined,
-                        }}
-                      >
-                        <h3>{task}</h3>
+                  {taskClickProcessing ? (
+                    <div className="task-loading-state">
+                      <div className="thinking-clean">
+                        <div className="thinking-clean-spinner" />
+                        <p key={thinkingPhraseIndex} className="thinking-clean-text">
+                          {THINKING_PHRASES[thinkingPhraseIndex]}
+                        </p>
+                        <div className="thinking-clean-bar">
+                          <div className="thinking-clean-bar-fill" />
+                        </div>
                       </div>
-                    ))}
-                    <div
-                      className="suggestion-card"
-                      onClick={handleTypeCustomProblem}
-                    >
-                      <h3>Type my own problem...</h3>
                     </div>
-                  </div>
-                  <button
-                    style={{ marginTop: '2rem', background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
-                    onClick={() => { setSelectedDomainName(null); setFlowStage('domain'); }}
-                  >
-                    ← Back
-                  </button>
+                  ) : (
+                    <>
+                      <h1>What task would you like help with?</h1>
+                      <div className="suggestions-grid">
+                        {getTasksForSelection().map((task, index) => (
+                          <div
+                            key={index}
+                            className="suggestion-card"
+                            onClick={() => handleTaskClick(task)}
+                            style={{
+                              animationDelay: `${index * 0.05}s`,
+                              animation: 'fadeIn 0.3s ease-out forwards',
+                            }}
+                          >
+                            <h3>{task}</h3>
+                          </div>
+                        ))}
+                        <div
+                          className="suggestion-card"
+                          onClick={handleTypeCustomProblem}
+                        >
+                          <h3>Type my own problem...</h3>
+                        </div>
+                      </div>
+                      <button
+                        style={{ marginTop: '2rem', background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
+                        onClick={() => { setSelectedDomainName(null); setFlowStage('domain'); }}
+                      >
+                        ← Back
+                      </button>
+                    </>
+                  )}
                 </>
               )}
 
@@ -4463,62 +4527,40 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
                     {/* Scale Questions — all-at-once form */}
                     {message.showScaleForm && flowStage === 'scale-questions' && !scaleFormSubmitted && scaleQuestions.length > 0 && (
-                      <div className="scale-form" style={{
-                        marginTop: '0.75rem',
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        border: '1px solid rgba(124, 58, 237, 0.15)',
-                        background: 'var(--ikshan-bg-primary, #fff)',
-                        boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
-                      }}>
+                      <div className="scale-form-modern">
                         {scaleQuestions.map((q, qIdx) => (
-                          <div key={q.id} style={{
-                            padding: '0.85rem 1.15rem',
-                            borderBottom: qIdx < scaleQuestions.length - 1 ? '1px solid rgba(0,0,0,0.05)' : 'none',
-                          }}>
-                            <div style={{
-                              fontSize: '0.78rem',
-                              fontWeight: 600,
-                              color: 'var(--ikshan-text-primary, #1a1a1a)',
-                              marginBottom: '0.5rem',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.4rem',
-                            }}>
+                          <div key={q.id} className="scale-q-group">
+                            <div className="scale-q-label">
                               <span>{q.icon}</span>
                               <span>{q.question}</span>
+                              {q.multiSelect && <span className="scale-q-multi-hint">(select multiple)</span>}
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                            <div className="scale-q-pills">
                               {q.options.map((opt, oIdx) => {
-                                const isSelected = scaleFormSelections[q.id] === opt;
+                                const sel = scaleFormSelections[q.id];
+                                const isSelected = q.multiSelect
+                                  ? Array.isArray(sel) && sel.includes(opt)
+                                  : sel === opt;
                                 return (
                                   <button
                                     key={oIdx}
-                                    onClick={() => setScaleFormSelections(prev => ({ ...prev, [q.id]: opt }))}
-                                    style={{
-                                      padding: '0.5rem 0.85rem',
-                                      borderRadius: '8px',
-                                      border: isSelected ? '1.5px solid #7c3aed' : '1.5px solid rgba(0,0,0,0.08)',
-                                      background: isSelected ? 'linear-gradient(135deg, #f0eaff 0%, #e8e0ff 100%)' : 'transparent',
-                                      color: 'var(--ikshan-text-primary, #1a1a1a)',
-                                      fontSize: '0.8rem',
-                                      fontWeight: isSelected ? 600 : 450,
-                                      cursor: 'pointer',
-                                      textAlign: 'left',
-                                      transition: 'all 0.15s ease',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '0.5rem',
+                                    className={`scale-pill ${isSelected ? 'selected' : ''}`}
+                                    onClick={() => {
+                                      if (q.multiSelect) {
+                                        setScaleFormSelections(prev => {
+                                          const curr = Array.isArray(prev[q.id]) ? prev[q.id] : [];
+                                          return {
+                                            ...prev,
+                                            [q.id]: curr.includes(opt)
+                                              ? curr.filter(v => v !== opt)
+                                              : [...curr, opt],
+                                          };
+                                        });
+                                      } else {
+                                        setScaleFormSelections(prev => ({ ...prev, [q.id]: opt }));
+                                      }
                                     }}
                                   >
-                                    <span style={{
-                                      width: '16px',
-                                      height: '16px',
-                                      borderRadius: '50%',
-                                      border: isSelected ? '5px solid #7c3aed' : '2px solid #d1d5db',
-                                      flexShrink: 0,
-                                      transition: 'all 0.15s ease',
-                                    }} />
                                     {opt}
                                   </button>
                                 );
@@ -4526,26 +4568,21 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             </div>
                           </div>
                         ))}
-
-                        {/* Submit button */}
-                        <div style={{ padding: '0.75rem 1.15rem', borderTop: '1px solid rgba(0,0,0,0.05)' }}>
+                        <div className="scale-form-submit-row">
                           <button
                             onClick={handleScaleFormSubmit}
-                            disabled={!scaleQuestions.every(q => scaleFormSelections[q.id])}
-                            style={{
-                              width: '100%',
-                              padding: '0.7rem',
-                              borderRadius: '10px',
-                              border: 'none',
-                              background: scaleQuestions.every(q => scaleFormSelections[q.id])
-                                ? 'linear-gradient(135deg, #7c3aed, #6d28d9)'
-                                : 'rgba(0,0,0,0.08)',
-                              color: scaleQuestions.every(q => scaleFormSelections[q.id]) ? '#fff' : '#9ca3af',
-                              fontSize: '0.85rem',
-                              fontWeight: 600,
-                              cursor: scaleQuestions.every(q => scaleFormSelections[q.id]) ? 'pointer' : 'not-allowed',
-                              transition: 'all 0.2s ease',
-                            }}
+                            disabled={!scaleQuestions.every(q => {
+                              const sel = scaleFormSelections[q.id];
+                              return q.multiSelect
+                                ? Array.isArray(sel) && sel.length > 0
+                                : !!sel;
+                            })}
+                            className={`scale-submit-btn ${scaleQuestions.every(q => {
+                              const sel = scaleFormSelections[q.id];
+                              return q.multiSelect
+                                ? Array.isArray(sel) && sel.length > 0
+                                : !!sel;
+                            }) ? 'ready' : ''}`}
                           >
                             Continue →
                           </button>
@@ -4553,46 +4590,30 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       </div>
                     )}
 
-                    {/* ── Unified Diagnostic Report ── */}
+                    {/* ── Unified Diagnostic Report — Redesigned ── */}
                     {message.isDiagnosticReport && message.reportData && (
-                      <div className="diagnostic-report" style={{
-                        marginTop: '1rem',
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        border: '1px solid rgba(124, 58, 237, 0.15)',
-                        background: 'var(--ikshan-bg-primary, #fff)',
-                        boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
-                      }}>
+                      <div className="report-container">
 
-                        {/* Section 1: Business Snapshot (crawl points) */}
-                        {message.reportData.crawlPoints && message.reportData.crawlPoints.length > 0 && (
-                          <div style={{
-                            padding: '1rem 1.25rem',
-                            borderBottom: '1px solid rgba(0,0,0,0.06)',
-                            background: 'linear-gradient(135deg, #fafafa 0%, #f8f7ff 100%)',
-                          }}>
-                            <div style={{
-                              fontSize: '0.7rem',
-                              fontWeight: 700,
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.08em',
-                              color: '#7c3aed',
-                              marginBottom: '0.6rem',
-                            }}>
-                              🔍 Your Business
+                        {/* Section 1: Sharp Insights (5-6 points) */}
+                        {message.reportData.insights && message.reportData.insights.length > 0 && (
+                          <div className="report-section report-insights">
+                            <div className="report-section-label" style={{ color: '#7c3aed' }}>
+                              ⚡ Key Insights
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                              {message.reportData.crawlPoints.map((pt, i) => (
-                                <div key={i} style={{
-                                  fontSize: '0.82rem',
-                                  color: 'var(--ikshan-text-primary, #374151)',
-                                  lineHeight: '1.35',
-                                  display: 'flex',
-                                  gap: '0.4rem',
-                                  alignItems: 'baseline',
-                                }}>
-                                  <span style={{ color: '#10b981', fontSize: '0.65rem', flexShrink: 0 }}>●</span>
-                                  <span>{pt}</span>
+                            <div className="report-insights-list">
+                              {message.reportData.insights.map((item, i) => (
+                                <div key={i} className="report-insight-item" style={{ animationDelay: `${i * 0.08}s` }}>
+                                  <span className="report-insight-dot" />
+                                  <span className="report-insight-text">
+                                    {item.highlight
+                                      ? item.point.split(item.highlight).reduce((acc, part, idx) => {
+                                          if (idx > 0) acc.push(<strong key={idx} className="report-highlight">{item.highlight}</strong>);
+                                          acc.push(part);
+                                          return acc;
+                                        }, [])
+                                      : item.point
+                                    }
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -4601,114 +4622,124 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
                         {/* Section 2: Problem Gist */}
                         {message.reportData.rcaSummary && (
-                          <div style={{
-                            padding: '1rem 1.25rem',
-                            borderBottom: '1px solid rgba(0,0,0,0.06)',
-                          }}>
-                            <div style={{
-                              fontSize: '0.7rem',
-                              fontWeight: 700,
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.08em',
-                              color: '#dc2626',
-                              marginBottom: '0.5rem',
-                            }}>
+                          <div className="report-section">
+                            <div className="report-section-label" style={{ color: '#dc2626' }}>
                               🎯 The Core Issue
                             </div>
-                            <div style={{
-                              fontSize: '0.85rem',
-                              color: 'var(--ikshan-text-primary, #1a1a1a)',
-                              lineHeight: '1.5',
-                              fontWeight: 450,
-                            }}>
-                              {message.reportData.rcaSummary}
+                            <p className="report-gist-text">{message.reportData.rcaSummary}</p>
+                          </div>
+                        )}
+
+                        {/* Section 3: ICP + Website Verdict */}
+                        {message.reportData.icpAnalysis && (
+                          <div className="report-section report-icp">
+                            <div className="report-section-label" style={{ color: '#0891b2' }}>
+                              👤 Ideal Customer Profile
+                            </div>
+                            {message.reportData.icpAnalysis.ideal_customer_profile && (
+                              <p className="report-icp-profile">{message.reportData.icpAnalysis.ideal_customer_profile}</p>
+                            )}
+                            {message.reportData.icpAnalysis.targeting_verdict && (
+                              <div className="report-verdict-card">
+                                <div className="report-verdict-label">What your ideal customer feels landing on your site</div>
+                                <p className="report-verdict-text">{message.reportData.icpAnalysis.targeting_verdict}</p>
+                              </div>
+                            )}
+                            {message.reportData.icpAnalysis.improvement_areas && message.reportData.icpAnalysis.improvement_areas.length > 0 && (
+                              <div className="report-improvements">
+                                <div className="report-improvements-label">Where you can improve</div>
+                                {message.reportData.icpAnalysis.improvement_areas.map((area, i) => (
+                                  <div key={i} className="report-improvement-item">
+                                    <span className="report-improvement-num">{i + 1}</span>
+                                    <span>{area}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Section 4: Business Snapshot (crawl points) — compact */}
+                        {message.reportData.crawlPoints && message.reportData.crawlPoints.length > 0 && !message.reportData.icpAnalysis && (
+                          <div className="report-section">
+                            <div className="report-section-label" style={{ color: '#7c3aed' }}>
+                              🔍 Your Business
+                            </div>
+                            <div className="report-crawl-list">
+                              {message.reportData.crawlPoints.map((pt, i) => (
+                                <div key={i} className="report-crawl-item">
+                                  <span className="report-crawl-dot">●</span>
+                                  <span>{pt}</span>
+                                </div>
+                              ))}
                             </div>
                           </div>
                         )}
 
-                        {/* Section 3: Tailored Tools */}
+                        {/* Section 5: Tailored Tools — Ordered: current stack first, then new tools */}
                         {message.reportData.tools && message.reportData.tools.length > 0 && (
-                          <div style={{ padding: '1rem 1.25rem' }}>
-                            <div style={{
-                              fontSize: '0.7rem',
-                              fontWeight: 700,
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.08em',
-                              color: '#059669',
-                              marginBottom: '0.6rem',
-                            }}>
-                              🛠 Recommended For You
+                          <div className="report-section">
+                            <div className="report-section-label" style={{ color: '#059669' }}>
+                              🛠 Improve Your Current Workflow
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                              {message.reportData.tools.slice(0, 6).map((tool, i) => (
-                                <div key={i} style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '0.75rem',
-                                  padding: '0.65rem 0.85rem',
-                                  borderRadius: '10px',
-                                  border: '1px solid rgba(0,0,0,0.06)',
-                                  background: 'linear-gradient(135deg, #fafafa 0%, #f9fafb 100%)',
-                                  transition: 'all 0.15s ease',
-                                  cursor: tool.url ? 'pointer' : 'default',
-                                }}
-                                onClick={() => tool.url && window.open(tool.url, '_blank')}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.borderColor = 'rgba(124, 58, 237, 0.3)';
-                                  e.currentTarget.style.transform = 'translateX(3px)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.borderColor = 'rgba(0,0,0,0.06)';
-                                  e.currentTarget.style.transform = 'translateX(0)';
-                                }}
+                            <p className="report-tools-subtitle">Tools that work with what you already use</p>
+                            <div className="report-tools-grid">
+                              {message.reportData.tools.slice(0, 3).map((tool, i) => (
+                                <div key={i} className="report-tool-card"
+                                  onClick={() => tool.url && window.open(tool.url, '_blank')}
+                                  style={{ animationDelay: `${i * 0.06}s`, cursor: tool.url ? 'pointer' : 'default' }}
                                 >
-                                  <div style={{
-                                    width: '32px',
-                                    height: '32px',
-                                    borderRadius: '8px',
-                                    background: tool._type === 'gpt' ? 'linear-gradient(135deg, #10b981, #059669)'
-                                      : tool._type === 'provider' ? 'linear-gradient(135deg, #3b82f6, #2563eb)'
-                                      : 'linear-gradient(135deg, #7c3aed, #6d28d9)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    color: '#fff',
-                                    fontSize: '0.75rem',
-                                    fontWeight: 700,
-                                    flexShrink: 0,
-                                  }}>
-                                    {tool._type === 'gpt' ? 'G' : tool._type === 'provider' ? 'P' : 'T'}
+                                  <div className={`report-tool-badge ${tool._type}`}>
+                                    {tool._type === 'gpt' ? 'GPT' : tool._type === 'provider' ? 'SaaS' : 'Tool'}
                                   </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{
-                                      fontSize: '0.82rem',
-                                      fontWeight: 600,
-                                      color: 'var(--ikshan-text-primary, #1a1a1a)',
-                                      lineHeight: '1.2',
-                                    }}>
-                                      {tool.name}
-                                      {tool.free && <span style={{ fontSize: '0.65rem', color: '#10b981', marginLeft: '0.4rem', fontWeight: 500 }}>Free</span>}
-                                    </div>
-                                    {tool.why_recommended && (
-                                      <div style={{
-                                        fontSize: '0.75rem',
-                                        color: 'var(--ikshan-text-secondary, #6b7280)',
-                                        lineHeight: '1.3',
-                                        marginTop: '0.15rem',
-                                        whiteSpace: 'nowrap',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                      }}>
-                                        {tool.why_recommended}
-                                      </div>
-                                    )}
+                                  <div className="report-tool-name">
+                                    {tool.name}
+                                    {tool.free && <span className="report-tool-free">Free</span>}
                                   </div>
-                                  {tool.url && (
-                                    <span style={{ fontSize: '0.75rem', color: '#9ca3af', flexShrink: 0 }}>→</span>
+                                  {tool.why_recommended && (
+                                    <div className="report-tool-why">{tool.why_recommended}</div>
                                   )}
+                                  {tool.url && <span className="report-tool-arrow">→</span>}
                                 </div>
                               ))}
                             </div>
+
+                            {message.reportData.tools.length > 3 && (
+                              <>
+                                <div className="report-section-label" style={{ color: '#3b82f6', marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+                                  🚀 Level Up — New Tools for Growth
+                                </div>
+                                <p className="report-tools-subtitle">Powerful tools worth adopting — with migration tips</p>
+                                <div className="report-tools-grid">
+                                  {message.reportData.tools.slice(3, 6).map((tool, i) => (
+                                    <div key={i} className="report-tool-card new-stack"
+                                      onClick={() => tool.url && window.open(tool.url, '_blank')}
+                                      style={{ animationDelay: `${(i + 3) * 0.06}s`, cursor: tool.url ? 'pointer' : 'default' }}
+                                    >
+                                      <div className={`report-tool-badge ${tool._type}`}>
+                                        {tool._type === 'gpt' ? 'GPT' : tool._type === 'provider' ? 'SaaS' : 'Tool'}
+                                      </div>
+                                      <div className="report-tool-name">
+                                        {tool.name}
+                                        {tool.free && <span className="report-tool-free">Free</span>}
+                                      </div>
+                                      {tool.why_recommended && (
+                                        <div className="report-tool-why">{tool.why_recommended}</div>
+                                      )}
+                                      {tool.url && <span className="report-tool-arrow">→</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Section 6: Catchy Hook before CTA */}
+                        {message.reportData.hook && (
+                          <div className="report-hook">
+                            <span className="report-hook-icon">💡</span>
+                            <span className="report-hook-text">{message.reportData.hook}</span>
                           </div>
                         )}
                       </div>
@@ -5097,74 +5128,12 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                   <div className="avatar"><Bot size={18} /></div>
                   <div className="message-content">
                     {taskClickProcessing ? (
-                      /* ── Rich progress indicator during Q3 processing ── */
-                      <div style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '0.75rem',
-                        padding: '1rem 0',
-                        minWidth: '260px',
-                      }}>
-                        {/* Progress bar */}
-                        <div style={{
-                          width: '100%',
-                          height: '4px',
-                          background: 'rgba(124, 58, 237, 0.1)',
-                          borderRadius: '4px',
-                          overflow: 'hidden',
-                        }}>
-                          <div style={{
-                            height: '100%',
-                            background: 'linear-gradient(90deg, var(--ikshan-purple, #7c3aed), #a78bfa)',
-                            borderRadius: '4px',
-                            animation: 'progressSlide 2s ease-in-out infinite',
-                          }} />
-                        </div>
-                        {/* Phase text */}
-                        <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.5rem',
-                        }}>
-                          <div style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            background: 'var(--ikshan-purple, #7c3aed)',
-                            animation: 'pulse 1s ease-in-out infinite',
-                          }} />
-                          <span style={{
-                            fontSize: '0.85rem',
-                            color: 'var(--ikshan-text-secondary, #6b7280)',
-                            fontWeight: 500,
-                          }}>
-                            {loadingPhase === 'tools'
-                              ? '🔍 Finding the best tools for you...'
-                              : loadingPhase === 'diagnostic'
-                              ? '🧠 Preparing your personalized diagnostic...'
-                              : '⚙️ Setting things up...'}
-                          </span>
-                        </div>
-                        {/* Step indicators */}
-                        <div style={{
-                          display: 'flex',
-                          gap: '0.35rem',
-                          alignItems: 'center',
-                        }}>
-                          {['Analyzing', 'Matching tools', 'Building diagnostic'].map((step, i) => (
-                            <div key={i} style={{
-                              flex: 1,
-                              height: '3px',
-                              borderRadius: '3px',
-                              background: (loadingPhase === 'tools' && i === 0) ||
-                                          (loadingPhase === 'diagnostic' && i <= 1) ||
-                                          (!loadingPhase && i === 0)
-                                ? 'var(--ikshan-purple, #7c3aed)'
-                                : 'rgba(124, 58, 237, 0.15)',
-                              transition: 'background 0.5s ease',
-                            }} />
-                          ))}
-                        </div>
+                      /* ── Sleek thinking animation during Q3 processing ── */
+                      <div className="thinking-clean" style={{ padding: '0.5rem 0.75rem' }}>
+                        <div className="thinking-clean-spinner" style={{ width: 18, height: 18 }} />
+                        <p key={thinkingPhraseIndex} className="thinking-clean-text" style={{ fontSize: '0.8rem' }}>
+                          {THINKING_PHRASES[thinkingPhraseIndex]}
+                        </p>
                       </div>
                     ) : (
                       /* ── Default typing dots ── */

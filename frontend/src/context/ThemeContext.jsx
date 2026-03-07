@@ -11,39 +11,24 @@ export const useTheme = () => {
 };
 
 export const ThemeProvider = ({ children }) => {
-  const [theme, setTheme] = useState(() => {
-    // Check localStorage first - respect user's previous choice
-    const savedTheme = localStorage.getItem('ikshan-theme');
-    if (savedTheme) {
-      return savedTheme;
-    }
-
-    // Default to dark theme
-    return 'dark';
-  });
+  const [theme] = useState('light');
 
   useEffect(() => {
     // Apply theme to document
     document.documentElement.setAttribute('data-theme', theme);
 
-    // Save to localStorage
+    // Clear any old dark preference
     localStorage.setItem('ikshan-theme', theme);
   }, [theme]);
 
-  const toggleTheme = () => {
-    setTheme(prevTheme => {
-      if (prevTheme === 'dark') return 'blue';
-      if (prevTheme === 'blue') return 'green';
-      return 'dark';
-    });
-  };
+  const toggleTheme = () => {};
 
   const value = {
     theme,
     toggleTheme,
-    isDark: theme === 'dark',
-    isBlue: theme === 'blue',
-    isGreen: theme === 'green'
+    isDark: false,
+    isBlue: false,
+    isGreen: false
   };
 
   return (

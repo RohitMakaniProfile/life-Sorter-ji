@@ -774,70 +774,278 @@ async def get_session_context(request: Request, session_id: str):
 
 # Static scale questions asked between URL input and Opus deep-dive.
 # These calibrate the Opus diagnostic to the user's business maturity.
-SCALE_QUESTIONS = [
-    {
-        "id": "team_size",
-        "question": "How big is your team right now?",
-        "options": [
-            "Just me (solo founder / freelancer)",
-            "2–5 people",
-            "6–20 people",
-            "21–100 people",
-            "100+ people",
-        ],
-        "icon": "👥",
-    },
-    {
-        "id": "current_stack",
-        "question": "What tools are you currently using for this?",
-        "options": [
-            "Google Sheets / Excel — manual tracking",
-            "Basic CRM (HubSpot Free, Zoho, Freshsales)",
-            "Marketing tools (Mailchimp, Buffer, Canva)",
-            "Paid CRM + automation (Salesforce, ActiveCampaign)",
-            "Custom-built / dev tools (Notion, Airtable, scripts)",
-            "Nothing yet — doing it manually or not at all",
-        ],
-        "icon": "🛠️",
-    },
-    {
-        "id": "business_stage",
-        "question": "Which stage best describes your business?",
-        "options": [
-            "Idea / validation stage",
-            "Early traction (some customers)",
-            "Growth mode (scaling what works)",
-            "Established (optimizing & expanding)",
-            "Enterprise / multi-product",
-        ],
-        "icon": "🚀",
-    },
-    {
-        "id": "primary_channel",
-        "question": "Where do most of your customers come from today?",
-        "options": [
-            "Word of mouth / referrals",
-            "Social media (organic)",
-            "Paid ads (Google, Meta, etc.)",
-            "Content / SEO / inbound",
-            "Outbound sales / cold outreach",
-            "Marketplace / platform (Amazon, Upwork, etc.)",
-        ],
-        "icon": "📣",
-    },
-    {
-        "id": "biggest_constraint",
-        "question": "What's the single biggest constraint you face right now?",
-        "options": [
-            "Time — I'm doing everything myself",
-            "Money — limited budget for tools / hiring",
-            "Knowledge — not sure what to do next",
-            "People — can't find / manage the right team",
-            "Systems — no repeatable process in place",
-        ],
-        "icon": "🔒",
-    },
-]
+# ── Dynamic current stack options by domain ─────────────────────
+# Industry-standard tooling options that change based on the user's domain.
+CURRENT_STACK_BY_DOMAIN = {
+    # ── Lead Generation Domains ──────────────────────────────
+    "Content & Social Media": [
+        "Canva + Buffer / Later — design & scheduling",
+        "Hootsuite / Sprout Social — social management suite",
+        "Adobe Creative Cloud + native platform tools",
+        "ChatGPT / Jasper — AI content generation",
+        "HubSpot / Semrush — content marketing platform",
+        "Nothing yet — posting manually or not at all",
+    ],
+    "SEO & Organic Visibility": [
+        "Google Search Console + GA4 — basic tracking only",
+        "Semrush / Ahrefs — dedicated SEO platform",
+        "Yoast / RankMath — WordPress SEO plugin",
+        "Surfer SEO / Clearscope — content optimization",
+        "Screaming Frog + Moz — technical SEO audit",
+        "Nothing yet — no SEO tracking in place",
+    ],
+    "Paid Media & Ads": [
+        "Google Ads + Meta Ads Manager — native dashboards",
+        "Triple Whale / Hyros — ad attribution & ROAS",
+        "AdEspresso / Revealbot — ad optimization & rules",
+        "Google Analytics + UTM tracking — manual reporting",
+        "Agency-managed — limited visibility into spend",
+        "Nothing yet — haven't started paid ads",
+    ],
+    "B2B Lead Generation": [
+        "LinkedIn Sales Navigator — manual prospecting",
+        "Apollo.io / ZoomInfo — lead database + outreach",
+        "Clay / Instantly — enrichment + cold email at scale",
+        "HubSpot CRM + sequences — inbound + outbound",
+        "Google Sheets + email — manual outreach tracking",
+        "Nothing yet — leads come through referrals only",
+    ],
+
+    # ── Sales & Retention Domains ────────────────────────────
+    "Sales Execution & Enablement": [
+        "WhatsApp Business + Google Sheets — manual CRM",
+        "HubSpot / Pipedrive — deal pipeline & tracking",
+        "Salesforce + CPQ — enterprise sales stack",
+        "Freshsales / Zoho CRM — SMB sales suite",
+        "Gong / Chorus — conversation intelligence",
+        "Nothing yet — no structured sales process",
+    ],
+    "Lead Management & Conversion": [
+        "Google Sheets / Excel — manual lead tracking",
+        "HubSpot / Zoho CRM — lead scoring + nurture flows",
+        "Salesforce + Pardot — enterprise lead management",
+        "Freshsales / LeadSquared — SMB lead conversion",
+        "WhatsApp Business + manual follow-up",
+        "Nothing yet — leads aren't systematically tracked",
+    ],
+    "Customer Success & Reputation": [
+        "Google Reviews + manual responses",
+        "Zendesk / Freshdesk — support ticketing system",
+        "Intercom / Drift — live chat & conversations",
+        "HubSpot Service Hub — CRM-integrated support",
+        "Trustpilot / G2 / Birdeye — review management",
+        "Nothing yet — no structured support system",
+    ],
+    "Repeat Sales": [
+        "Mailchimp / Klaviyo — email marketing & re-engagement",
+        "WhatsApp Business — manual repeat outreach",
+        "Shopify + loyalty plugin (Smile.io, Yotpo)",
+        "HubSpot / Zoho — CRM workflows for upsell",
+        "Google Sheets — manual customer reorder tracking",
+        "Nothing yet — no repeat purchase strategy",
+    ],
+
+    # ── Business Strategy Domains ────────────────────────────
+    "Business Intelligence & Analytics": [
+        "Google Sheets / Excel — manual dashboards",
+        "Google Analytics + Looker Studio (Data Studio)",
+        "Power BI / Tableau — enterprise BI & visualization",
+        "Mixpanel / Amplitude — product & user analytics",
+        "Metabase / Redash — open-source SQL dashboards",
+        "Nothing yet — decisions based on gut feel",
+    ],
+    "Market Strategy & Innovation": [
+        "Google Trends + manual research — ad-hoc insights",
+        "Semrush / SimilarWeb — competitor & market analysis",
+        "Crayon / Klue — competitive intelligence platform",
+        "ChatGPT / Perplexity — AI-powered research",
+        "Industry reports + newsletters — passive tracking",
+        "Nothing yet — not tracking market shifts",
+    ],
+    "Financial Health & Risk": [
+        "Google Sheets / Excel — manual bookkeeping",
+        "QuickBooks / Xero — accounting & invoicing",
+        "Zoho Books / FreshBooks — SMB finance suite",
+        "SAP / Oracle NetSuite — enterprise ERP",
+        "Tally / Wave — basic accounting software",
+        "Nothing yet — no financial tracking system",
+    ],
+    "Org Efficiency & Hiring": [
+        "Google Docs / Sheets — manual SOPs & tracking",
+        "Notion / Confluence — knowledge base & wiki",
+        "Slack / Microsoft Teams — internal communication",
+        "Monday.com / Asana — project management",
+        "Jira / ClickUp — task & workflow management",
+        "Nothing yet — no process documentation",
+    ],
+    "Improve Yourself": [
+        "Google Calendar + Notes app — basic planning",
+        "Notion / Obsidian — personal knowledge management",
+        "ChatGPT / Claude — AI assistant for writing & ideas",
+        "Todoist / TickTick — task & habit tracking",
+        "LinkedIn + Medium — personal branding content",
+        "Nothing yet — no productivity system in place",
+    ],
+
+    # ── Save Time / Automation Domains ───────────────────────
+    "Sales & Content Automation": [
+        "Zapier / Make (Integromat) — no-code automation",
+        "HubSpot / ActiveCampaign — marketing automation",
+        "Mailchimp + Google Sheets — semi-manual workflows",
+        "n8n / Pabbly — self-hosted automation platform",
+        "Custom scripts (Python, Apps Script) — developer-built",
+        "Nothing yet — all workflows are manual",
+    ],
+    "Finance Legal & Admin": [
+        "Google Sheets / Excel — manual data entry & tracking",
+        "QuickBooks / Xero — accounting & invoicing",
+        "DocuSign / PandaDoc — contract & e-signature",
+        "Zoho Invoice / FreshBooks — billing automation",
+        "SAP / Oracle — enterprise finance & procurement",
+        "Nothing yet — paper-based or email-based process",
+    ],
+    "Customer Support Ops": [
+        "WhatsApp Business + manual replies",
+        "Zendesk / Freshdesk — ticketing & knowledge base",
+        "Intercom / Tidio — live chat & chatbot",
+        "HubSpot Service Hub — CRM-integrated support",
+        "Email / phone — no ticketing system",
+        "Nothing yet — no dedicated support workflow",
+    ],
+    "Recruiting & HR Ops": [
+        "LinkedIn Recruiter + Google Sheets — manual tracking",
+        "Greenhouse / Lever — applicant tracking system (ATS)",
+        "Workday / BambooHR — HR management platform",
+        "Naukri / Indeed — job boards + manual screening",
+        "Zoho Recruit / Freshteam — SMB recruiting suite",
+        "Nothing yet — hiring is ad-hoc / word-of-mouth",
+    ],
+    "Personal & Team Productivity": [
+        "Google Workspace (Docs, Sheets, Drive) — manual workflow",
+        "Notion / Obsidian — notes & knowledge management",
+        "Slack + Asana / Trello — communication + tasks",
+        "Microsoft 365 (Teams, OneDrive, Excel)",
+        "Zapier / Make — automation between apps",
+        "Nothing yet — using email & paper for everything",
+    ],
+}
+
+# ── Dynamic constraint options based on business stage ──────────
+CONSTRAINT_OPTIONS_BY_STAGE = {
+    "Idea / validation stage": [
+        "Time — building everything solo, no bandwidth",
+        "Money — bootstrapping with zero / tiny budget",
+        "Clarity — not sure what to build or sell first",
+        "Validation — can't tell if people actually want this",
+        "Tech — don't know which tools to start with",
+    ],
+    "Early traction (some customers)": [
+        "Time — too many things, can't prioritize",
+        "Money — revenue doesn't cover hiring yet",
+        "Leads — getting interest but not enough conversions",
+        "Process — nothing is repeatable or documented",
+        "Retention — customers buy once but don't return",
+    ],
+    "Growth mode (scaling what works)": [
+        "Time — founder is the bottleneck for everything",
+        "People — hard to hire / delegate effectively",
+        "Systems — manual processes breaking at scale",
+        "Unit economics — growth isn't profitable yet",
+        "Quality — speed of growth causing quality gaps",
+    ],
+    "Established (optimizing & expanding)": [
+        "Efficiency — too many tools, not integrated",
+        "Talent — key roles hard to fill / keep",
+        "Innovation — competitors catching up fast",
+        "Data — decisions aren't data-driven enough",
+        "Expansion — entering new markets / verticals",
+    ],
+    "Enterprise / multi-product": [
+        "Coordination — teams / products not aligned",
+        "Legacy — old systems slowing everything down",
+        "Compliance — regulatory / security overhead",
+        "Innovation — too slow to ship new initiatives",
+        "Data silos — insights fragmented across teams",
+    ],
+    "default": [
+        "Time — I'm doing everything myself",
+        "Money — limited budget for tools / hiring",
+        "Knowledge — not sure what to do next",
+        "People — can't find / manage the right team",
+        "Systems — no repeatable process in place",
+    ],
+}
+
+
+def _get_scale_questions(domain: str = "", business_stage: str = "") -> list[dict]:
+    """
+    Build the scale questions dynamically.
+    - Team Size is REMOVED
+    - Business Stage is FIRST
+    - Current Stack options change per domain
+    - Biggest Constraint options change per business stage
+    """
+    # Pick domain-specific stack options (fallback to generic if domain not mapped)
+    _default_stack = [
+        "Google Workspace (Sheets, Docs, Drive) — manual workflows",
+        "Notion / Airtable — flexible project management",
+        "Specialized SaaS tools (CRM, marketing, support)",
+        "Enterprise suite (Salesforce, SAP, Microsoft 365)",
+        "Custom-built / developer tools (APIs, scripts, Zapier)",
+        "Nothing yet — doing everything manually",
+    ]
+    stack_options = CURRENT_STACK_BY_DOMAIN.get(domain, _default_stack)
+
+    # Pick stage-specific constraint options
+    constraint_options = CONSTRAINT_OPTIONS_BY_STAGE.get(
+        business_stage, CONSTRAINT_OPTIONS_BY_STAGE["default"]
+    )
+
+    return [
+        {
+            "id": "business_stage",
+            "question": "Which stage best describes your business?",
+            "options": [
+                "Idea / validation stage",
+                "Early traction (some customers)",
+                "Growth mode (scaling what works)",
+                "Established (optimizing & expanding)",
+                "Enterprise / multi-product",
+            ],
+            "icon": "🚀",
+        },
+        {
+            "id": "current_stack",
+            "question": "What tools are you currently using for this?",
+            "options": stack_options,
+            "icon": "🛠️",
+        },
+        {
+            "id": "primary_channel",
+            "question": "Where do most of your customers come from today?",
+            "options": [
+                "Word of mouth / referrals",
+                "Social media (organic)",
+                "Paid ads (Google, Meta, etc.)",
+                "Content / SEO / inbound",
+                "Outbound sales / cold outreach",
+                "Marketplace / platform (Amazon, Upwork, etc.)",
+            ],
+            "icon": "📣",
+            "multiSelect": True,
+        },
+        {
+            "id": "biggest_constraint",
+            "question": "What's the single biggest constraint you face right now?",
+            "options": constraint_options,
+            "icon": "🔒",
+            "multiSelect": True,
+        },
+    ]
+
+
+# Backward compat: static list for the submit endpoint validation
+SCALE_QUESTIONS = _get_scale_questions()
 
 
 class ScaleQuestionItem(BaseModel):
@@ -845,6 +1053,7 @@ class ScaleQuestionItem(BaseModel):
     question: str
     options: list[str]
     icon: str = ""
+    multiSelect: bool = False
 
 
 class ScaleQuestionsResponse(BaseModel):
@@ -855,28 +1064,32 @@ class ScaleQuestionsResponse(BaseModel):
 
 class SubmitScaleAnswersRequest(BaseModel):
     session_id: str
-    answers: dict[str, str]   # {"team_size": "Just me ...", "current_stack": "...", ...}
+    answers: dict[str, str | list[str]]   # values can be a string or list for multi-select
 
 
 class SubmitScaleAnswersResponse(BaseModel):
     session_id: str
-    business_profile: dict[str, str]
+    business_profile: dict[str, str | list[str]]
     message: str
 
 
 @router.get("/session/{session_id}/scale-questions", response_model=ScaleQuestionsResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_scale_questions(request: Request, session_id: str):
+async def get_scale_questions_endpoint(request: Request, session_id: str):
     """
     Return the business scale / context classification questions.
 
-    These are shown after URL submission and before Opus deep-dive.
-    They're quick multiple-choice questions (no AI involved) that
-    create a business_profile{} to calibrate the diagnostic.
+    Dynamic: Current Stack options change based on the user's domain,
+    and Biggest Constraint options change based on business stage.
+    Team Size question is removed. Business Stage is asked first.
     """
     session = session_store.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build domain-aware scale questions
+    domain = session.domain or ""
+    dynamic_qs = _get_scale_questions(domain=domain)
 
     questions = [
         ScaleQuestionItem(
@@ -884,8 +1097,9 @@ async def get_scale_questions(request: Request, session_id: str):
             question=q["question"],
             options=q["options"],
             icon=q.get("icon", ""),
+            multiSelect=q.get("multiSelect", False),
         )
-        for q in SCALE_QUESTIONS
+        for q in dynamic_qs
     ]
 
     return ScaleQuestionsResponse(
@@ -909,12 +1123,16 @@ async def submit_scale_answers(request: Request, body: SubmitScaleAnswersRequest
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Build business profile from answers
+    # Build business profile from answers (use dynamic questions for validation)
+    domain = session.domain or ""
+    business_stage = body.answers.get("business_stage", "")
+    dynamic_qs = _get_scale_questions(domain=domain, business_stage=business_stage)
+    valid_ids = {q["id"] for q in dynamic_qs}
+
     business_profile = {}
-    for q in SCALE_QUESTIONS:
-        qid = q["id"]
-        if qid in body.answers:
-            business_profile[qid] = body.answers[qid]
+    for qid, answer in body.answers.items():
+        if qid in valid_ids:
+            business_profile[qid] = answer
 
     # Store in session
     session_store.set_business_profile(body.session_id, business_profile)
@@ -1135,3 +1353,101 @@ async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...
             "This insight will help us refine your tool recommendations even further."
         ),
     )
+
+
+# ── ICP + Business Insights Endpoint ──────────────────────────
+
+
+class ICPInsight(BaseModel):
+    point: str              # Sharp insight text
+    highlight: str = ""     # Key phrase to highlight in the UI
+
+
+class ICPAnalysis(BaseModel):
+    ideal_customer_profile: str = ""   # Who their ICP should be
+    targeting_verdict: str = ""        # What a customer feels landing on their site
+    improvement_areas: list[str] = []  # Where to improve the business URL/site
+
+
+class BusinessInsightsResponse(BaseModel):
+    session_id: str
+    insights: list[ICPInsight] = []    # 5-6 sharp points
+    icp_analysis: Optional[ICPAnalysis] = None
+    hook: str = ""                     # Catchy hook line before CTA
+    available: bool = False
+
+
+@router.post("/session/insights")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def get_business_insights(request: Request, body: dict = Body(...)):
+    """
+    Generate 5-6 sharp business insights + ICP analysis + catchy hook.
+
+    Combines:
+    - All Q&A history (outcome, domain, task, diagnostic, scale)
+    - Crawl data (website analysis)
+    - Business profile
+
+    Returns structured insights for the final report.
+    """
+    session_id = body.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build context
+    crawl_data = session.crawl_summary or {}
+    business_profile = session.business_profile or {}
+    rca_history = session.rca_history or []
+
+    if not rca_history and not crawl_data.get("points"):
+        return BusinessInsightsResponse(
+            session_id=session_id, available=False
+        ).model_dump()
+
+    result = await agent_service.generate_business_insights(
+        outcome_label=session.outcome_label or "",
+        domain=session.domain or "",
+        task=session.task or "",
+        rca_history=rca_history,
+        business_profile=business_profile,
+        crawl_summary=crawl_data,
+        crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
+    )
+
+    if not result:
+        return BusinessInsightsResponse(
+            session_id=session_id, available=False
+        ).model_dump()
+
+    insights = [
+        {"point": i.get("point", ""), "highlight": i.get("highlight", "")}
+        for i in result.get("insights", [])
+    ]
+
+    icp = result.get("icp_analysis")
+    icp_data = None
+    if icp:
+        icp_data = {
+            "ideal_customer_profile": icp.get("ideal_customer_profile", ""),
+            "targeting_verdict": icp.get("targeting_verdict", ""),
+            "improvement_areas": icp.get("improvement_areas", []),
+        }
+
+    logger.info(
+        "Business insights generated",
+        session_id=session_id,
+        insights_count=len(insights),
+        has_icp=bool(icp_data),
+    )
+
+    return {
+        "session_id": session_id,
+        "insights": insights,
+        "icp_analysis": icp_data,
+        "hook": result.get("hook", ""),
+        "available": True,
+    }
