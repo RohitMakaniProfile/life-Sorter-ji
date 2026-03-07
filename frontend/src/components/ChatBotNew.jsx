@@ -1178,6 +1178,9 @@ const ChatBotNew = ({ onNavigate }) => {
   const [businessInsights, setBusinessInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
 
+  // Business Intelligence Verdict (pre-RCA, crawl-powered)
+  const [businessIntelVerdict, setBusinessIntelVerdict] = useState(null);
+
 
   // User preferences state
   const [userPreferences, setUserPreferences] = useState(() => {
@@ -2404,17 +2407,46 @@ const ChatBotNew = ({ onNavigate }) => {
         }
       })();
 
+      // Wait for scale answers to submit
+      await submitScalePromise;
+
+      // ── Business Intelligence Verdict (if crawl is complete) ──
+      if (sid && crawlStatus === 'complete') {
+        try {
+          const biRes = await fetch(`${API_BASE}/api/v1/agent/session/business-intel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sid }),
+          });
+          const biData = await biRes.json();
+
+          if (biData.available) {
+            setBusinessIntelVerdict(biData);
+            const verdictMsg = {
+              id: getNextMessageId(),
+              text: '',
+              sender: 'bot',
+              timestamp: new Date(),
+              isBusinessIntelVerdict: true,
+              businessIntelData: biData,
+            };
+            setMessages(prev => [...prev, verdictMsg]);
+            // Brief pause so user can see the verdict
+            await new Promise(r => setTimeout(r, 800));
+          }
+        } catch (e) {
+          console.log('Business intel verdict fetch failed (non-blocking)', e);
+        }
+      }
+
       // Transition message
       const transitionMsg = {
         id: getNextMessageId(),
-        text: `Great — I now have a clear picture of your business context. Let me ask you some deeper diagnostic questions to pinpoint the exact bottleneck.`,
+        text: `Now let me ask you some deeper diagnostic questions to pinpoint the exact bottleneck.`,
         sender: 'bot',
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, transitionMsg]);
-
-      // Wait for scale answers to submit, then fetch context-aware first question
-      await submitScalePromise;
 
       try {
         if (sid) {
@@ -4618,6 +4650,92 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             Continue →
                           </button>
                         </div>
+                      </div>
+                    )}
+
+                    {/* ── Business Intelligence Verdict Card ── */}
+                    {message.isBusinessIntelVerdict && message.businessIntelData && (
+                      <div className="bi-verdict-container">
+                        {/* Verdict headline */}
+                        {message.businessIntelData.verdict_line && (
+                          <div className="bi-verdict-headline">
+                            <span className="bi-verdict-headline-icon">⚡</span>
+                            <span className="bi-verdict-headline-text">{message.businessIntelData.verdict_line}</span>
+                          </div>
+                        )}
+
+                        {/* ICP Snapshot */}
+                        {message.businessIntelData.icp_snapshot && (
+                          <div className="bi-section bi-icp">
+                            <div className="bi-section-label">
+                              <span className="bi-section-icon">👤</span> Who Your Ideal Customer Is
+                            </div>
+                            <p className="bi-section-text">{message.businessIntelData.icp_snapshot}</p>
+                          </div>
+                        )}
+
+                        {/* SEO Health */}
+                        {message.businessIntelData.seo_health && (
+                          <div className="bi-section bi-seo">
+                            <div className="bi-section-label">
+                              <span className="bi-section-icon">🔍</span> SEO Health
+                              <span className={`bi-seo-score ${message.businessIntelData.seo_health.score >= 7 ? 'good' : message.businessIntelData.seo_health.score >= 4 ? 'okay' : 'poor'}`}>
+                                {message.businessIntelData.seo_health.score}/10
+                              </span>
+                            </div>
+                            <div className="bi-seo-bar-track">
+                              <div className="bi-seo-bar-fill" style={{ width: `${message.businessIntelData.seo_health.score * 10}%` }} />
+                            </div>
+                            <div className="bi-seo-details">
+                              {message.businessIntelData.seo_health.working && (
+                                <div className="bi-seo-row">
+                                  <span className="bi-seo-tag working">✓ Working</span>
+                                  <span>{message.businessIntelData.seo_health.working}</span>
+                                </div>
+                              )}
+                              {message.businessIntelData.seo_health.missing && (
+                                <div className="bi-seo-row">
+                                  <span className="bi-seo-tag missing">✗ Missing</span>
+                                  <span>{message.businessIntelData.seo_health.missing}</span>
+                                </div>
+                              )}
+                              {message.businessIntelData.seo_health.quick_win && (
+                                <div className="bi-seo-row">
+                                  <span className="bi-seo-tag quickwin">⚡ Quick Win</span>
+                                  <span>{message.businessIntelData.seo_health.quick_win}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Funnel Strategies — Collapsible */}
+                        {[
+                          { key: 'top_funnel', label: 'Top Funnel — Awareness & Discovery', icon: '📢', color: '#8b5cf6' },
+                          { key: 'mid_funnel', label: 'Mid Funnel — Consideration & Trust', icon: '🤝', color: '#f59e0b' },
+                          { key: 'bottom_funnel', label: 'Bottom Funnel — Conversion & Revenue', icon: '💰', color: '#10b981' },
+                        ].map(funnel => (
+                          message.businessIntelData[funnel.key] && message.businessIntelData[funnel.key].length > 0 && (
+                            <details key={funnel.key} className="bi-funnel-section" open>
+                              <summary className="bi-funnel-header" style={{ '--funnel-color': funnel.color }}>
+                                <span className="bi-funnel-icon">{funnel.icon}</span>
+                                <span className="bi-funnel-label">{funnel.label}</span>
+                                <span className="bi-funnel-count">{message.businessIntelData[funnel.key].length} strategies</span>
+                              </summary>
+                              <div className="bi-funnel-strategies">
+                                {message.businessIntelData[funnel.key].map((s, i) => (
+                                  <div key={i} className="bi-strategy-item" style={{ animationDelay: `${i * 0.06}s` }}>
+                                    <div className="bi-strategy-name">
+                                      <span className="bi-strategy-num" style={{ background: funnel.color }}>{i + 1}</span>
+                                      {s.strategy}
+                                    </div>
+                                    <div className="bi-strategy-action">{s.action}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )
+                        ))}
                       </div>
                     )}
 

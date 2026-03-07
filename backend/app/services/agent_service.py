@@ -1025,3 +1025,184 @@ async def generate_business_insights(
     except Exception as e:
         logger.error("Business insights generation failed", error=str(e))
         return None
+
+
+# ── Business Intelligence Verdict (Crawl-Powered, Pre-RCA) ────
+
+BUSINESS_INTEL_SYSTEM_PROMPT = """You are a world-class business intelligence analyst. You've just crawled a business's website \
+and gathered their raw data — tech stack, CTAs, pages, SEO basics, social presence.
+
+Your job: Generate a powerful Business Intelligence Verdict that makes the business owner feel \
+EMPOWERED about their growth potential. This is shown BEFORE the diagnostic, so it should feel \
+like a strategic advantage — "we already know a lot about your business."
+
+Be sharp, specific, and reference concrete signals from the crawl data. Never be generic. \
+Every insight should prove you actually analyzed THEIR website.
+
+SECTION 1 — ICP SNAPSHOT
+2-3 crisp sentences describing who their ideal customer really is, based on what their site \
+reveals (messaging, offers, positioning, content style). Be specific — demographics, behavior, \
+pain points they're addressing.
+
+SECTION 2 — SEO HEALTH
+Score from 1-10 with a brief diagnosis:
+- What's working (reference specific signals)
+- What's critically missing
+- One quick-win recommendation they can act on today
+
+SECTION 3 — FUNNEL GROWTH STRATEGIES
+For each funnel stage, provide exactly 5 actionable growth moves based on what the crawl reveals. \
+Each strategy should be specific to THIS business, not generic marketing advice.
+
+TOP FUNNEL (Awareness & Discovery):
+5 strategies to attract new eyeballs — based on their content gaps, SEO state, social presence
+
+MID FUNNEL (Consideration & Trust):
+5 strategies to convert visitors into leads — based on their CTAs, content, social proof signals
+
+BOTTOM FUNNEL (Conversion & Revenue):
+5 strategies to close deals — based on their pricing page, checkout flow, trust signals
+
+OUTPUT FORMAT (strict JSON):
+{
+  "icp_snapshot": "2-3 sentence ICP description",
+  "seo_health": {
+    "score": 7,
+    "diagnosis": "Brief diagnosis",
+    "working": "What's working",
+    "missing": "What's critically missing",
+    "quick_win": "One actionable quick win"
+  },
+  "top_funnel": [
+    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
+  ],
+  "mid_funnel": [
+    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
+  ],
+  "bottom_funnel": [
+    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
+  ],
+  "verdict_line": "Single powerful sentence — their biggest opportunity (max 20 words)"
+}
+
+Return ONLY valid JSON. 5 items per funnel stage."""
+
+
+async def generate_business_intel_verdict(
+    outcome_label: str,
+    domain: str,
+    task: str,
+    crawl_raw: dict,
+    crawl_summary: dict,
+    business_profile: dict = None,
+) -> Optional[dict]:
+    """
+    Generate a Business Intelligence Verdict from crawl data.
+    Shown to the user BEFORE the RCA diagnostic to empower them
+    with strategic insights about their business.
+    """
+    settings = get_settings()
+    client = _get_client()
+
+    # Build rich context from crawl data
+    parts = [
+        f"Growth Goal: {outcome_label}",
+        f"Domain: {domain}",
+        f"Task: {task}",
+    ]
+
+    if business_profile:
+        parts.append("\nBUSINESS PROFILE:")
+        for k, v in business_profile.items():
+            parts.append(f"  {k.replace('_', ' ').title()}: {v}")
+
+    if crawl_summary and crawl_summary.get("points"):
+        parts.append("\nCRAWL SUMMARY:")
+        for pt in crawl_summary["points"]:
+            parts.append(f"  - {pt}")
+
+    # Include detailed crawl signals
+    hp = crawl_raw.get("homepage", {})
+    if hp.get("title"):
+        parts.append(f"\nHomepage Title: {hp['title']}")
+    if hp.get("meta_desc"):
+        parts.append(f"Meta Description: {hp['meta_desc']}")
+    if hp.get("h1s"):
+        parts.append(f"H1 Headlines: {', '.join(hp['h1s'][:5])}")
+    if hp.get("nav_links"):
+        nav_labels = [n.get("text", "") for n in hp["nav_links"][:10] if isinstance(n, dict)]
+        if nav_labels:
+            parts.append(f"Navigation: {', '.join(nav_labels)}")
+
+    tech = crawl_raw.get("tech_signals", [])
+    if tech:
+        parts.append(f"\nTech Stack: {', '.join(tech[:12])}")
+
+    ctas = crawl_raw.get("cta_patterns", [])
+    if ctas:
+        parts.append(f"CTAs Found: {', '.join(ctas[:8])}")
+
+    socials = crawl_raw.get("social_links", [])
+    if socials:
+        parts.append(f"Social Links: {', '.join(socials[:6])}")
+
+    schema = crawl_raw.get("schema_markup", [])
+    if schema:
+        parts.append(f"Schema Markup: {', '.join(str(s) for s in schema[:5])}")
+
+    seo = crawl_raw.get("seo_basics", {})
+    seo_notes = []
+    if seo.get("has_meta"):
+        seo_notes.append("Has meta tags")
+    else:
+        seo_notes.append("Missing meta tags")
+    if seo.get("has_viewport"):
+        seo_notes.append("Mobile viewport set")
+    else:
+        seo_notes.append("No mobile viewport")
+    if seo.get("has_sitemap"):
+        seo_notes.append("Sitemap detected")
+    else:
+        seo_notes.append("No sitemap")
+    parts.append(f"SEO Basics: {', '.join(seo_notes)}")
+
+    pages = crawl_raw.get("pages_crawled", [])
+    if pages:
+        parts.append(f"\nPages Crawled ({len(pages)}):")
+        for p in pages[:5]:
+            content = p.get("key_content", "")[:400]
+            parts.append(f"  [{p.get('type', 'page')}] {p.get('url', '')}")
+            if content:
+                parts.append(f"    Content: {content}")
+
+    user_message = "\n".join(parts)
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": BUSINESS_INTEL_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.5,
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+
+        logger.info(
+            "Business intel verdict generated",
+            has_icp=bool(parsed.get("icp_snapshot")),
+            seo_score=parsed.get("seo_health", {}).get("score"),
+            top_funnel=len(parsed.get("top_funnel", [])),
+            mid_funnel=len(parsed.get("mid_funnel", [])),
+            bottom_funnel=len(parsed.get("bottom_funnel", [])),
+        )
+
+        return parsed
+
+    except Exception as e:
+        logger.error("Business intel verdict generation failed", error=str(e))
+        return None

@@ -1466,3 +1466,104 @@ async def get_business_insights(request: Request, body: dict = Body(...)):
         "hook": result.get("hook", ""),
         "available": True,
     }
+
+
+# ── Business Intelligence Verdict (Pre-RCA, Crawl-Powered) ────
+
+class BusinessIntelRequest(BaseModel):
+    session_id: str
+
+
+class SEOHealth(BaseModel):
+    score: int = 0
+    diagnosis: str = ""
+    working: str = ""
+    missing: str = ""
+    quick_win: str = ""
+
+
+class FunnelStrategy(BaseModel):
+    strategy: str = ""
+    action: str = ""
+
+
+class BusinessIntelResponse(BaseModel):
+    session_id: str
+    available: bool = False
+    icp_snapshot: str = ""
+    seo_health: Optional[SEOHealth] = None
+    top_funnel: list[FunnelStrategy] = []
+    mid_funnel: list[FunnelStrategy] = []
+    bottom_funnel: list[FunnelStrategy] = []
+    verdict_line: str = ""
+
+
+@router.post("/session/business-intel", response_model=BusinessIntelResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def get_business_intel(request: Request, body: BusinessIntelRequest = Body(...)):
+    """
+    Generate a Business Intelligence Verdict from crawl data.
+
+    Shows ICP snapshot, SEO health score, and funnel growth strategies
+    BEFORE the RCA diagnostic — empowering users with strategic insights.
+
+    Requires crawl to be complete.
+    """
+    session = session_store.get_session(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Need crawl data
+    if not session.crawl_raw or session.crawl_status != "complete":
+        return BusinessIntelResponse(
+            session_id=body.session_id,
+            available=False,
+        )
+
+    result = await agent_service.generate_business_intel_verdict(
+        outcome_label=session.outcome_label or "",
+        domain=session.domain or "",
+        task=session.task or "",
+        crawl_raw=session.crawl_raw,
+        crawl_summary=session.crawl_summary or {},
+        business_profile=session.business_profile or None,
+    )
+
+    if not result:
+        return BusinessIntelResponse(
+            session_id=body.session_id,
+            available=False,
+        )
+
+    seo = result.get("seo_health")
+    seo_data = None
+    if seo and isinstance(seo, dict):
+        seo_data = SEOHealth(
+            score=seo.get("score", 0),
+            diagnosis=seo.get("diagnosis", ""),
+            working=seo.get("working", ""),
+            missing=seo.get("missing", ""),
+            quick_win=seo.get("quick_win", ""),
+        )
+
+    top = [FunnelStrategy(**s) for s in result.get("top_funnel", []) if isinstance(s, dict)]
+    mid = [FunnelStrategy(**s) for s in result.get("mid_funnel", []) if isinstance(s, dict)]
+    bot = [FunnelStrategy(**s) for s in result.get("bottom_funnel", []) if isinstance(s, dict)]
+
+    logger.info(
+        "Business intel verdict served",
+        session_id=body.session_id,
+        seo_score=seo_data.score if seo_data else None,
+        strategies=len(top) + len(mid) + len(bot),
+    )
+
+    return BusinessIntelResponse(
+        session_id=body.session_id,
+        available=True,
+        icp_snapshot=result.get("icp_snapshot", ""),
+        seo_health=seo_data,
+        top_funnel=top,
+        mid_funnel=mid,
+        bottom_funnel=bot,
+        verdict_line=result.get("verdict_line", ""),
+    )

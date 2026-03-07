@@ -1371,3 +1371,211 @@
   background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(59,130,246,0.08));
   border-top-color: rgba(124, 58, 237, 0.15);
 }
+
+/* ── Business Intelligence Verdict Card (Mobile) ── */
+
+.bi-verdict-container {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 50%, #fff7ed 100%);
+  box-shadow: 0 3px 14px rgba(245, 158, 11, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.bi-verdict-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(234, 88, 12, 0.08));
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+.bi-verdict-headline-icon { font-size: 1rem; flex-shrink: 0; }
+
+.bi-verdict-headline-text {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: #92400e;
+  line-height: 1.35;
+}
+
+.bi-section-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #78716c;
+  margin-bottom: 0.35rem;
+}
+
+.bi-section-icon { font-size: 0.85rem; }
+
+.bi-section-text {
+  font-size: 0.78rem;
+  color: #44403c;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* SEO Health */
+.bi-seo-score {
+  margin-left: auto;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 0.12rem 0.45rem;
+  border-radius: 5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.bi-seo-score.good { background: rgba(16,185,129,0.15); color: #065f46; }
+.bi-seo-score.okay { background: rgba(245,158,11,0.15); color: #92400e; }
+.bi-seo-score.poor { background: rgba(239,68,68,0.12); color: #991b1b; }
+
+.bi-seo-bar-track {
+  height: 5px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.bi-seo-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
+  transition: width 0.8s ease;
+}
+
+.bi-seo-details { display: flex; flex-direction: column; gap: 0.3rem; }
+
+.bi-seo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  color: #57534e;
+  line-height: 1.4;
+}
+
+.bi-seo-tag {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.08rem 0.35rem;
+  border-radius: 3px;
+}
+
+.bi-seo-tag.working { background: rgba(16,185,129,0.12); color: #065f46; }
+.bi-seo-tag.missing { background: rgba(239,68,68,0.1); color: #991b1b; }
+.bi-seo-tag.quickwin { background: rgba(59,130,246,0.1); color: #1e40af; }
+
+/* Funnel Sections */
+.bi-funnel-section {
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bi-funnel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  background: rgba(0,0,0,0.02);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: #44403c;
+}
+
+.bi-funnel-header::-webkit-details-marker { display: none; }
+
+.bi-funnel-header::after {
+  content: '▸';
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: #a8a29e;
+  transition: transform 0.2s;
+}
+
+details[open] > .bi-funnel-header::after { transform: rotate(90deg); }
+
+.bi-funnel-icon { font-size: 0.85rem; flex-shrink: 0; }
+.bi-funnel-label { flex: 1; }
+
+.bi-funnel-count {
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: #a8a29e;
+  margin-right: 0.25rem;
+}
+
+.bi-funnel-strategies {
+  padding: 0.4rem 0.7rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.bi-strategy-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #292524;
+  margin-bottom: 0.1rem;
+}
+
+.bi-strategy-num {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.58rem;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.bi-strategy-action {
+  font-size: 0.72rem;
+  color: #57534e;
+  line-height: 1.4;
+  padding-left: 1.75rem;
+}
+
+/* Dark mode for BI Verdict (Mobile) */
+[data-theme="dark"] .bi-verdict-container {
+  background: linear-gradient(135deg, #1c1917, #292524 50%, #1e1b2e);
+  border-color: rgba(245,158,11,0.15);
+}
+
+[data-theme="dark"] .bi-verdict-headline {
+  background: linear-gradient(135deg, rgba(245,158,11,0.1), rgba(234,88,12,0.06));
+  border-color: rgba(245,158,11,0.12);
+}
+
+[data-theme="dark"] .bi-verdict-headline-text { color: #fbbf24; }
+[data-theme="dark"] .bi-section-label { color: #a8a29e; }
+[data-theme="dark"] .bi-section-text { color: #d6d3d1; }
+[data-theme="dark"] .bi-seo-bar-track { background: rgba(255,255,255,0.08); }
+[data-theme="dark"] .bi-seo-row { color: #a8a29e; }
+[data-theme="dark"] .bi-funnel-section { border-color: rgba(255,255,255,0.06); }
+[data-theme="dark"] .bi-funnel-header { background: rgba(255,255,255,0.03); color: #d6d3d1; }
+[data-theme="dark"] .bi-strategy-name { color: #e7e5e4; }
+[data-theme="dark"] .bi-strategy-action { color: #a8a29e; }
