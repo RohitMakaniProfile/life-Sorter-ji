@@ -2090,6 +2090,24 @@
   border-top: 1px solid rgba(124, 58, 237, 0.1);
 }
 
+/* — Structured Summary (ICP, SEO, Funnel) — */
+.report-summary-structured {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.report-summary-block {
+  padding: 0.5rem 0;
+}
+
+.report-funnel-strategies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-left: 0.25rem;
+}
+
 .report-hook-icon {
   font-size: 1.1rem;
   flex-shrink: 0;

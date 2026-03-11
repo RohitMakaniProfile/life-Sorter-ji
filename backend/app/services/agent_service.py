@@ -15,6 +15,7 @@ documented problems and diagnostic signals from the persona docs.
 """
 
 import json
+import time
 from typing import Optional
 
 import structlog
@@ -455,6 +456,7 @@ RAG RESULTS — Real tools from our verified database
 
 Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
 
+            t0 = time.monotonic()
             response = await client.chat.completions.create(
                 model=settings.OPENAI_MODEL_NAME,
                 messages=[
@@ -465,6 +467,7 @@ Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
                 max_tokens=1200,
                 response_format={"type": "json_object"},
             )
+            latency_ms = int((time.monotonic() - t0) * 1000)
 
             raw = response.choices[0].message.content or "{}"
             parsed = json.loads(raw)
@@ -479,6 +482,22 @@ Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
                 return {
                     "tools": parsed["tools"],
                     "message": parsed.get("message", default_message),
+                    "_meta": {
+                        "service": "openai",
+                        "model": settings.OPENAI_MODEL_NAME,
+                        "purpose": "early_recommendations",
+                        "system_prompt": EARLY_RECOMMENDATION_PROMPT,
+                        "user_message": user_message,
+                        "temperature": 0.4,
+                        "max_tokens": 1200,
+                        "raw_response": raw,
+                        "latency_ms": latency_ms,
+                        "token_usage": {
+                            "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                            "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                            "total_tokens": response.usage.total_tokens if response.usage else 0,
+                        },
+                    },
                 }
 
         logger.warning("RAG returned empty — falling back to JSON", domain=domain, task=task)
@@ -696,6 +715,11 @@ CRITICAL RULES:
 - Prioritize tools with higher relevance scores
 - Prioritize free/freemium tools when the user seems budget-conscious
 - Recommend 2-6 items per category (only include categories that have results)
+- The 'summary' MUST be a structured object with: icp, seo, top_funnel (5 strategies), \
+  mid_funnel (5 strategies), bottom_funnel (5 strategies), and one_liner. \
+  Use the WEBSITE ANALYSIS and BUSINESS PROFILE data to generate specific, actionable \
+  ICP, SEO, and funnel strategies. Each funnel must have exactly 5 short, crisp strategies \
+  specific to THIS business — not generic marketing advice.
 - For EACH tool, you MUST also provide:
   • 'implementation_stage': WHEN in the user's workflow they should adopt this tool. Be specific — \
     reference their actual situation from the Q&A. Examples: "Day 1 — Start using before your next post", \
@@ -747,7 +771,32 @@ OUTPUT FORMAT (strict JSON):
       "ease_of_use": "How easy to integrate"
     }}
   ],
-  "summary": "A 2-3 sentence personalized summary of why these tools were selected for this user's specific situation"
+  "summary": {
+    "icp": "1-2 crisp sentences: Who is their ideal customer? Be specific — demographics, behavior, pain points.",
+    "seo": "1-2 crisp sentences: Current SEO health verdict — what's working, what's broken, one quick win.",
+    "top_funnel": [
+      "Growth strategy 1 for awareness & discovery",
+      "Growth strategy 2",
+      "Growth strategy 3",
+      "Growth strategy 4",
+      "Growth strategy 5"
+    ],
+    "mid_funnel": [
+      "Growth strategy 1 for consideration & trust",
+      "Growth strategy 2",
+      "Growth strategy 3",
+      "Growth strategy 4",
+      "Growth strategy 5"
+    ],
+    "bottom_funnel": [
+      "Growth strategy 1 for conversion & revenue",
+      "Growth strategy 2",
+      "Growth strategy 3",
+      "Growth strategy 4",
+      "Growth strategy 5"
+    ],
+    "one_liner": "A single punchy sentence tying the tools to the user's growth goal"
+  }
 }}
 
 If a category has no matching RAG results, return an empty array for it.
@@ -760,6 +809,12 @@ async def generate_personalized_recommendations(
     domain: str,
     task: str,
     questions_answers: list[dict],
+    crawl_summary: dict = None,
+    crawl_raw: dict = None,
+    business_profile: dict = None,
+    rca_diagnostic_context: dict = None,
+    rca_summary: str = "",
+    gbp_data: dict = None,
 ) -> dict:
     """
     Generate personalized tool recommendations using RAG + GPT.
@@ -864,6 +919,86 @@ RAG RESULTS — Real tools from our verified database
 
 Based on the user's profile and answers, select the most relevant tools from the RAG RESULTS above. Group them into extensions, gpts, and companies. Write a personalized 'why_recommended' for each."""
 
+    # Add RCA summary (Claude's root cause diagnosis)
+    if rca_summary:
+        user_message += f"\n\n═══ ROOT CAUSE DIAGNOSIS (from Claude's RCA) ═══\n{rca_summary}"
+
+    # Add dynamic loader context (problems, RCA bridge, opportunities, strategies from persona docs)
+    if rca_diagnostic_context:
+        sections = rca_diagnostic_context.get("sections", [])
+        for sec in sections:
+            key = sec.get("key", "")
+            items = sec.get("items", [])
+            if key == "problems" and items:
+                user_message += "\n\n═══ DOCUMENTED PROBLEM PATTERNS (from persona docs) ═══\n"
+                for i, item in enumerate(items, 1):
+                    user_message += f"  P{i}. {item}\n"
+            elif key == "rca_bridge" and items:
+                user_message += "\n\n═══ DIAGNOSTIC SIGNALS (symptom → root cause) ═══\n"
+                rca_parsed = sec.get("rca_parsed", [])
+                if rca_parsed:
+                    for i, rca in enumerate(rca_parsed, 1):
+                        line = f"  S{i}. \"{rca.get('symptom', '')}\""
+                        if rca.get("metric"): line += f" → KPI: {rca['metric']}"
+                        if rca.get("root_area"): line += f" → Root: {rca['root_area']}"
+                        user_message += line + "\n"
+                else:
+                    for i, item in enumerate(items, 1):
+                        user_message += f"  S{i}. {item}\n"
+            elif key == "opportunities" and items:
+                user_message += "\n\n═══ GROWTH OPPORTUNITIES (from persona docs) ═══\n"
+                for i, item in enumerate(items, 1):
+                    user_message += f"  O{i}. {item}\n"
+        strategies = rca_diagnostic_context.get("strategies", "")
+        if strategies:
+            user_message += f"\n\n═══ PROVEN STRATEGIES & FRAMEWORKS ═══\n{strategies[:1500]}\n"
+
+    # Add crawl/business context for ICP, SEO, and funnel analysis
+    if crawl_summary and crawl_summary.get("points"):
+        user_message += "\n\nWEBSITE ANALYSIS (from crawling their site):\n"
+        for pt in crawl_summary["points"]:
+            user_message += f"  • {pt}\n"
+
+    if crawl_raw:
+        if crawl_raw.get("tech_signals"):
+            user_message += f"\nTech stack detected: {', '.join(crawl_raw['tech_signals'][:10])}"
+        if crawl_raw.get("cta_patterns"):
+            user_message += f"\nCTAs found: {', '.join(crawl_raw['cta_patterns'][:5])}"
+        if crawl_raw.get("social_links"):
+            user_message += f"\nSocial links: {', '.join(crawl_raw['social_links'][:5])}"
+        seo = crawl_raw.get("seo_basics", {})
+        if seo:
+            seo_notes = []
+            if seo.get("has_meta"): seo_notes.append("Has meta tags")
+            else: seo_notes.append("Missing meta tags")
+            if seo.get("has_viewport"): seo_notes.append("Mobile viewport set")
+            else: seo_notes.append("No mobile viewport")
+            if seo.get("has_sitemap"): seo_notes.append("Sitemap detected")
+            else: seo_notes.append("No sitemap")
+            user_message += f"\nSEO Basics: {', '.join(seo_notes)}"
+
+    if business_profile:
+        user_message += "\n\nBUSINESS PROFILE:\n"
+        for k, v in business_profile.items():
+            user_message += f"  • {k.replace('_', ' ').title()}: {v}\n"
+
+    if gbp_data:
+        user_message += "\n\n═══ GOOGLE BUSINESS PROFILE DATA ═══\n"
+        if gbp_data.get("business_name"):
+            user_message += f"  • Business: {gbp_data['business_name']}\n"
+        if gbp_data.get("rating"):
+            user_message += f"  • Rating: {gbp_data['rating']}/5 ({gbp_data.get('total_reviews', '?')} reviews)\n"
+        if gbp_data.get("category"):
+            user_message += f"  • Category: {gbp_data['category']}\n"
+        reviews = gbp_data.get("reviews", [])
+        if reviews:
+            user_message += f"  Customer Reviews ({len(reviews)}):\n"
+            for i, rev in enumerate(reviews[:5], 1):
+                text = rev.get("text", rev.get("snippet", ""))
+                if text:
+                    user_message += f"    R{i}. [{rev.get('rating', '?')}★] {text[:200]}\n"
+
+    t0 = time.monotonic()
     try:
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL_NAME,
@@ -872,12 +1007,20 @@ Based on the user's profile and answers, select the most relevant tools from the
                 {"role": "user", "content": user_message},
             ],
             temperature=0.4,
-            max_tokens=2500,
+            max_tokens=3500,
             response_format={"type": "json_object"},
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
 
         raw = response.choices[0].message.content or "{}"
         parsed = json.loads(raw)
+
+        usage = response.usage
+        token_usage = {
+            "prompt_tokens": usage.prompt_tokens if usage else 0,
+            "completion_tokens": usage.completion_tokens if usage else 0,
+            "total_tokens": usage.total_tokens if usage else 0,
+        } if usage else {}
 
         logger.info(
             "Personalized recommendations generated (RAG-powered)",
@@ -894,6 +1037,18 @@ Based on the user's profile and answers, select the most relevant tools from the
             "gpts": parsed.get("gpts", []),
             "companies": parsed.get("companies", []),
             "summary": parsed.get("summary", ""),
+            "_meta": {
+                "service": "openai",
+                "model": settings.OPENAI_MODEL_NAME,
+                "purpose": "personalized_recommendations",
+                "system_prompt": RECOMMENDATION_SYSTEM_PROMPT,
+                "user_message": user_message,
+                "temperature": 0.4,
+                "max_tokens": 3500,
+                "raw_response": raw,
+                "latency_ms": latency_ms,
+                "token_usage": token_usage,
+            },
         }
 
     except json.JSONDecodeError as e:
@@ -913,11 +1068,18 @@ You have the user's complete profile: their business goal, domain, task, diagnos
 Your job: Generate a report with 3 sections:
 
 SECTION 1 — SHARP INSIGHTS (exactly 5-6 points)
+
+CRITICAL RATIO: 70% of insights MUST come from the WEBSITE ANALYSIS / CRAWL DATA (what you 
+observed about their actual business — tech stack, CTAs, content gaps, SEO signals, positioning). 
+Only 30% should reference the user's DIAGNOSTIC ANSWERS (the problem they described). 
+This means 4 out of 6 insights should be things the user DIDN'T tell you — things you discovered 
+from analyzing their business. This makes the report feel powerful and insightful.
+
 Each insight must be:
 - 1 sentence max, punchy and specific to THIS user's situation
 - Contains a "highlight" — the single most impactful phrase (3-6 words) to bold
 - Actionable, not generic. The user should think "that's exactly my situation"
-- Mix of: what's working, what's broken, what's the hidden opportunity
+- 70% from business scraping data (crawl/website analysis), 30% from user-described issues
 
 SECTION 2 — ICP ANALYSIS (Ideal Customer Profile)
 Based on crawl data + answers:
@@ -957,6 +1119,9 @@ async def generate_business_insights(
     business_profile: dict,
     crawl_summary: dict,
     crawl_raw: dict = None,
+    rca_diagnostic_context: dict = None,
+    rca_summary: str = "",
+    gbp_data: dict = None,
 ) -> Optional[dict]:
     """
     Generate sharp business insights, ICP analysis, and catchy hook.
@@ -996,8 +1161,42 @@ async def generate_business_insights(
             parts.append(f"  Q{i}: {qa.get('question', '')}")
             parts.append(f"  A{i}: {qa.get('answer', '')}")
 
+    if rca_summary:
+        parts.append(f"\nROOT CAUSE DIAGNOSIS: {rca_summary}")
+
+    if rca_diagnostic_context:
+        sections = rca_diagnostic_context.get("sections", [])
+        for sec in sections:
+            key = sec.get("key", "")
+            items = sec.get("items", [])
+            if key == "problems" and items:
+                parts.append("\nDOCUMENTED PROBLEM PATTERNS:")
+                for item in items[:6]:
+                    parts.append(f"  • {item}")
+            elif key == "opportunities" and items:
+                parts.append("\nGROWTH OPPORTUNITIES:")
+                for item in items[:6]:
+                    parts.append(f"  • {item}")
+
+    if gbp_data:
+        parts.append("\nGOOGLE BUSINESS PROFILE DATA:")
+        if gbp_data.get("business_name"):
+            parts.append(f"  • Business: {gbp_data['business_name']}")
+        if gbp_data.get("rating"):
+            parts.append(f"  • Rating: {gbp_data['rating']}/5 ({gbp_data.get('total_reviews', '?')} reviews)")
+        if gbp_data.get("category"):
+            parts.append(f"  • Category: {gbp_data['category']}")
+        reviews = gbp_data.get("reviews", [])
+        if reviews:
+            parts.append(f"  Customer Reviews ({len(reviews)}):")
+            for i, rev in enumerate(reviews[:5], 1):
+                text = rev.get("text", rev.get("snippet", ""))
+                if text:
+                    parts.append(f"    R{i}. [{rev.get('rating', '?')}★] {text[:200]}")
+
     user_message = "\n".join(parts)
 
+    t0 = time.monotonic()
     try:
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL_NAME,
@@ -1009,9 +1208,17 @@ async def generate_business_insights(
             max_tokens=1500,
             response_format={"type": "json_object"},
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
 
         raw = response.choices[0].message.content or "{}"
         parsed = json.loads(raw)
+
+        usage = response.usage
+        token_usage = {
+            "prompt_tokens": usage.prompt_tokens if usage else 0,
+            "completion_tokens": usage.completion_tokens if usage else 0,
+            "total_tokens": usage.total_tokens if usage else 0,
+        } if usage else {}
 
         logger.info(
             "Business insights generated",
@@ -1019,6 +1226,19 @@ async def generate_business_insights(
             has_icp=bool(parsed.get("icp_analysis")),
             has_hook=bool(parsed.get("hook")),
         )
+
+        parsed["_meta"] = {
+            "service": "openai",
+            "model": settings.OPENAI_MODEL_NAME,
+            "purpose": "business_insights",
+            "system_prompt": INSIGHTS_SYSTEM_PROMPT,
+            "user_message": user_message,
+            "temperature": 0.6,
+            "max_tokens": 1500,
+            "raw_response": raw,
+            "latency_ms": latency_ms,
+            "token_usage": token_usage,
+        }
 
         return parsed
 

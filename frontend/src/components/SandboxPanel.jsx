@@ -416,7 +416,13 @@ const TestFlowPanel = () => {
             <h3>Flow Complete</h3>
           </div>
           {recommendations.summary && (
-            <div className="sb-rec-summary">{recommendations.summary}</div>
+            <div className="sb-rec-summary">
+              {typeof recommendations.summary === 'object' && recommendations.summary.one_liner
+                ? recommendations.summary.one_liner
+                : typeof recommendations.summary === 'string'
+                  ? recommendations.summary
+                  : null}
+            </div>
           )}
           <div className="sb-rec-grid">
             {['extensions', 'gpts', 'companies'].map(cat => (

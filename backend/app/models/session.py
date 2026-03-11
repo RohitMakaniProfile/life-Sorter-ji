@@ -25,7 +25,24 @@ class SessionStage(str, Enum):
     SCALE_QUESTIONS = "scale_questions"      # Business scale/context classification
     DYNAMIC_QUESTIONS = "dynamic_questions"  # AI-generated follow-up questions
     RECOMMENDATION = "recommendation"       # Final tool recommendation
+    PLAYBOOK = "playbook"                   # AI Playbook generation pipeline
     COMPLETE = "complete"
+
+
+class LLMCallLog(BaseModel):
+    """A single LLM API call record for the context pool."""
+    timestamp: str = ""
+    service: str = ""            # "openai" or "claude_openrouter"
+    model: str = ""
+    purpose: str = ""            # "early_recommendations", "rca_question", "precision_questions", etc.
+    system_prompt: str = ""
+    user_message: str = ""
+    temperature: float = 0.0
+    max_tokens: int = 0
+    raw_response: str = ""
+    latency_ms: int = 0
+    token_usage: dict[str, Any] = {}
+    error: str = ""              # If the call failed
 
 
 class QuestionAnswer(BaseModel):
@@ -71,6 +88,10 @@ class SessionContext(BaseModel):
 
     # Claude RCA diagnostic state
     rca_diagnostic_context: dict[str, Any] = {}   # Raw dynamic-loader output (problems, rca_bridge, etc.)
+    rca_filtered_context: dict[str, Any] = {}     # Task-aligned filtered context (METHOD/SPEED/QUALITY)
+    rca_deferred_context: list[dict[str, Any]] = []  # Items filtered out — available for scope expansion
+    rca_task_execution_summary: str = ""           # What doing this task looks like day-to-day
+    rca_context_expanded: bool = False             # True if deferred context was pulled in
     rca_history: list[dict[str, str]] = []         # [{"question": ..., "answer": ...}, ...]
     rca_complete: bool = False                     # True when Claude signals "complete"
     rca_summary: str = ""                          # Claude's summary when done
@@ -82,17 +103,20 @@ class SessionContext(BaseModel):
 
     # Website & audience insights
     website_url: Optional[str] = None                   # Business website URL
+    gbp_url: Optional[str] = None                       # Google Business Profile URL
     url_submitted_at: Optional[str] = None              # ISO timestamp of URL submission
-    url_type: Optional[str] = None                      # "website" or "social_profile"
+    url_type: Optional[str] = None                      # "website", "social_profile", or "gbp"
     audience_insights: dict[str, Any] = {}              # {intended_audience, actual_audience, mismatch_analysis, recommendations}
 
     # Crawl data (populated asynchronously after URL submission)
     crawl_raw: dict[str, Any] = {}                      # Raw crawl output: homepage, pages_crawled, tech_signals, etc.
     crawl_summary: dict[str, Any] = {}                  # Compressed summary: points, crawl_status, completed_at
     crawl_status: str = ""                              # "in_progress", "complete", "failed", or empty
+    crawl_progress: dict[str, Any] = {}                 # Live progress: {pages_found, pages_crawled, current_page, phase}
+    gbp_data: dict[str, Any] = {}                       # Google Business Profile data: name, rating, reviews, hours, etc.
 
     # Business scale / profile (populated from Scale Questions)
-    business_profile: dict[str, Any] = {}               # {team_size, revenue_range, business_stage, ...}
+    business_profile: dict[str, Any] = {}               # {buying_process, revenue_model, sales_cycle, existing_assets, buyer_behavior, current_stack}
     scale_questions_complete: bool = False               # True when all scale Qs answered
 
     # Recommended tools
@@ -102,6 +126,21 @@ class SessionContext(BaseModel):
 
     # Free-form conversation history for the AI agent
     agent_conversation: list[dict[str, str]] = []
+
+    # ── Playbook Pipeline State ────────────────────────────────
+    playbook_stage: str = ""                             # "gap_questions", "waiting_gap_answers", "generating", "complete"
+    playbook_gap_questions: str = ""                      # Phase 0 / Agent 2 gap questions text
+    playbook_gap_answers: str = ""                        # User's gap question answers
+    playbook_agent1_output: str = ""                      # Context Brief from Agent 1
+    playbook_agent2_output: str = ""                      # ICP Card from Agent 2
+    playbook_agent3_output: str = ""                      # 10-step Playbook from Agent 3
+    playbook_agent4_output: str = ""                      # Tool Matrix from Agent 4
+    playbook_agent5_output: str = ""                      # Website Audit from Agent 5
+    playbook_complete: bool = False                       # True when full pipeline is done
+    playbook_latencies: dict[str, Any] = {}               # Per-agent timing data
+
+    # LLM call log for context pool transparency
+    llm_call_log: list[LLMCallLog] = []
 
 
 # ── API Request/Response Models ────────────────────────────────
@@ -176,5 +215,5 @@ class GetRecommendationsResponse(BaseModel):
     extensions: list[ToolRecommendation] = []
     gpts: list[ToolRecommendation] = []
     companies: list[ToolRecommendation] = []
-    summary: str = ""
+    summary: Any = ""
     session_context: dict[str, Any] = {}

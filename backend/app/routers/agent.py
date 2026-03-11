@@ -16,6 +16,7 @@ GET  /api/v1/agent/personas             — List available persona domains
 """
 
 import asyncio
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -27,7 +28,7 @@ from app.middleware.rate_limit import limiter
 from app.services import session_store, agent_service
 from app.services.crawl_service import detect_url_type, run_background_crawl
 from app.services.persona_doc_service import get_available_personas, get_doc_for_domain, get_diagnostic_sections
-from app.services.claude_rca_service import generate_next_rca_question, generate_precision_questions
+from app.services.claude_rca_service import generate_next_rca_question, generate_precision_questions, generate_task_alignment_filter
 from app.models.session import (
     SessionStage,
     GenerateDynamicQuestionsRequest,
@@ -247,6 +248,10 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
                     tools=early_result["tools"],
                     message=early_message,
                 )
+                # Log to context pool
+                meta = early_result.get("_meta")
+                if meta:
+                    session_store.add_llm_call_log(session.session_id, **meta)
                 logger.info(
                     "Early recommendations generated after Q3",
                     session_id=session.session_id,
@@ -270,12 +275,17 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
             diagnostic_context=diagnostic or {},
             rca_history=[],
             business_profile=session.business_profile or None,
+            gbp_data=session.gbp_data or None,
         )
 
     # Run both in parallel — cuts Q3 delay by ~40-50%
     await asyncio.gather(_get_early_recs(), _get_first_rca())
 
     claude_result = claude_result_holder[0]
+
+    # Log Claude RCA call to context pool
+    if claude_result and claude_result.get("_meta"):
+        session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
 
     if claude_result and claude_result.get("status") == "question":
         # Claude gave us the first adaptive question
@@ -376,6 +386,9 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
     Generate the first diagnostic question with FULL context:
     crawl summary + business profile + Q1/Q2/Q3.
 
+    NEW: Runs Task Alignment Filter first to focus the RCA context
+    on METHOD/SPEED/QUALITY dimensions of the specific task.
+
     Called after scale questions are done (and crawl may have completed).
     Replaces the stashed first question with a context-aware one.
     """
@@ -405,6 +418,48 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
     session.dynamic_questions = []
     session_store.update_session(session)
 
+    # ── Step 3: Task Alignment Filter (Claude Opus) ────────────
+    # Filter the full persona context down to task-relevant items
+    # categorized as METHOD / SPEED / QUALITY
+    filter_result = await generate_task_alignment_filter(
+        task=session.task or "",
+        diagnostic_context=diagnostic,
+    )
+
+    if filter_result:
+        # Log filter call to context pool
+        if filter_result.get("_meta"):
+            session_store.add_llm_call_log(session.session_id, **filter_result["_meta"])
+
+        # Store filtered + deferred context
+        session_store.set_filtered_context(
+            session.session_id,
+            filtered_items=filter_result.get("filtered_items", {}),
+            deferred_items=filter_result.get("deferred_items", []),
+            task_execution_summary=filter_result.get("task_execution_summary", ""),
+            validation=filter_result.get("_validation"),
+        )
+        context_used.append("task_filter")
+
+        validation = filter_result.get("_validation", {})
+        logger.info(
+            "start-diagnostic: task filter applied",
+            session_id=session.session_id,
+            method=validation.get("method_count", 0),
+            speed=validation.get("speed_count", 0),
+            quality=validation.get("quality_count", 0),
+            empty_categories=validation.get("empty_categories", []),
+        )
+    else:
+        logger.warning(
+            "start-diagnostic: task filter failed, using full context",
+            session_id=session.session_id,
+        )
+
+    # Refresh session to pick up filtered context
+    session = session_store.get_session(body.session_id)
+
+    # ── Generate first RCA question with filtered context ──────
     claude_result = await generate_next_rca_question(
         outcome=session.outcome or "",
         outcome_label=session.outcome_label or "",
@@ -414,7 +469,14 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         rca_history=[],
         business_profile=business_profile,
         crawl_summary=crawl_summary,
+        gbp_data=session.gbp_data or None,
+        filtered_context=session.rca_filtered_context or None,
+        task_execution_summary=session.rca_task_execution_summary or None,
     )
+
+    # Log to context pool
+    if claude_result and claude_result.get("_meta"):
+        session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
 
     if claude_result and claude_result.get("status") == "question":
         first_q = DynamicQuestion(
@@ -509,6 +571,10 @@ async def get_precision_questions(request: Request, body: PrecisionQuestionsRequ
         business_profile=session.business_profile or None,
     )
 
+    # Log precision questions to context pool
+    if result and len(result) > 0 and result[0].get("_meta"):
+        session_store.add_llm_call_log(session.session_id, **result[0]["_meta"])
+
     if not result:
         return PrecisionQuestionsResponse(
             session_id=session.session_id,
@@ -567,6 +633,12 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
         # Refresh session after adding answer
         session = session_store.get_session(body.session_id)
 
+        # ── Step 6: Deferred context expansion ─────────────────
+        # After 3 RCA questions, check if answers suggest broader scope
+        if len(session.rca_history) >= 3 and not session.rca_context_expanded:
+            session_store.expand_rca_context(body.session_id)
+            session = session_store.get_session(body.session_id)
+
         # Ask Claude for the next question
         claude_result = await generate_next_rca_question(
             outcome=session.outcome or "",
@@ -577,7 +649,14 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
             rca_history=session.rca_history,
             business_profile=session.business_profile or None,
             crawl_summary=session.crawl_summary or None,
+            gbp_data=session.gbp_data or None,
+            filtered_context=session.rca_filtered_context or None,
+            task_execution_summary=session.rca_task_execution_summary or None,
         )
+
+        # Log to context pool
+        if claude_result and claude_result.get("_meta"):
+            session_store.add_llm_call_log(body.session_id, **claude_result["_meta"])
 
         if claude_result and claude_result.get("status") == "question":
             next_q = DynamicQuestion(
@@ -706,7 +785,17 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
         domain=session.domain or "",
         task=session.task or "",
         questions_answers=qa_list,
+        crawl_summary=session.crawl_summary or {},
+        crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
+        business_profile=session.business_profile or {},
+        rca_diagnostic_context=session.rca_diagnostic_context or {},
+        rca_summary=session.rca_summary or "",
+        gbp_data=session.gbp_data or None,
     )
+
+    # Log to context pool
+    if recs.get("_meta"):
+        session_store.add_llm_call_log(body.session_id, **recs["_meta"])
 
     # Store in session
     session_store.set_recommendations(
@@ -783,6 +872,62 @@ async def get_session_context(request: Request, session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
 
     return SessionContextResponse(**summary)
+
+
+# ── Context Pool — LLM Transparency Panel ──────────────────────
+
+
+@router.get("/session/{session_id}/context-pool")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_context_pool(request: Request, session_id: str):
+    """
+    Return the full context pool for this session:
+    - Session profile (outcome, domain, task, stage)
+    - Business profile & crawl data
+    - All LLM call logs with prompts, responses, and metadata
+    - RCA history
+    """
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return {
+        "session_id": session.session_id,
+        "stage": session.stage.value,
+        "profile": {
+            "outcome": session.outcome,
+            "outcome_label": session.outcome_label,
+            "domain": session.domain,
+            "task": session.task,
+            "persona_doc": session.persona_doc_name,
+        },
+        "business_profile": session.business_profile,
+        "crawl_status": session.crawl_status,
+        "crawl_summary": session.crawl_summary,
+        "crawl_raw": session.crawl_raw,
+        "crawl_progress": session.crawl_progress,
+        "rca_diagnostic_context": session.rca_diagnostic_context or {},
+        "rca_history": session.rca_history,
+        "rca_complete": session.rca_complete,
+        "rca_summary": session.rca_summary,
+        "questions_answers": [
+            {"question": qa.question, "answer": qa.answer, "type": qa.question_type}
+            for qa in session.questions_answers
+        ],
+        "llm_call_log": [
+            entry.model_dump() for entry in session.llm_call_log
+        ],
+        "early_recommendations_count": len(session.early_recommendations),
+        # ── Playbook tracking ──
+        "playbook_stage": session.playbook_stage or "not_started",
+        "playbook_complete": session.playbook_complete,
+        "playbook_agent1_output": session.playbook_agent1_output or "",
+        "playbook_agent2_output": session.playbook_agent2_output or "",
+        "playbook_agent3_output": session.playbook_agent3_output or "",
+        "playbook_agent4_output": session.playbook_agent4_output or "",
+        "playbook_agent5_output": session.playbook_agent5_output or "",
+        "playbook_latencies": session.playbook_latencies or {},
+    }
 
 
 # ── Scale Questions — Business Context Classification ──────────
@@ -945,116 +1090,96 @@ CURRENT_STACK_BY_DOMAIN = {
     ],
 }
 
-# ── Dynamic constraint options based on business stage ──────────
-CONSTRAINT_OPTIONS_BY_STAGE = {
-    "Idea / validation stage": [
-        "Time — building everything solo, no bandwidth",
-        "Money — bootstrapping with zero / tiny budget",
-        "Clarity — not sure what to build or sell first",
-        "Validation — can't tell if people actually want this",
-        "Tech — don't know which tools to start with",
-    ],
-    "Early traction (some customers)": [
-        "Time — too many things, can't prioritize",
-        "Money — revenue doesn't cover hiring yet",
-        "Leads — getting interest but not enough conversions",
-        "Process — nothing is repeatable or documented",
-        "Retention — customers buy once but don't return",
-    ],
-    "Growth mode (scaling what works)": [
-        "Time — founder is the bottleneck for everything",
-        "People — hard to hire / delegate effectively",
-        "Systems — manual processes breaking at scale",
-        "Unit economics — growth isn't profitable yet",
-        "Quality — speed of growth causing quality gaps",
-    ],
-    "Established (optimizing & expanding)": [
-        "Efficiency — too many tools, not integrated",
-        "Talent — key roles hard to fill / keep",
-        "Innovation — competitors catching up fast",
-        "Data — decisions aren't data-driven enough",
-        "Expansion — entering new markets / verticals",
-    ],
-    "Enterprise / multi-product": [
-        "Coordination — teams / products not aligned",
-        "Legacy — old systems slowing everything down",
-        "Compliance — regulatory / security overhead",
-        "Innovation — too slow to ship new initiatives",
-        "Data silos — insights fragmented across teams",
-    ],
-    "default": [
-        "Time — I'm doing everything myself",
-        "Money — limited budget for tools / hiring",
-        "Knowledge — not sure what to do next",
-        "People — can't find / manage the right team",
-        "Systems — no repeatable process in place",
-    ],
-}
-
-
-def _get_scale_questions(domain: str = "", business_stage: str = "") -> list[dict]:
+def _get_scale_questions(domain: str = "", **_kwargs) -> list[dict]:
     """
     Build the scale questions dynamically.
-    - Team Size is REMOVED
-    - Business Stage is FIRST
-    - Current Stack options change per domain
-    - Biggest Constraint options change per business stage
+    6 questions for Channel Selection & Conversion Lever.
+    The last question (current_stack) loads dynamic options based on domain from Q1-Q3.
     """
     # Pick domain-specific stack options (fallback to generic if domain not mapped)
     _default_stack = [
-        "Google Workspace (Sheets, Docs, Drive) — manual workflows",
-        "Notion / Airtable — flexible project management",
-        "Specialized SaaS tools (CRM, marketing, support)",
-        "Enterprise suite (Salesforce, SAP, Microsoft 365)",
-        "Custom-built / developer tools (APIs, scripts, Zapier)",
-        "Nothing yet — doing everything manually",
+        "Canva + Buffer / Later — design & scheduling",
+        "Hootsuite / Sprout Social — social management suite",
+        "Adobe Creative Cloud + native platform tools",
+        "ChatGPT / Jasper — AI content generation",
+        "HubSpot / Semrush — content marketing platform",
+        "Nothing yet — posting manually or not at all",
     ]
     stack_options = CURRENT_STACK_BY_DOMAIN.get(domain, _default_stack)
 
-    # Pick stage-specific constraint options
-    constraint_options = CONSTRAINT_OPTIONS_BY_STAGE.get(
-        business_stage, CONSTRAINT_OPTIONS_BY_STAGE["default"]
-    )
-
     return [
         {
-            "id": "business_stage",
-            "question": "Which stage best describes your business?",
+            "id": "buying_process",
+            "question": "How do customers typically buy from you?",
             "options": [
-                "Idea / validation stage",
-                "Early traction (some customers)",
-                "Growth mode (scaling what works)",
-                "Established (optimizing & expanding)",
-                "Enterprise / multi-product",
+                "They sign up and pay on their own (self-serve)",
+                "They sign up free, then upgrade later (freemium / trial)",
+                "They request a demo or consultation first",
+                "A sales rep guides them through the purchase",
+                "They buy through a marketplace or platform",
+                "Mix — depends on customer size",
             ],
-            "icon": "🚀",
+            "icon": "🛒",
+        },
+        {
+            "id": "revenue_model",
+            "question": "How do you make money?",
+            "options": [
+                "One-time product purchases",
+                "Subscription / recurring billing",
+                "Usage-based or pay-as-you-go",
+                "Service retainers / project fees",
+                "Marketplace commissions / transaction fees",
+                "Freemium with paid upgrades",
+                "Advertising / sponsorship revenue",
+            ],
+            "icon": "💰",
+        },
+        {
+            "id": "sales_cycle",
+            "question": "How quickly do customers usually go from discovering you to paying?",
+            "options": [
+                "Minutes to hours (impulse / instant)",
+                "A few days (1–7 days)",
+                "A few weeks (1–4 weeks)",
+                "A month or more",
+                "Varies wildly by customer",
+            ],
+            "icon": "⏱️",
+        },
+        {
+            "id": "existing_assets",
+            "question": "Which of these do you already have?",
+            "options": [
+                "Customer testimonials or reviews",
+                "Case studies with measurable results",
+                "Blog posts or educational articles",
+                "Video content (demos, tutorials, or social)",
+                "A free tool, calculator, or template",
+                "Active social media presence",
+                "An email list of 1,000+ contacts",
+                "None of the above — starting from scratch",
+            ],
+            "icon": "📦",
+            "multiSelect": True,
+        },
+        {
+            "id": "buyer_behavior",
+            "question": "When customers look for a solution like yours, what do they usually do?",
+            "options": [
+                'Search Google or AI tools for the category (e.g., "best project management tool")',
+                "Ask peers, colleagues, or communities for recommendations",
+                "They don't know this category exists — we have to educate them",
+                "They compare us against 2–3 well-known competitors",
+                "They find us through the platform or marketplace we're listed on",
+            ],
+            "icon": "🔍",
         },
         {
             "id": "current_stack",
             "question": "What tools are you currently using for this?",
             "options": stack_options,
             "icon": "🛠️",
-        },
-        {
-            "id": "primary_channel",
-            "question": "Where do most of your customers come from today?",
-            "options": [
-                "Word of mouth / referrals",
-                "Social media (organic)",
-                "Paid ads (Google, Meta, etc.)",
-                "Content / SEO / inbound",
-                "Outbound sales / cold outreach",
-                "Marketplace / platform (Amazon, Upwork, etc.)",
-            ],
-            "icon": "📣",
-            "multiSelect": True,
-        },
-        {
-            "id": "biggest_constraint",
-            "question": "What's the single biggest constraint you face right now?",
-            "options": constraint_options,
-            "icon": "🔒",
-            "multiSelect": True,
         },
     ]
 
@@ -1140,8 +1265,7 @@ async def submit_scale_answers(request: Request, body: SubmitScaleAnswersRequest
 
     # Build business profile from answers (use dynamic questions for validation)
     domain = session.domain or ""
-    business_stage = body.answers.get("business_stage", "")
-    dynamic_qs = _get_scale_questions(domain=domain, business_stage=business_stage)
+    dynamic_qs = _get_scale_questions(domain=domain)
     valid_ids = {q["id"] for q in dynamic_qs}
 
     business_profile = {}
@@ -1178,14 +1302,17 @@ async def list_personas(request: Request):
 
 class SubmitUrlRequest(BaseModel):
     session_id: str
-    business_url: str          # e.g., 'https://example.com' or 'instagram.com/brand'
+    business_url: str = ""     # e.g., 'https://example.com' or 'instagram.com/brand'
+    gbp_url: str = ""          # e.g., 'https://maps.app.goo.gl/...' or Google Maps link
 
 
 class SubmitUrlResponse(BaseModel):
     session_id: str
-    business_url: str
-    url_type: str              # "website" or "social_profile"
-    crawl_started: bool
+    business_url: str = ""
+    gbp_url: str = ""
+    url_type: str = ""         # "website", "social_profile", or "gbp"
+    crawl_started: bool = False
+    gbp_crawl_started: bool = False
     message: str
 
 
@@ -1193,55 +1320,130 @@ class CrawlStatusResponse(BaseModel):
     session_id: str
     crawl_status: str          # "in_progress", "complete", "failed", ""
     crawl_summary: Optional[dict] = None
+    gbp_data: Optional[dict] = None
 
 
 @router.post("/session/url", response_model=SubmitUrlResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_business_url(request: Request, body: SubmitUrlRequest = Body(...)):
     """
-    Submit business URL immediately after tool recommendations.
+    Submit business URL and/or GBP URL after tool recommendations.
 
-    1. Stores the URL in the session
-    2. Detects URL type (website vs social profile)
-    3. Fires an async background crawl (does NOT block the response)
+    Supports:
+    - Website URL only (existing flow)
+    - GBP URL only (Google Maps / Business Profile link)
+    - Both website + GBP URLs simultaneously
+
+    1. Stores URLs in the session
+    2. Detects URL types
+    3. Fires async background crawl(s) (does NOT block the response)
     4. Returns immediately so the frontend can advance to Scale Questions
 
-    The crawl runs in parallel. Frontend polls /session/{id}/crawl-status
+    Crawls run in parallel. Frontend polls /session/{id}/crawl-status
     to check completion before starting Opus deep-dive questions.
     """
     session = session_store.get_session(body.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Normalize URL
-    url = body.business_url.strip()
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
+    website_url = ""
+    gbp_url = ""
+    url_type = ""
+    crawl_started = False
+    gbp_crawl_started = False
 
-    # Detect URL type
-    url_type = detect_url_type(url)
+    # ── Handle business/website URL ────────────────────────────
+    if body.business_url and body.business_url.strip():
+        website_url = body.business_url.strip()
+        if not website_url.startswith("http://") and not website_url.startswith("https://"):
+            website_url = "https://" + website_url
+        url_type = detect_url_type(website_url)
 
-    # Store in session
-    session_store.set_website_url(body.session_id, url, url_type)
-    session_store.set_crawl_status(body.session_id, "in_progress")
+        # If user put a GBP link in the website field, treat it as GBP
+        if url_type == "gbp" and not body.gbp_url:
+            gbp_url = website_url
+            website_url = ""
+        else:
+            session_store.set_website_url(body.session_id, website_url, url_type)
+            session_store.set_crawl_status(body.session_id, "in_progress")
+            asyncio.create_task(run_background_crawl(body.session_id, website_url))
+            crawl_started = True
 
-    # Fire background crawl (non-blocking)
-    asyncio.create_task(run_background_crawl(body.session_id, url))
+    # ── Handle GBP URL ─────────────────────────────────────────
+    if body.gbp_url and body.gbp_url.strip():
+        gbp_url = body.gbp_url.strip()
+        if not gbp_url.startswith("http://") and not gbp_url.startswith("https://"):
+            gbp_url = "https://" + gbp_url
+
+    if gbp_url:
+        # Store GBP URL in session
+        session = session_store.get_session(body.session_id)
+        if session:
+            session.gbp_url = gbp_url
+            session_store.update_session(session)
+
+        # If no website crawl is running, use the main crawl pipeline for GBP
+        if not crawl_started:
+            session_store.set_crawl_status(body.session_id, "in_progress")
+            asyncio.create_task(run_background_crawl(body.session_id, gbp_url))
+            crawl_started = True
+            url_type = "gbp"
+        else:
+            # Both URLs provided — fire a separate GBP crawl
+            asyncio.create_task(_run_gbp_side_crawl(body.session_id, gbp_url))
+        gbp_crawl_started = True
+
+    # Build message
+    parts = []
+    if website_url:
+        try:
+            parts.append(f"**{urlparse(website_url).netloc}**")
+        except Exception:
+            parts.append("your website")
+    if gbp_url:
+        parts.append("your **Google Business Profile**")
+    target = " and ".join(parts) if parts else "your business"
+    message = f"Got it! I'm analyzing {target} in the background while we continue."
 
     logger.info(
         "Business URL submitted, background crawl started",
         session_id=body.session_id,
-        url=url,
+        website_url=website_url or None,
+        gbp_url=gbp_url or None,
         url_type=url_type,
     )
 
     return SubmitUrlResponse(
         session_id=body.session_id,
-        business_url=url,
-        url_type=url_type,
-        crawl_started=True,
-        message="Analyzing your business in the background — let's continue!",
+        business_url=website_url,
+        gbp_url=gbp_url,
+        url_type=url_type or "website",
+        crawl_started=crawl_started,
+        gbp_crawl_started=gbp_crawl_started,
+        message=message,
     )
+
+
+async def _run_gbp_side_crawl(session_id: str, gbp_url: str):
+    """Run a GBP crawl as a side job alongside the main website crawl."""
+    try:
+        from app.services.crawl_service import crawl_gbp
+        crawl_raw = await crawl_gbp(gbp_url, session_id=session_id)
+        gbp_data = crawl_raw.get("gbp_data", {})
+        if gbp_data:
+            session = session_store.get_session(session_id)
+            if session:
+                session.gbp_data = gbp_data
+                session_store.update_session(session)
+                logger.info(
+                    "GBP side crawl complete",
+                    session_id=session_id,
+                    business=gbp_data.get("business_name", ""),
+                    rating=gbp_data.get("rating"),
+                    reviews=len(gbp_data.get("reviews", [])),
+                )
+    except Exception as e:
+        logger.error("GBP side crawl failed", session_id=session_id, error=str(e))
 
 
 @router.get("/session/{session_id}/crawl-status", response_model=CrawlStatusResponse)
@@ -1263,6 +1465,7 @@ async def get_crawl_status(request: Request, session_id: str):
         session_id=session_id,
         crawl_status=session.crawl_status or "",
         crawl_summary=session.crawl_summary if session.crawl_status == "complete" else None,
+        gbp_data=session.gbp_data if session.gbp_data else None,
     )
 
 
@@ -1431,12 +1634,19 @@ async def get_business_insights(request: Request, body: dict = Body(...)):
         business_profile=business_profile,
         crawl_summary=crawl_data,
         crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
+        rca_diagnostic_context=session.rca_diagnostic_context or {},
+        rca_summary=session.rca_summary or "",
+        gbp_data=session.gbp_data or None,
     )
 
     if not result:
         return BusinessInsightsResponse(
             session_id=session_id, available=False
         ).model_dump()
+
+    # Log to context pool
+    if result.get("_meta"):
+        session_store.add_llm_call_log(session_id, **result["_meta"])
 
     insights = [
         {"point": i.get("point", ""), "highlight": i.get("highlight", "")}

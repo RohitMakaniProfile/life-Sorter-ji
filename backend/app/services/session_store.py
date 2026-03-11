@@ -11,13 +11,15 @@ NOTE: In production, replace this with Redis or a database.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 from typing import Optional
 
 import structlog
 
-from app.models.session import QuestionAnswer, SessionContext, SessionStage
+from app.models.session import LLMCallLog, QuestionAnswer, SessionContext, SessionStage
+from app.services import user_session_service
 
 logger = structlog.get_logger()
 
@@ -41,6 +43,7 @@ def create_session() -> SessionContext:
 
     _sessions[session_id] = session
     logger.info("Session created", session_id=session_id)
+    _persist_to_supabase(session)
     return session
 
 
@@ -50,10 +53,21 @@ def get_session(session_id: str) -> Optional[SessionContext]:
 
 
 def update_session(session: SessionContext) -> SessionContext:
-    """Update a session in the store."""
+    """Update a session in the store and persist to Supabase."""
     session.updated_at = datetime.utcnow()
     _sessions[session.session_id] = session
+    _persist_to_supabase(session)
     return session
+
+
+def _persist_to_supabase(session: SessionContext) -> None:
+    """Fire-and-forget upsert to Supabase. Non-blocking."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(user_session_service.upsert_session(session))
+    except RuntimeError:
+        # No running event loop (e.g., tests) — skip persistence
+        pass
 
 
 def delete_session(session_id: str) -> bool:
@@ -174,6 +188,47 @@ def set_rca_context(
     return update_session(session)
 
 
+def set_filtered_context(
+    session_id: str,
+    filtered_items: dict,
+    deferred_items: list,
+    task_execution_summary: str = "",
+    validation: dict | None = None,
+) -> Optional[SessionContext]:
+    """Store the task-aligned filtered context and deferred items."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    session.rca_filtered_context = filtered_items
+    session.rca_deferred_context = deferred_items
+    session.rca_task_execution_summary = task_execution_summary
+    return update_session(session)
+
+
+def expand_rca_context(session_id: str) -> Optional[SessionContext]:
+    """Pull deferred context items into the filtered context for scope expansion."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    if session.rca_context_expanded:
+        return session  # Already expanded
+
+    # Merge deferred items into filtered context
+    deferred = session.rca_deferred_context
+    filtered = session.rca_filtered_context
+    if deferred and filtered:
+        # Add deferred items as a new "expanded" category
+        filtered["expanded"] = deferred
+        session.rca_filtered_context = filtered
+        session.rca_context_expanded = True
+        logger.info(
+            "RCA context expanded with deferred items",
+            session_id=session_id,
+            deferred_count=len(deferred),
+        )
+    return update_session(session)
+
+
 def add_rca_answer(
     session_id: str, question: str, answer: str
 ) -> Optional[SessionContext]:
@@ -207,6 +262,44 @@ def set_rca_fallback(session_id: str) -> Optional[SessionContext]:
     if not session:
         return None
     session.rca_fallback_active = True
+    return update_session(session)
+
+
+# ── LLM Call Log helpers ───────────────────────────────────────
+
+def add_llm_call_log(
+    session_id: str,
+    service: str,
+    model: str,
+    purpose: str,
+    system_prompt: str,
+    user_message: str,
+    temperature: float,
+    max_tokens: int,
+    raw_response: str = "",
+    latency_ms: int = 0,
+    token_usage: dict | None = None,
+    error: str = "",
+) -> Optional[SessionContext]:
+    """Append an LLM call record to the session's context pool log."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    entry = LLMCallLog(
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        service=service,
+        model=model,
+        purpose=purpose,
+        system_prompt=system_prompt[:3000],    # Truncate for memory
+        user_message=user_message[:3000],
+        temperature=temperature,
+        max_tokens=max_tokens,
+        raw_response=raw_response[:5000],
+        latency_ms=latency_ms,
+        token_usage=token_usage or {},
+        error=error,
+    )
+    session.llm_call_log.append(entry)
     return update_session(session)
 
 
@@ -332,4 +425,67 @@ def get_session_summary(session_id: str) -> Optional[dict]:
         "crawl_status": session.crawl_status or None,
         "crawl_summary": session.crawl_summary if session.crawl_summary else None,
         "business_profile": session.business_profile if session.business_profile else None,
+        "playbook_stage": session.playbook_stage or None,
+        "playbook_complete": session.playbook_complete,
     }
+
+
+# ── Playbook Pipeline helpers ──────────────────────────────────
+
+def set_playbook_stage(
+    session_id: str, stage: str
+) -> Optional[SessionContext]:
+    """Update the playbook pipeline stage."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    session.playbook_stage = stage
+    return update_session(session)
+
+
+def set_playbook_gap_questions(
+    session_id: str, gap_questions_text: str
+) -> Optional[SessionContext]:
+    """Store gap questions from Phase 0 / Agent 2."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    session.playbook_gap_questions = gap_questions_text
+    session.playbook_stage = "waiting_gap_answers"
+    return update_session(session)
+
+
+def set_playbook_gap_answers(
+    session_id: str, gap_answers: str
+) -> Optional[SessionContext]:
+    """Store user's gap question answers."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    session.playbook_gap_answers = gap_answers
+    return update_session(session)
+
+
+def set_playbook_results(
+    session_id: str,
+    agent1_output: str,
+    agent2_output: str,
+    agent3_output: str,
+    agent4_output: str,
+    agent5_output: str,
+    latencies: dict,
+) -> Optional[SessionContext]:
+    """Store all 5 agent outputs after pipeline completion."""
+    session = get_session(session_id)
+    if not session:
+        return None
+    session.playbook_agent1_output = agent1_output
+    session.playbook_agent2_output = agent2_output
+    session.playbook_agent3_output = agent3_output
+    session.playbook_agent4_output = agent4_output
+    session.playbook_agent5_output = agent5_output
+    session.playbook_complete = True
+    session.playbook_stage = "complete"
+    session.playbook_latencies = latencies
+    session.stage = SessionStage.PLAYBOOK
+    return update_session(session)

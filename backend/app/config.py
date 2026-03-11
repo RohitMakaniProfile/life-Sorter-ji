@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     # ── OpenRouter (Claude RCA) ────────────────────────────────
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4"
+    OPENROUTER_MODEL: str = "anthropic/claude-opus-4"
 
     # ── Supabase ───────────────────────────────────────────────
     SUPABASE_URL: str = "https://bbaydychuoahmdkbgghw.supabase.co"

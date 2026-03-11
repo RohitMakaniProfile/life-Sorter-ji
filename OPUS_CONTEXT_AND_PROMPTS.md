@@ -1,4 +1,4 @@
-# Claude (Sonnet 4) — System Prompts & Context Documentation
+ # Claude (Sonnet 4) — System Prompts & Context Documentation
 
 > Every system prompt and every piece of context sent to Claude during the RCA diagnostic flow.
 

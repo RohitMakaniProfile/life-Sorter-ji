@@ -4,12 +4,13 @@ IKSHAN BACKEND — FastAPI Application Entry Point
 
 from __future__ import annotations
 
+import traceback
 from contextlib import asynccontextmanager
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, JSONResponse
 
 from app.config import get_settings
 from app.middleware.rate_limit import setup_rate_limiter
@@ -94,6 +95,21 @@ def create_app() -> FastAPI:
 
     setup_rate_limiter(app)
 
+    # ── Global exception handler for debugging ─────────────────
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        logger.error(
+            "Unhandled exception",
+            path=str(request.url),
+            method=request.method,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {str(exc)}"},
+        )
+
     # ── Routers ────────────────────────────────────────────────
     from app.routers import (
         chat,
@@ -107,6 +123,7 @@ def create_app() -> FastAPI:
         agent,
         rag,
         sandbox,
+        playbook,
     )
 
     # CRITICAL: Rebuild models here after routers are loaded
@@ -124,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
     app.include_router(rag.router, prefix="/api/v1", tags=["RAG"])
     app.include_router(sandbox.router, prefix="/api/v1", tags=["Sandbox"])
+    app.include_router(playbook.router, tags=["Playbook"])
 
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
     app.include_router(legacy.router, prefix="/api", tags=["Legacy"])

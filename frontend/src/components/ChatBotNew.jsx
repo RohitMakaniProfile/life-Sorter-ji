@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, MessageSquare, ShoppingCart, Scale, Users, Sparkles, Youtube, History, X, Menu, Edit3, Chrome, Zap, Brain, Copy, PanelLeftClose, PanelLeftOpen, ExternalLink, Star, Settings, FileText, BarChart3, ScanLine, Video, Calendar, Sun, Moon, Type, Globe, TrendingUp, Lock, Shield, CreditCard, Code } from 'lucide-react';
+import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, MessageSquare, ShoppingCart, Scale, Users, Sparkles, Youtube, History, X, Menu, Edit3, Chrome, Zap, Brain, Copy, PanelLeftClose, PanelLeftOpen, ExternalLink, Star, Settings, FileText, BarChart3, ScanLine, Video, Calendar, Sun, Moon, Type, Globe, TrendingUp, Lock, Shield, CreditCard, Code, Activity } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './ChatBotNew.css';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
+import ContextPoolPanel from './ContextPoolPanel';
 
 
 // Generate unique message IDs to prevent React key conflicts
@@ -1128,6 +1130,12 @@ const ChatBotNew = ({ onNavigate }) => {
   const [currentPrecisionQIndex, setCurrentPrecisionQIndex] = useState(0);
   const pendingPrecisionDataRef = useRef(null); // stash {rcaSummaryText, crawlPoints} while precision Qs run
 
+  // ── AI Playbook State ──────────────────────────────────────
+  const [playbookStage, setPlaybookStage] = useState(''); // '', 'starting', 'gap-questions', 'generating', 'complete'
+  const [playbookGapQuestions, setPlaybookGapQuestions] = useState('');
+  const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
+  const [playbookGapSelections, setPlaybookGapSelections] = useState({}); // {Q1: 'A) option', Q2: 'B) option'}
+
   const API_BASE = import.meta.env.VITE_API_URL || '';
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
@@ -1171,6 +1179,7 @@ const ChatBotNew = ({ onNavigate }) => {
   const [speechError, setSpeechError] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(false);
+  const [contextPoolOpen, setContextPoolOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [thinkingPhraseIndex, setThinkingPhraseIndex] = useState(0);
 
@@ -1544,18 +1553,13 @@ const ChatBotNew = ({ onNavigate }) => {
       pendingAuthActionRef.current = null;
       const welcomeMsg = {
         id: getNextMessageId(),
-        text: `Welcome, ${payload.name}! Generating your personalized report...`,
+        text: `Welcome, ${payload.name}! Generating your **AI Growth Playbook**...`,
         sender: 'bot',
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, welcomeMsg]);
-      const reportData = pendingReportDataRef.current;
       pendingReportDataRef.current = null;
-      if (reportData) {
-        showDiagnosticReport(reportData.rcaSummary, reportData.crawlPoints);
-      } else {
-        showDiagnosticReport('', []);
-      }
+      startPlaybook();
       return;
     }
 
@@ -1839,16 +1843,16 @@ const ChatBotNew = ({ onNavigate }) => {
     showSolutionStack(task);
   };
 
-  // ── Helper: proceed to report/auth after all questions done ──
+  // ── Helper: proceed to playbook/auth after all questions done ──
   const proceedToReport = async (rcaSummaryText, crawlPoints) => {
     if (userEmail) {
-      await showDiagnosticReport(rcaSummaryText, crawlPoints);
+      await startPlaybook();
     } else {
       pendingAuthActionRef.current = 'recommendations';
       pendingReportDataRef.current = { rcaSummary: rcaSummaryText, crawlPoints };
       const authMsg = {
         id: getNextMessageId(),
-        text: `Your diagnostic is ready.\n\nSign in to unlock your **personalized report & tool recommendations**.`,
+        text: `Your diagnostic is ready.\n\nSign in to unlock your **AI Growth Playbook**.`,
         sender: 'bot',
         timestamp: new Date(),
         showAuthGate: true,
@@ -2091,16 +2095,15 @@ const ChatBotNew = ({ onNavigate }) => {
 
       // If Claude fails, just end the diagnostic
       setIsTyping(false);
-      const fallbackCrawlPts = crawlSummaryRef.current?.points || [];
       crawlSummaryRef.current = null;
       if (userEmail) {
-        await showDiagnosticReport('', fallbackCrawlPts);
+        await startPlaybook();
       } else {
         pendingAuthActionRef.current = 'recommendations';
-        pendingReportDataRef.current = { rcaSummary: '', crawlPoints: fallbackCrawlPts };
+        pendingReportDataRef.current = { rcaSummary: '', crawlPoints: [] };
         const authMsg = {
           id: getNextMessageId(),
-          text: `Your diagnostic is ready.\n\nSign in to unlock your **personalized report & tool recommendations**.`,
+          text: `Your diagnostic is ready.\n\nSign in to unlock your **AI Growth Playbook**.`,
           sender: 'bot',
           timestamp: new Date(),
           showAuthGate: true,
@@ -2153,17 +2156,16 @@ const ChatBotNew = ({ onNavigate }) => {
       // All sections answered — gate behind auth
       setMessages(prev => [...prev, userMsg]);
       setCurrentDynamicQIndex(nextIndex);
-      const staticCrawlPts = crawlSummaryRef.current?.points || [];
       crawlSummaryRef.current = null;
 
       if (userEmail) {
-        await showDiagnosticReport('', staticCrawlPts);
+        await startPlaybook();
       } else {
         pendingAuthActionRef.current = 'recommendations';
-        pendingReportDataRef.current = { rcaSummary: '', crawlPoints: staticCrawlPts };
+        pendingReportDataRef.current = { rcaSummary: '', crawlPoints: [] };
         const authMsg = {
           id: getNextMessageId(),
-          text: `Your diagnostic is ready.\n\nSign in to unlock your **personalized report & tool recommendations**.`,
+          text: `Your diagnostic is ready.\n\nSign in to unlock your **AI Growth Playbook**.`,
           sender: 'bot',
           timestamp: new Date(),
           showAuthGate: true,
@@ -2259,17 +2261,16 @@ const ChatBotNew = ({ onNavigate }) => {
 
     setIsTyping(false);
 
-    // Proceed to auth gate or recommendations
-    const urlCrawlPts = crawlSummaryRef.current?.points || [];
+    // Proceed to auth gate or playbook
     crawlSummaryRef.current = null;
     if (userEmail) {
-      await showDiagnosticReport('', urlCrawlPts);
+      await startPlaybook();
     } else {
       pendingAuthActionRef.current = 'recommendations';
-      pendingReportDataRef.current = { rcaSummary: '', crawlPoints: urlCrawlPts };
+      pendingReportDataRef.current = { rcaSummary: '', crawlPoints: [] };
       const authMsg = {
         id: getNextMessageId(),
-        text: `Your diagnostic is ready.\n\nSign in to unlock your **personalized report & tool recommendations**.`,
+        text: `Your diagnostic is ready.\n\nSign in to unlock your **AI Growth Playbook**.`,
         sender: 'bot',
         timestamp: new Date(),
         showAuthGate: true,
@@ -2410,34 +2411,7 @@ const ChatBotNew = ({ onNavigate }) => {
       // Wait for scale answers to submit
       await submitScalePromise;
 
-      // ── Business Intelligence Verdict (if crawl is complete) ──
-      if (sid && crawlStatus === 'complete') {
-        try {
-          const biRes = await fetch(`${API_BASE}/api/v1/agent/session/business-intel`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sid }),
-          });
-          const biData = await biRes.json();
-
-          if (biData.available) {
-            setBusinessIntelVerdict(biData);
-            const verdictMsg = {
-              id: getNextMessageId(),
-              text: '',
-              sender: 'bot',
-              timestamp: new Date(),
-              isBusinessIntelVerdict: true,
-              businessIntelData: biData,
-            };
-            setMessages(prev => [...prev, verdictMsg]);
-            // Brief pause so user can see the verdict
-            await new Promise(r => setTimeout(r, 800));
-          }
-        } catch (e) {
-          console.log('Business intel verdict fetch failed (non-blocking)', e);
-        }
-      }
+      // ── Business Intelligence Verdict — DISABLED (removed from chat) ──
 
       // Transition message
       const transitionMsg = {
@@ -2499,35 +2473,62 @@ const ChatBotNew = ({ onNavigate }) => {
   };
 
   // ── Business URL submission (right after tool recommendations) ──
-  const handleBusinessUrlSubmit = async (urlInput) => {
-    if (!urlInput || !urlInput.trim()) return;
+  const handleBusinessUrlSubmit = async (urlInput, gbpInput) => {
+    const websiteUrl = urlInput ? urlInput.trim() : '';
+    const gbpUrl = gbpInput ? gbpInput.trim() : '';
 
-    let url = urlInput.trim();
-    // Auto-prepend https:// if missing
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
+    if (!websiteUrl && !gbpUrl) return;
+
+    // Normalize URLs
+    let normalizedWebsite = websiteUrl;
+    let normalizedGbp = gbpUrl;
+
+    if (normalizedWebsite && !normalizedWebsite.startsWith('http://') && !normalizedWebsite.startsWith('https://')) {
+      normalizedWebsite = 'https://' + normalizedWebsite;
+    }
+    if (normalizedGbp && !normalizedGbp.startsWith('http://') && !normalizedGbp.startsWith('https://')) {
+      normalizedGbp = 'https://' + normalizedGbp;
     }
 
-    // Basic domain validation
-    const domainRegex = /^https?:\/\/[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+/;
-    if (!domainRegex.test(url)) {
-      // Show inline error
-      const errorMsg = {
-        id: getNextMessageId(),
-        text: `That doesn't look like a valid URL. Please enter a website address like **yourcompany.com**.`,
-        sender: 'bot',
-        timestamp: new Date(),
-        isError: true,
-        showBusinessUrlInput: true, // Re-show input
-      };
-      setMessages(prev => [...prev, errorMsg]);
-      return;
+    // Validate website URL if provided
+    if (normalizedWebsite) {
+      const domainRegex = /^https?:\/\/[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+/;
+      if (!domainRegex.test(normalizedWebsite)) {
+        const errorMsg = {
+          id: getNextMessageId(),
+          text: `That doesn't look like a valid website URL. Please enter a website address like **yourcompany.com**.`,
+          sender: 'bot',
+          timestamp: new Date(),
+          isError: true,
+        };
+        setMessages(prev => [...prev, errorMsg]);
+        return;
+      }
+    }
+
+    // Validate GBP URL if provided — accept any Google domain link
+    if (normalizedGbp) {
+      const gbpRegex = /^https?:\/\/(www\.)?(google\.(com|co\.[a-z]{2}|[a-z]{2,})(\/maps|\/)|maps\.google\.|maps\.app\.goo\.gl|g\.co\/|goo\.gl\/maps|share\.google\.)/i;
+      if (!gbpRegex.test(normalizedGbp)) {
+        const errorMsg = {
+          id: getNextMessageId(),
+          text: `That doesn't look like a valid Google Business Profile URL. Please paste a link from Google Maps or a Google share link.`,
+          sender: 'bot',
+          timestamp: new Date(),
+          isError: true,
+        };
+        setMessages(prev => [...prev, errorMsg]);
+        return;
+      }
     }
 
     // Show user's input
+    const displayParts = [];
+    if (normalizedWebsite) displayParts.push(normalizedWebsite);
+    if (normalizedGbp) displayParts.push('📍 ' + normalizedGbp);
     const userMsg = {
       id: getNextMessageId(),
-      text: url,
+      text: displayParts.join('\n'),
       sender: 'user',
       timestamp: new Date(),
     };
@@ -2540,7 +2541,11 @@ const ChatBotNew = ({ onNavigate }) => {
         const res = await fetch(`${API_BASE}/api/v1/agent/session/url`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, business_url: url })
+          body: JSON.stringify({
+            session_id: sid,
+            business_url: normalizedWebsite || '',
+            gbp_url: normalizedGbp || '',
+          })
         });
         const data = await res.json();
 
@@ -2553,7 +2558,7 @@ const ChatBotNew = ({ onNavigate }) => {
         // Show confirmation
         const confirmMsg = {
           id: getNextMessageId(),
-          text: data.message || `Got it! I'm analyzing **${new URL(url).hostname}** in the background while we continue.`,
+          text: data.message || `Got it! I'm analyzing your business in the background while we continue.`,
           sender: 'bot',
           timestamp: new Date(),
         };
@@ -2679,90 +2684,216 @@ const ChatBotNew = ({ onNavigate }) => {
   // Handle "Skip" on auth gate — proceed without signing in
   const handleSkipAuth = () => {
     pendingAuthActionRef.current = null;
-    const reportData = pendingReportDataRef.current;
     pendingReportDataRef.current = null;
-    if (reportData) {
-      showDiagnosticReport(reportData.rcaSummary, reportData.crawlPoints);
-    } else {
-      showDiagnosticReport('', []);
-    }
+    startPlaybook();
   };
 
-  // ── Unified Diagnostic Report — crawl + problem gist + tailored tools ──
-  const showDiagnosticReport = async (rcaSummary = '', crawlPoints = []) => {
-    setFlowStage('complete');
+  // ── AI Playbook — replaces old diagnostic report ──
+  const startPlaybook = async () => {
+    setFlowStage('playbook');
+    setPlaybookStage('starting');
     setIsTyping(true);
+
+    // Show "building playbook" message
+    const startMsg = {
+      id: getNextMessageId(),
+      text: '🚀 Building your **AI Growth Playbook**...\n\nAnalysing business context and ICP...',
+      sender: 'bot',
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, startMsg]);
 
     try {
       const sid = getSessionId();
 
-      // Fetch recommendations AND insights in parallel
-      const [recRes, insightsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/agent/session/recommend`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid })
-        }),
-        fetch(`${API_BASE}/api/v1/agent/session/insights`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid })
-        }).catch(() => null),
-      ]);
+      // Step 1: Call /playbook/start → runs Agent 1 + 2
+      const startRes = await fetch(`${API_BASE}/api/v1/playbook/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      });
 
-      const data = await recRes.json();
-      let insightsData = null;
-      if (insightsRes && insightsRes.ok) {
-        insightsData = await insightsRes.json();
+      if (!startRes.ok) {
+        const errBody = await startRes.json().catch(() => ({}));
+        console.error('Playbook /start error:', startRes.status, errBody);
+        throw new Error(errBody.detail || `Server error ${startRes.status}`);
       }
 
-      if (insightsData && insightsData.available) {
-        setBusinessInsights(insightsData);
+      const startData = await startRes.json();
+
+      if (startData.stage === 'gap_questions' && startData.gap_questions) {
+        // Agent 2 has gap questions — show them
+        setPlaybookStage('gap-questions');
+        setPlaybookGapQuestions(startData.gap_questions);
+        setPlaybookGapSelections({});
+        setIsTyping(false);
+
+        const gapMsg = {
+          id: getNextMessageId(),
+          text: '',
+          sender: 'bot',
+          timestamp: new Date(),
+          isPlaybookGapQuestions: true,
+          gapQuestionsText: startData.gap_questions,
+          gapQuestionsParsed: startData.gap_questions_parsed || [],
+          agent1Output: startData.agent1_output,
+          agent2Output: startData.agent2_output,
+        };
+        setMessages(prev => [...prev, gapMsg]);
+        return;
       }
 
-      const domainLabel = selectedDomainName || 'General';
+      // No gap questions — proceed directly to full pipeline
+      setPlaybookStage('generating');
+      setMessages(prev => {
+        const updated = [...prev];
+        const lastBot = updated.findLastIndex(m => m.sender === 'bot');
+        if (lastBot >= 0) {
+          updated[lastBot] = { ...updated[lastBot], text: '🚀 Building your **AI Growth Playbook**...\n\nContext parsed ✓ ICP built ✓\n\nGenerating 10-step playbook, tool matrix & website audit...' };
+        }
+        return updated;
+      });
 
-      // Separate tools into two groups: current-stack-enhancers and new-stack
-      const allTools = [
-        ...(data.extensions || []).map(t => ({ ...t, _type: 'tool' })),
-        ...(data.gpts || []).map(t => ({ ...t, _type: 'gpt' })),
-        ...(data.companies || []).map(t => ({ ...t, _type: 'provider' })),
-      ];
+      // Step 2: Call /playbook/generate
+      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      });
 
-      const immediatePrompt = generateImmediatePrompt(selectedGoal, domainLabel, selectedCategory, selectedCategory);
+      if (!genRes.ok) {
+        const errBody = await genRes.json().catch(() => ({}));
+        console.error('Playbook /generate error:', genRes.status, errBody);
+        throw new Error(errBody.detail || `Server error ${genRes.status}`);
+      }
 
-      const reportMsg = {
+      const genData = await genRes.json();
+
+      setPlaybookStage('complete');
+      setIsTyping(false);
+
+      const playbookMsg = {
         id: getNextMessageId(),
-        text: '', // rendered via custom JSX
+        text: '',
         sender: 'bot',
         timestamp: new Date(),
-        isDiagnosticReport: true,
-        reportData: {
-          rcaSummary,
-          crawlPoints,
-          tools: allTools,
-          summary: data.summary || '',
-          domain: domainLabel,
-          task: selectedCategory,
-          insights: insightsData?.insights || [],
-          icpAnalysis: insightsData?.icp_analysis || null,
-          hook: insightsData?.hook || '',
+        isPlaybook: true,
+        playbookData: {
+          contextBrief: genData.context_brief || '',
+          icpCard: genData.icp_card || '',
+          playbook: genData.playbook || '',
+          toolMatrix: genData.tool_matrix || '',
+          websiteAudit: genData.website_audit || '',
+          latencies: genData.latencies || {},
         },
-        showFinalActions: true,
-        showCopyPrompt: true,
-        immediatePrompt,
-        companies: data.companies || [],
-        extensions: data.extensions || [],
-        customGPTs: data.gpts || [],
-        userRequirement: selectedCategory,
       };
+      setMessages(prev => [...prev, playbookMsg]);
 
-      setMessages(prev => [...prev, reportMsg]);
-      setIsTyping(false);
     } catch (error) {
-      console.error('Diagnostic report failed, falling back:', error);
+      console.error('Playbook generation failed:', error);
       setIsTyping(false);
-      showSolutionStack(selectedCategory);
+      setPlaybookStage('');
+      const errMsg = {
+        id: getNextMessageId(),
+        text: `Sorry, something went wrong generating your playbook: ${error.message || 'Unknown error'}. Please try again.`,
+        sender: 'bot',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errMsg]);
+    }
+  };
+
+  // ── Handle gap question answer submission ──
+  const handlePlaybookGapSubmit = async () => {
+    // Build answer string from selections
+    const answerParts = Object.entries(playbookGapSelections)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([qId, option]) => `${qId}: ${option}`);
+    const answerText = answerParts.join('\n');
+
+    if (!answerText.trim()) return;
+
+    const userMsg = {
+      id: getNextMessageId(),
+      text: answerText,
+      sender: 'user',
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMsg]);
+
+    setPlaybookStage('generating');
+    setIsTyping(true);
+    setPlaybookGapSelections({});
+    setPlaybookGapAnswer('');
+
+    const genMsg = {
+      id: getNextMessageId(),
+      text: '🚀 Got it! Now generating your **10-step playbook**, tool matrix & website audit...',
+      sender: 'bot',
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, genMsg]);
+
+    try {
+      const sid = getSessionId();
+
+      // Submit gap answers
+      const gapRes = await fetch(`${API_BASE}/api/v1/playbook/gap-answers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, answers: answerText }),
+      });
+
+      if (!gapRes.ok) {
+        const errBody = await gapRes.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Server error ${gapRes.status}`);
+      }
+
+      // Generate full playbook
+      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, gap_answers: answerText }),
+      });
+
+      if (!genRes.ok) {
+        const errBody = await genRes.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Server error ${genRes.status}`);
+      }
+
+      const genData = await genRes.json();
+
+      setPlaybookStage('complete');
+      setIsTyping(false);
+
+      const playbookMsg = {
+        id: getNextMessageId(),
+        text: '',
+        sender: 'bot',
+        timestamp: new Date(),
+        isPlaybook: true,
+        playbookData: {
+          contextBrief: genData.context_brief || '',
+          icpCard: genData.icp_card || '',
+          playbook: genData.playbook || '',
+          toolMatrix: genData.tool_matrix || '',
+          websiteAudit: genData.website_audit || '',
+          latencies: genData.latencies || {},
+        },
+      };
+      setMessages(prev => [...prev, playbookMsg]);
+
+    } catch (error) {
+      console.error('Playbook generation failed:', error);
+      setIsTyping(false);
+      setPlaybookStage('');
+      const errMsg = {
+        id: getNextMessageId(),
+        text: `Sorry, something went wrong generating your playbook: ${error.message || 'Unknown error'}. Please try again.`,
+        sender: 'bot',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errMsg]);
     }
   };
 
@@ -2787,7 +2918,11 @@ const ChatBotNew = ({ onNavigate }) => {
       solutionResponse += `Based on your specific situation in **${domainLabel}** — **${selectedCategory}**, here are the tools I recommend for you.\n\n`;
 
       if (data.summary) {
-        solutionResponse += `> ${data.summary}\n\n`;
+        if (typeof data.summary === 'object' && data.summary.one_liner) {
+          solutionResponse += `> ${data.summary.one_liner}\n\n`;
+        } else if (typeof data.summary === 'string') {
+          solutionResponse += `> ${data.summary}\n\n`;
+        }
       }
 
       solutionResponse += `---\n\n`;
@@ -4093,6 +4228,13 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         </div>
 
         <div className="header-right">
+          <button
+            onClick={() => setContextPoolOpen(!contextPoolOpen)}
+            title={contextPoolOpen ? "Close Context Pool" : "Context Pool"}
+            className={`sidebar-toggle context-pool-toggle ${contextPoolOpen ? 'active' : ''}`}
+          >
+            <Activity size={18} />
+          </button>
           <div className="logo-container">
             <img src="/android-chrome-192x192.png" alt="Ikshan" className="logo-img" />
             <h2>Ikshan</h2>
@@ -4349,7 +4491,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                   </div>
                   <div className="message-content">
                     {message.sender === 'bot' ? (
-                      <ReactMarkdown>{message.text}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text || ''}</ReactMarkdown>
                     ) : (
                       message.text
                     )}
@@ -4512,12 +4654,20 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                         background: 'linear-gradient(135deg, #fafaff 0%, #f0eeff 100%)',
                         boxShadow: '0 2px 12px rgba(124, 58, 237, 0.08)',
                       }}>
-                        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                        {/* Website URL */}
+                        <div style={{ marginBottom: '0.6rem' }}>
+                          <label style={{
+                            display: 'block',
+                            fontSize: '0.78rem',
+                            fontWeight: 600,
+                            color: 'var(--ikshan-text-secondary, #6b7280)',
+                            marginBottom: '0.3rem',
+                          }}>🌐 Website URL</label>
                           <input
                             type="url"
-                            placeholder="Paste your website URL (e.g., yourcompany.com)"
+                            placeholder="yourcompany.com"
                             style={{
-                              flex: 1,
+                              width: '100%',
                               padding: '0.7rem 1rem',
                               borderRadius: '10px',
                               border: '1.5px solid var(--ikshan-border, #d1d5db)',
@@ -4526,22 +4676,54 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                               fontSize: '0.9rem',
                               outline: 'none',
                               transition: 'border-color 0.2s ease',
+                              boxSizing: 'border-box',
                             }}
                             onFocus={(e) => { e.target.style.borderColor = '#7c3aed'; }}
                             onBlur={(e) => { e.target.style.borderColor = '#d1d5db'; }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && e.target.value.trim()) {
-                                handleBusinessUrlSubmit(e.target.value);
-                              }
-                            }}
                             id="business-url-input"
                             autoFocus
                           />
+                        </div>
+
+                        {/* GBP URL */}
+                        <div style={{ marginBottom: '0.75rem' }}>
+                          <label style={{
+                            display: 'block',
+                            fontSize: '0.78rem',
+                            fontWeight: 600,
+                            color: 'var(--ikshan-text-secondary, #6b7280)',
+                            marginBottom: '0.3rem',
+                          }}>📍 Google Business Profile URL <span style={{ fontWeight: 400, opacity: 0.7 }}>(optional)</span></label>
+                          <input
+                            type="url"
+                            placeholder="Paste your Google Maps / GBP link"
+                            style={{
+                              width: '100%',
+                              padding: '0.7rem 1rem',
+                              borderRadius: '10px',
+                              border: '1.5px solid var(--ikshan-border, #d1d5db)',
+                              background: 'var(--ikshan-input-bg, #fff)',
+                              color: 'var(--ikshan-text-primary, #1a1a1a)',
+                              fontSize: '0.9rem',
+                              outline: 'none',
+                              transition: 'border-color 0.2s ease',
+                              boxSizing: 'border-box',
+                            }}
+                            onFocus={(e) => { e.target.style.borderColor = '#7c3aed'; }}
+                            onBlur={(e) => { e.target.style.borderColor = '#d1d5db'; }}
+                            id="gbp-url-input"
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                           <button
                             onClick={() => {
-                              const input = document.getElementById('business-url-input');
-                              if (input && input.value.trim()) {
-                                handleBusinessUrlSubmit(input.value);
+                              const websiteInput = document.getElementById('business-url-input');
+                              const gbpInput = document.getElementById('gbp-url-input');
+                              const website = websiteInput ? websiteInput.value.trim() : '';
+                              const gbp = gbpInput ? gbpInput.value.trim() : '';
+                              if (website || gbp) {
+                                handleBusinessUrlSubmit(website, gbp);
                               }
                             }}
                             style={{
@@ -4577,13 +4759,14 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             fontSize: '0.8rem',
                             cursor: 'pointer',
                             padding: '0.25rem 0',
+                            marginTop: '0.5rem',
                             opacity: 0.8,
                             transition: 'opacity 0.2s',
                           }}
                           onMouseEnter={(e) => { e.target.style.opacity = 1; e.target.style.textDecoration = 'underline'; }}
                           onMouseLeave={(e) => { e.target.style.opacity = 0.8; e.target.style.textDecoration = 'none'; }}
                         >
-                          Skip — without your URL, we'll give general recommendations
+                          Skip — without URLs, we'll give general recommendations
                         </button>
                       </div>
                     )}
@@ -4653,8 +4836,8 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       </div>
                     )}
 
-                    {/* ── Business Intelligence Verdict Card ── */}
-                    {message.isBusinessIntelVerdict && message.businessIntelData && (
+                    {/* ── Business Intelligence Verdict Card — DISABLED ── */}
+                    {false && message.isBusinessIntelVerdict && message.businessIntelData && (
                       <div className="bi-verdict-container">
                         {/* Verdict headline */}
                         {message.businessIntelData.verdict_line && (
@@ -4739,181 +4922,242 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       </div>
                     )}
 
-                    {/* ── Unified Diagnostic Report — Redesigned ── */}
-                    {message.isDiagnosticReport && message.reportData && (
-                      <div className="report-container">
+                    {/* ── AI Playbook — Gap Questions with Options ── */}
+                    {message.isPlaybookGapQuestions && (
+                      <div className="playbook-gap-container" style={{
+                        background: 'linear-gradient(135deg, #faf5ff 0%, #f0f9ff 100%)',
+                        border: '1px solid rgba(139, 92, 246, 0.25)',
+                        borderRadius: '16px',
+                        padding: '1.5rem',
+                        marginTop: '0.75rem',
+                      }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#7c3aed', marginBottom: '0.75rem' }}>
+                          📋 A few more details needed
+                        </div>
 
-                        {/* Section 1: Sharp Insights (5-6 points) */}
-                        {message.reportData.insights && message.reportData.insights.length > 0 && (
-                          <div className="report-section report-insights">
-                            <div className="report-section-label" style={{ color: '#7c3aed' }}>
-                              ⚡ Key Insights
-                            </div>
-                            <div className="report-insights-list">
-                              {message.reportData.insights.map((item, i) => (
-                                <div key={i} className="report-insight-item" style={{ animationDelay: `${i * 0.08}s` }}>
-                                  <span className="report-insight-dot" />
-                                  <span className="report-insight-text">
-                                    {item.highlight
-                                      ? item.point.split(item.highlight).reduce((acc, part, idx) => {
-                                          if (idx > 0) acc.push(<strong key={idx} className="report-highlight">{item.highlight}</strong>);
-                                          acc.push(part);
-                                          return acc;
-                                        }, [])
-                                      : item.point
-                                    }
-                                  </span>
+                        {/* Render parsed gap questions with option buttons */}
+                        {message.gapQuestionsParsed && message.gapQuestionsParsed.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                            {message.gapQuestionsParsed.map((gq) => (
+                              <div key={gq.id} style={{
+                                background: 'rgba(255,255,255,0.7)',
+                                borderRadius: '12px',
+                                padding: '1rem',
+                                border: '1px solid rgba(139, 92, 246, 0.12)',
+                              }}>
+                                <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#374151', marginBottom: '0.6rem' }}>
+                                  {gq.id} — {gq.label}
                                 </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                                <div style={{ fontSize: '0.84rem', color: '#6b7280', marginBottom: '0.6rem', lineHeight: 1.5 }}>
+                                  {gq.question}
+                                </div>
+                                {playbookStage === 'gap-questions' && gq.options && gq.options.length > 0 && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                    {gq.options.map((opt, oi) => {
+                                      const isSelected = playbookGapSelections[gq.id] === opt;
+                                      return (
+                                        <button
+                                          key={oi}
+                                          onClick={() => setPlaybookGapSelections(prev => ({ ...prev, [gq.id]: opt }))}
+                                          style={{
+                                            padding: '0.55rem 0.85rem',
+                                            borderRadius: '8px',
+                                            border: isSelected ? '2px solid #7c3aed' : '1px solid rgba(139, 92, 246, 0.2)',
+                                            background: isSelected ? 'rgba(124, 58, 237, 0.08)' : '#fff',
+                                            color: isSelected ? '#7c3aed' : '#374151',
+                                            fontWeight: isSelected ? 600 : 400,
+                                            fontSize: '0.84rem',
+                                            cursor: 'pointer',
+                                            textAlign: 'left',
+                                            transition: 'all 0.15s ease',
+                                          }}
+                                        >
+                                          {opt}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {/* Show selected state after submission */}
+                                {playbookStage !== 'gap-questions' && playbookGapSelections[gq.id] && (
+                                  <div style={{ fontSize: '0.84rem', color: '#7c3aed', fontWeight: 500, marginTop: '0.3rem' }}>
+                                    ✓ {playbookGapSelections[gq.id]}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
 
-                        {/* Section 2: Problem Gist */}
-                        {message.reportData.rcaSummary && (
-                          <div className="report-section">
-                            <div className="report-section-label" style={{ color: '#dc2626' }}>
-                              🎯 The Core Issue
-                            </div>
-                            <p className="report-gist-text">{message.reportData.rcaSummary}</p>
+                            {/* Submit button */}
+                            {playbookStage === 'gap-questions' && (
+                              <button
+                                onClick={handlePlaybookGapSubmit}
+                                disabled={
+                                  !message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
+                                }
+                                style={{
+                                  padding: '0.75rem 1.5rem',
+                                  borderRadius: '10px',
+                                  border: 'none',
+                                  background: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
+                                    ? '#7c3aed' : '#d1d5db',
+                                  color: '#fff',
+                                  fontWeight: 600,
+                                  fontSize: '0.9rem',
+                                  cursor: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
+                                    ? 'pointer' : 'not-allowed',
+                                  alignSelf: 'flex-end',
+                                  transition: 'background 0.2s',
+                                }}
+                              >
+                                Submit Answers →
+                              </button>
+                            )}
                           </div>
+                        ) : (
+                          /* Fallback: show raw text + textarea if parsing failed */
+                          <>
+                            <div style={{ fontSize: '0.88rem', color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.6, marginBottom: '1rem' }}>
+                              {message.gapQuestionsText}
+                            </div>
+                            {playbookStage === 'gap-questions' && (
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <textarea
+                                  value={playbookGapAnswer}
+                                  onChange={(e) => setPlaybookGapAnswer(e.target.value)}
+                                  placeholder="Type your answers here..."
+                                  rows={3}
+                                  style={{
+                                    flex: 1,
+                                    padding: '0.75rem',
+                                    borderRadius: '10px',
+                                    border: '1px solid rgba(139, 92, 246, 0.3)',
+                                    fontSize: '0.88rem',
+                                    resize: 'vertical',
+                                    fontFamily: 'inherit',
+                                  }}
+                                />
+                                <button
+                                  onClick={() => {
+                                    if (playbookGapAnswer.trim()) handlePlaybookGapSubmit();
+                                  }}
+                                  disabled={!playbookGapAnswer.trim()}
+                                  style={{
+                                    padding: '0.75rem 1.25rem',
+                                    borderRadius: '10px',
+                                    border: 'none',
+                                    background: playbookGapAnswer.trim() ? '#7c3aed' : '#d1d5db',
+                                    color: '#fff',
+                                    fontWeight: 600,
+                                    cursor: playbookGapAnswer.trim() ? 'pointer' : 'not-allowed',
+                                    alignSelf: 'flex-end',
+                                  }}
+                                >
+                                  Submit →
+                                </button>
+                              </div>
+                            )}
+                          </>
                         )}
+                      </div>
+                    )}
 
-                        {/* Section 3: ICP + Website Verdict */}
-                        {message.reportData.icpAnalysis && (
-                          <div className="report-section report-icp">
-                            <div className="report-section-label" style={{ color: '#0891b2' }}>
+                    {/* ── AI Playbook Result ── */}
+                    {message.isPlaybook && message.playbookData && (
+                      <div className="playbook-container" style={{
+                        marginTop: '0.75rem',
+                      }}>
+                        {/* ICP Card — Agent 2 */}
+                        {message.playbookData.icpCard && (
+                          <div className="playbook-section" style={{
+                            background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
+                            border: '1px solid rgba(14, 165, 233, 0.25)',
+                            borderRadius: '14px',
+                            padding: '1.25rem',
+                            marginBottom: '1rem',
+                          }}>
+                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0284c7', marginBottom: '0.75rem' }}>
                               👤 Ideal Customer Profile
                             </div>
-                            {message.reportData.icpAnalysis.ideal_customer_profile && (
-                              <p className="report-icp-profile">{message.reportData.icpAnalysis.ideal_customer_profile}</p>
-                            )}
-                            {message.reportData.icpAnalysis.targeting_verdict && (
-                              <div className="report-verdict-card">
-                                <div className="report-verdict-label">What your ideal customer feels landing on your site</div>
-                                <p className="report-verdict-text">{message.reportData.icpAnalysis.targeting_verdict}</p>
-                              </div>
-                            )}
-                            {message.reportData.icpAnalysis.improvement_areas && message.reportData.icpAnalysis.improvement_areas.length > 0 && (
-                              <div className="report-improvements">
-                                <div className="report-improvements-label">Where you can improve</div>
-                                {message.reportData.icpAnalysis.improvement_areas.map((area, i) => (
-                                  <div key={i} className="report-improvement-item">
-                                    <span className="report-improvement-num">{i + 1}</span>
-                                    <span>{area}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Section 4: Business Snapshot (crawl points) — compact */}
-                        {message.reportData.crawlPoints && message.reportData.crawlPoints.length > 0 && !message.reportData.icpAnalysis && (
-                          <div className="report-section">
-                            <div className="report-section-label" style={{ color: '#7c3aed' }}>
-                              🔍 Your Business
-                            </div>
-                            <div className="report-crawl-list">
-                              {message.reportData.crawlPoints.map((pt, i) => (
-                                <div key={i} className="report-crawl-item">
-                                  <span className="report-crawl-dot">●</span>
-                                  <span>{pt}</span>
-                                </div>
-                              ))}
+                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.icpCard}</ReactMarkdown>
                             </div>
                           </div>
                         )}
 
-                        {/* Section 5: Tailored Tools — Ordered: current stack first, then new tools */}
-                        {message.reportData.tools && message.reportData.tools.length > 0 && (
-                          <div className="report-section">
-                            <div className="report-section-label" style={{ color: '#059669' }}>
-                              🛠 Improve Your Current Workflow
+                        {/* 10-Step Playbook — Agent 3 */}
+                        {message.playbookData.playbook && (
+                          <div className="playbook-section" style={{
+                            background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
+                            border: '1px solid rgba(139, 92, 246, 0.25)',
+                            borderRadius: '14px',
+                            padding: '1.25rem',
+                            marginBottom: '1rem',
+                          }}>
+                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#7c3aed', marginBottom: '0.75rem' }}>
+                              📋 Your 10-Step Growth Playbook
                             </div>
-                            <p className="report-tools-subtitle">Tools that work with what you already use</p>
-                            <div className="report-tools-grid">
-                              {message.reportData.tools.slice(0, 3).map((tool, i) => (
-                                <div key={i} className="report-tool-card"
-                                  onClick={() => tool.url && window.open(tool.url, '_blank')}
-                                  style={{ animationDelay: `${i * 0.06}s`, cursor: tool.url ? 'pointer' : 'default' }}
-                                >
-                                  <div className="report-tool-top-row">
-                                    <div className={`report-tool-badge ${tool._type}`}>
-                                      {tool._type === 'gpt' ? 'GPT' : tool._type === 'provider' ? 'SaaS' : 'Tool'}
-                                    </div>
-                                    <div className="report-tool-name">
-                                      {tool.name}
-                                      {tool.free && <span className="report-tool-free">Free</span>}
-                                    </div>
-                                    {tool.url && <span className="report-tool-arrow">→</span>}
-                                  </div>
-                                  {tool.why_recommended && (
-                                    <div className="report-tool-why">{tool.why_recommended}</div>
-                                  )}
-                                  {(tool.issue_solved || tool.implementation_stage || tool.ease_of_use) && (
-                                    <div className="report-tool-context">
-                                      {tool.issue_solved && <div className="report-tool-context-row"><span className="ctx-label solves">🎯 Solves:</span> {tool.issue_solved}</div>}
-                                      {tool.implementation_stage && <div className="report-tool-context-row"><span className="ctx-label when">📅 When:</span> {tool.implementation_stage}</div>}
-                                      {tool.ease_of_use && <div className="report-tool-context-row"><span className="ctx-label ease">⚡ Ease:</span> {tool.ease_of_use}</div>}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
+                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.playbook}</ReactMarkdown>
                             </div>
-
-                            {message.reportData.tools.length > 3 && (
-                              <>
-                                <div className="report-section-label" style={{ color: '#3b82f6', marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-                                  🚀 Level Up — New Tools for Growth
-                                </div>
-                                <p className="report-tools-subtitle">Powerful tools worth adopting — with migration tips</p>
-                                <div className="report-tools-grid">
-                                  {message.reportData.tools.slice(3, 6).map((tool, i) => (
-                                    <div key={i} className="report-tool-card new-stack"
-                                      onClick={() => tool.url && window.open(tool.url, '_blank')}
-                                      style={{ animationDelay: `${(i + 3) * 0.06}s`, cursor: tool.url ? 'pointer' : 'default' }}
-                                    >
-                                      <div className="report-tool-top-row">
-                                        <div className={`report-tool-badge ${tool._type}`}>
-                                          {tool._type === 'gpt' ? 'GPT' : tool._type === 'provider' ? 'SaaS' : 'Tool'}
-                                        </div>
-                                        <div className="report-tool-name">
-                                          {tool.name}
-                                          {tool.free && <span className="report-tool-free">Free</span>}
-                                        </div>
-                                        {tool.url && <span className="report-tool-arrow">→</span>}
-                                      </div>
-                                      {tool.why_recommended && (
-                                        <div className="report-tool-why">{tool.why_recommended}</div>
-                                      )}
-                                      {(tool.issue_solved || tool.implementation_stage || tool.ease_of_use) && (
-                                        <div className="report-tool-context">
-                                          {tool.issue_solved && <div className="report-tool-context-row"><span className="ctx-label solves">🎯 Solves:</span> {tool.issue_solved}</div>}
-                                          {tool.implementation_stage && <div className="report-tool-context-row"><span className="ctx-label when">📅 When:</span> {tool.implementation_stage}</div>}
-                                          {tool.ease_of_use && <div className="report-tool-context-row"><span className="ctx-label ease">⚡ Ease:</span> {tool.ease_of_use}</div>}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </>
-                            )}
                           </div>
                         )}
 
-                        {/* Section 6: Catchy Hook before CTA */}
-                        {message.reportData.hook && (
-                          <div className="report-hook">
-                            <span className="report-hook-icon">💡</span>
-                            <span className="report-hook-text">{message.reportData.hook}</span>
+                        {/* Tool Matrix — Agent 4 */}
+                        {message.playbookData.toolMatrix && (
+                          <div className="playbook-section" style={{
+                            background: 'linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%)',
+                            border: '1px solid rgba(16, 185, 129, 0.25)',
+                            borderRadius: '14px',
+                            padding: '1.25rem',
+                            marginBottom: '1rem',
+                          }}>
+                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#059669', marginBottom: '0.75rem' }}>
+                              🛠 Tool & Tech Matrix
+                            </div>
+                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.toolMatrix}</ReactMarkdown>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Website Audit — Agent 5 */}
+                        {message.playbookData.websiteAudit && (
+                          <div className="playbook-section" style={{
+                            background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
+                            border: '1px solid rgba(245, 158, 11, 0.25)',
+                            borderRadius: '14px',
+                            padding: '1.25rem',
+                            marginBottom: '1rem',
+                          }}>
+                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#d97706', marginBottom: '0.75rem' }}>
+                              🌐 Website Audit & Recommendations
+                            </div>
+                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.websiteAudit}</ReactMarkdown>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Latencies footer */}
+                        {message.playbookData.latencies && Object.keys(message.playbookData.latencies).length > 0 && (
+                          <div style={{
+                            display: 'flex',
+                            gap: '0.75rem',
+                            flexWrap: 'wrap',
+                            fontSize: '0.75rem',
+                            color: '#9ca3af',
+                            marginTop: '0.5rem',
+                          }}>
+                            {Object.entries(message.playbookData.latencies).map(([agent, ms]) => (
+                              <span key={agent}>{agent}: {(ms / 1000).toFixed(1)}s</span>
+                            ))}
                           </div>
                         )}
                       </div>
                     )}
 
                     {/* Crawl Summary — compressed 5-point business snapshot */}
-                    {message.showCrawlDetails && !message.isDiagnosticReport && message.crawlSummaryPoints && message.crawlSummaryPoints.length > 0 && (
+                    {message.showCrawlDetails && !message.isPlaybook && message.crawlSummaryPoints && message.crawlSummaryPoints.length > 0 && (
                       <div className="crawl-summary-card" style={{
                         marginTop: '0.75rem',
                         padding: '1rem 1.25rem',
@@ -5467,6 +5711,13 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
           </div>
         </div>
       )}
+
+      {/* Context Pool Panel — Right side LLM transparency */}
+      <ContextPoolPanel
+        sessionId={sessionId}
+        isOpen={contextPoolOpen}
+        onClose={() => setContextPoolOpen(false)}
+      />
     </div>
   );
 };
