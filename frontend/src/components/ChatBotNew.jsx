@@ -7,6 +7,75 @@ import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser
 import ContextPoolPanel from './ContextPoolPanel';
 
 
+// ── Collapsible playbook section (stable component — must live outside render) ──
+const formatPlaybookSteps = (text) => {
+  // Transform lines like: 1. The "Step Name"  or  1. Step Name  or  ## 1. Step Name
+  // Into: ## **STEP 1 — Step Name**
+  return text.replace(
+    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""]?([^"""\n]+?)[""]?\s*$/gm,
+    (_, _hashes, num, name) => `## **STEP ${num} — ${name.trim()}**`
+  );
+};
+
+const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isPlaybookSteps }) => {
+  const [expanded, setExpanded] = useState(false);
+  const displayContent = isPlaybookSteps ? formatPlaybookSteps(content) : content;
+  const previewLines = displayContent.split('\n').slice(0, 6).join('\n');
+  return (
+    <div className="playbook-section" style={{
+      background: bg,
+      border: `1px solid ${borderColor}`,
+      borderRadius: '14px',
+      padding: '1.25rem',
+      marginBottom: '1rem',
+    }}>
+      <div style={{ fontSize: '0.95rem', fontWeight: 700, color, marginBottom: '0.75rem' }}>
+        {icon} {title}
+      </div>
+      <div
+        className={`playbook-markdown${isPlaybookSteps ? ' playbook-steps' : ''}`}
+        style={{
+          fontSize: '0.88rem',
+          color: '#1e293b',
+          lineHeight: 1.7,
+          maxHeight: expanded ? 'none' : '120px',
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{expanded ? displayContent : previewLines}</ReactMarkdown>
+        {!expanded && (
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: '50px',
+            background: `linear-gradient(transparent, ${bg.includes('#f0f9ff') ? '#e8f4fc' : bg.includes('#faf5ff') ? '#f3edff' : bg.includes('#ecfdf5') ? '#e6f9f0' : '#fff5e6'})`,
+          }}/>
+        )}
+      </div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          marginTop: '0.5rem',
+          padding: '0.4rem 1rem',
+          fontSize: '0.82rem',
+          fontWeight: 600,
+          color,
+          background: 'rgba(255,255,255,0.7)',
+          border: `1px solid ${borderColor}`,
+          borderRadius: '8px',
+          cursor: 'pointer',
+          transition: 'all 0.2s',
+        }}
+      >
+        {expanded ? '▲ Show less' : '▼ Read more'}
+      </button>
+    </div>
+  );
+};
+
 // Generate unique message IDs to prevent React key conflicts
 const generateUniqueId = () => `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -3459,6 +3528,8 @@ const ChatBotNew = ({ onNavigate }) => {
 
   // Handle RCA option selection in Typeform UI
   const handleRCAOptionSelectTypeform = (option, questionIndex) => {
+    // Prevent selecting again if already answered
+    if (rcaResponses[`q${questionIndex + 1}`]) return;
     // Save response
     const newResponses = { ...rcaResponses, [`q${questionIndex + 1}`]: option };
     setRcaResponses(newResponses);
@@ -3499,6 +3570,8 @@ const ChatBotNew = ({ onNavigate }) => {
 
   // Handle RCA option selection
   const handleRCAOptionSelect = (option, questionIndex) => {
+    // Prevent selecting again if already answered
+    if (rcaResponses[`q${questionIndex + 1}`]) return;
     // Record user response
     const userMessage = {
       id: getNextMessageId(),
@@ -4401,15 +4474,20 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       <p className="rca-stage-label">Stage 1: Problem Definition • Question {rcaCurrentQuestionIndex + 1} of {rcaData.problemDefinition.length}</p>
                       <h1>{rcaData.problemDefinition[rcaCurrentQuestionIndex].question}</h1>
                       <div className="suggestions-grid rca-options-grid">
-                        {rcaData.problemDefinition[rcaCurrentQuestionIndex].options.map((option, index) => (
+                        {rcaData.problemDefinition[rcaCurrentQuestionIndex].options.map((option, index) => {
+                          const alreadyAnswered = !!rcaResponses[`q${rcaCurrentQuestionIndex + 1}`];
+                          const isSelected = rcaResponses[`q${rcaCurrentQuestionIndex + 1}`] === option;
+                          return (
                           <div
                             key={index}
-                            className="suggestion-card rca-option-card"
-                            onClick={() => handleRCAOptionSelectTypeform(option, rcaCurrentQuestionIndex)}
-                            style={{ animationDelay: `${index * 0.05}s`, animation: 'fadeIn 0.3s ease-out forwards' }}
+                            className={`suggestion-card rca-option-card${isSelected ? ' selected' : ''}${alreadyAnswered ? ' disabled' : ''}`}
+                            onClick={() => !alreadyAnswered && handleRCAOptionSelectTypeform(option, rcaCurrentQuestionIndex)}
+                            style={{ animationDelay: `${index * 0.05}s`, animation: 'fadeIn 0.3s ease-out forwards', opacity: alreadyAnswered && !isSelected ? 0.5 : 1, pointerEvents: alreadyAnswered ? 'none' : 'auto' }}
                           >
                             <h3>{option}</h3>
                           </div>
+                          );
+                        }}
                         ))}
                       </div>
                       <button
@@ -5063,82 +5141,52 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
                     {/* ── AI Playbook Result ── */}
                     {message.isPlaybook && message.playbookData && (
-                      <div className="playbook-container" style={{
-                        marginTop: '0.75rem',
-                      }}>
-                        {/* ICP Card — Agent 2 */}
+                      <div className="playbook-container" style={{ marginTop: '0.75rem' }}>
                         {message.playbookData.icpCard && (
-                          <div className="playbook-section" style={{
-                            background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
-                            border: '1px solid rgba(14, 165, 233, 0.25)',
-                            borderRadius: '14px',
-                            padding: '1.25rem',
-                            marginBottom: '1rem',
-                          }}>
-                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0284c7', marginBottom: '0.75rem' }}>
-                              👤 Ideal Customer Profile
-                            </div>
-                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.icpCard}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PlaybookCollapsible
+                            key="icp"
+                            title="Ideal Customer Profile"
+                            icon="👤"
+                            color="#0284c7"
+                            bg="linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)"
+                            borderColor="rgba(14, 165, 233, 0.25)"
+                            content={message.playbookData.icpCard}
+                          />
                         )}
-
-                        {/* 10-Step Playbook — Agent 3 */}
                         {message.playbookData.playbook && (
-                          <div className="playbook-section" style={{
-                            background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
-                            border: '1px solid rgba(139, 92, 246, 0.25)',
-                            borderRadius: '14px',
-                            padding: '1.25rem',
-                            marginBottom: '1rem',
-                          }}>
-                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#7c3aed', marginBottom: '0.75rem' }}>
-                              📋 Your 10-Step Growth Playbook
-                            </div>
-                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.playbook}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PlaybookCollapsible
+                            key="playbook"
+                            title="Your 10-Step Growth Playbook"
+                            icon="📋"
+                            color="#7c3aed"
+                            bg="linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)"
+                            borderColor="rgba(139, 92, 246, 0.25)"
+                            content={message.playbookData.playbook}
+                            isPlaybookSteps
+                          />
                         )}
-
-                        {/* Tool Matrix — Agent 4 */}
                         {message.playbookData.toolMatrix && (
-                          <div className="playbook-section" style={{
-                            background: 'linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%)',
-                            border: '1px solid rgba(16, 185, 129, 0.25)',
-                            borderRadius: '14px',
-                            padding: '1.25rem',
-                            marginBottom: '1rem',
-                          }}>
-                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#059669', marginBottom: '0.75rem' }}>
-                              🛠 Tool & Tech Matrix
-                            </div>
-                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.toolMatrix}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PlaybookCollapsible
+                            key="tools"
+                            title="Tool & Tech Matrix"
+                            icon="🛠"
+                            color="#059669"
+                            bg="linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%)"
+                            borderColor="rgba(16, 185, 129, 0.25)"
+                            content={message.playbookData.toolMatrix}
+                          />
                         )}
-
-                        {/* Website Audit — Agent 5 */}
                         {message.playbookData.websiteAudit && (
-                          <div className="playbook-section" style={{
-                            background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
-                            border: '1px solid rgba(245, 158, 11, 0.25)',
-                            borderRadius: '14px',
-                            padding: '1.25rem',
-                            marginBottom: '1rem',
-                          }}>
-                            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#d97706', marginBottom: '0.75rem' }}>
-                              🌐 Website Audit & Recommendations
-                            </div>
-                            <div className="playbook-markdown" style={{ fontSize: '0.88rem', color: '#1e293b', lineHeight: 1.7 }}>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.websiteAudit}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PlaybookCollapsible
+                            key="audit"
+                            title="Website Audit & Recommendations"
+                            icon="🌐"
+                            color="#d97706"
+                            bg="linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)"
+                            borderColor="rgba(245, 158, 11, 0.25)"
+                            content={message.playbookData.websiteAudit}
+                          />
                         )}
-
-                        {/* Latencies footer */}
                         {message.playbookData.latencies && Object.keys(message.playbookData.latencies).length > 0 && (
                           <div style={{
                             display: 'flex',
@@ -5480,35 +5528,53 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                     )}
 
                     {/* RCA Question Options */}
-                    {message.isRCAQuestion && message.rcaOptions && (
+                    {message.isRCAQuestion && message.rcaOptions && (() => {
+                      const questionKey = `q${message.rcaQuestionIndex + 1}`;
+                      const answered = !!rcaResponses[questionKey];
+                      const selectedOption = rcaResponses[questionKey];
+                      return (
                       <div className="rca-options-container" style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        {message.rcaOptions.map((option, index) => (
+                        {message.rcaOptions.map((option, index) => {
+                          const isSelected = selectedOption === option;
+                          return (
                           <button
                             key={index}
-                            onClick={() => handleRCAOptionSelect(option, message.rcaQuestionIndex)}
-                            className="rca-option-btn"
+                            onClick={() => !answered && handleRCAOptionSelect(option, message.rcaQuestionIndex)}
+                            className={`rca-option-btn${isSelected ? ' selected' : ''}`}
+                            disabled={answered}
                             style={{
                               padding: '0.75rem 1rem',
-                              background: 'var(--ikshan-surface)',
-                              border: '1px solid var(--ikshan-border)',
+                              background: isSelected ? 'var(--ikshan-chat-bubble-user)' : 'var(--ikshan-surface)',
+                              border: isSelected ? '2px solid var(--ikshan-purple)' : '1px solid var(--ikshan-border)',
                               borderRadius: '0.75rem',
                               textAlign: 'left',
-                              cursor: 'pointer',
+                              cursor: answered ? 'default' : 'pointer',
                               transition: 'all 0.2s ease',
                               fontSize: '0.95rem',
-                              color: 'var(--ikshan-text-primary)'
+                              color: 'var(--ikshan-text-primary)',
+                              opacity: answered && !isSelected ? 0.4 : 1,
+                              pointerEvents: answered ? 'none' : 'auto'
                             }}
                             onMouseEnter={(e) => {
-                              e.target.style.borderColor = 'var(--ikshan-purple)';
-                              e.target.style.background = 'var(--ikshan-chat-bubble-user)';
+                              if (!answered) {
+                                e.target.style.borderColor = 'var(--ikshan-purple)';
+                                e.target.style.background = 'var(--ikshan-chat-bubble-user)';
+                              }
                             }}
                             onMouseLeave={(e) => {
-                              e.target.style.borderColor = 'var(--ikshan-border)';
-                              e.target.style.background = 'var(--ikshan-surface)';
+                              if (!answered) {
+                                e.target.style.borderColor = 'var(--ikshan-border)';
+                                e.target.style.background = 'var(--ikshan-surface)';
+                              }
                             }}
                           >
-                            ☐ {option}
+                            {isSelected ? '☑' : '☐'} {option}
                           </button>
+                          );
+                        })}
+                      </div>
+                      );
+                    })()
                         ))}
                       </div>
                     )}

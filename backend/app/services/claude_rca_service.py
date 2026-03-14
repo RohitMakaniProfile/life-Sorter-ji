@@ -185,7 +185,7 @@ async def generate_task_alignment_filter(
     """
     settings = get_settings()
     api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL  # Claude Opus
+    model = settings.OPENROUTER_MODEL  # GLM-4 Plus
 
     if not api_key:
         logger.warning("OpenRouter API key not configured — skipping task filter")
@@ -204,8 +204,7 @@ async def generate_task_alignment_filter(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.3,
-        "max_tokens": 2000,
-        "response_format": {"type": "json_object"},
+        "max_tokens": 4000,
     }
 
     headers = {
@@ -217,7 +216,7 @@ async def generate_task_alignment_filter(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
                 OPENROUTER_CHAT_URL, json=payload, headers=headers
             )
@@ -226,6 +225,8 @@ async def generate_task_alignment_filter(
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            content = data["choices"][0]["message"].get("reasoning", "")
         logger.info("Task filter raw response", raw_content=content[:500] if content else "<empty>")
 
         if not content or not content.strip():
@@ -881,8 +882,7 @@ async def generate_next_rca_question(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.7,
-        "max_tokens": 1200,
-        "response_format": {"type": "json_object"},
+        "max_tokens": 4000,
     }
 
     headers = {
@@ -894,7 +894,7 @@ async def generate_next_rca_question(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
                 OPENROUTER_CHAT_URL, json=payload, headers=headers
             )
@@ -903,28 +903,44 @@ async def generate_next_rca_question(
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
-        logger.info("Claude raw response", raw_content=content[:500] if content else "<empty>")
+        # GLM-5 reasoning models may return reasoning separately
+        if not content or not content.strip():
+            # Try reasoning field as fallback
+            content = data["choices"][0]["message"].get("reasoning", "")
+        logger.info("RCA raw response", raw_content=content[:500] if content else "<empty>", finish_reason=data["choices"][0].get("finish_reason", "?"))
 
         if not content or not content.strip():
-            logger.error("Claude returned empty content")
+            logger.error("RCA model returned empty content")
             return None
 
         # Try direct JSON parse first, then extract JSON from text
         try:
             result = json.loads(content)
         except json.JSONDecodeError:
-            # Claude may have wrapped JSON in reasoning text — extract it
-            import re
+            # Model may have wrapped JSON in reasoning text — extract it
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
                 try:
                     result = json.loads(json_match.group())
                     logger.info("Extracted JSON from wrapped response")
                 except json.JSONDecodeError:
-                    logger.error("Could not parse extracted JSON", raw=content[:500])
-                    return None
+                    # Try finding the last complete JSON object
+                    all_matches = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content))
+                    parsed = False
+                    for m in reversed(all_matches):
+                        try:
+                            result = json.loads(m.group())
+                            if result.get("status") in ("question", "complete"):
+                                logger.info("Extracted JSON from nested response")
+                                parsed = True
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                    if not parsed:
+                        logger.error("Could not parse extracted JSON", raw=content[:500])
+                        return None
             else:
-                logger.error("No JSON found in Claude response", raw=content[:500])
+                logger.error("No JSON found in response", raw=content[:500])
                 return None
 
         # Validate expected fields
@@ -1153,8 +1169,7 @@ async def generate_precision_questions(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.7,
-        "max_tokens": 1200,
-        "response_format": {"type": "json_object"},
+        "max_tokens": 4000,
     }
 
     headers = {
@@ -1166,7 +1181,7 @@ async def generate_precision_questions(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
                 OPENROUTER_CHAT_URL, json=payload, headers=headers
             )
@@ -1175,7 +1190,27 @@ async def generate_precision_questions(
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
-        result = json.loads(content)
+        if not content or not content.strip():
+            content = data["choices"][0]["message"].get("reasoning", "")
+
+        if not content or not content.strip():
+            logger.error("Precision questions: empty response")
+            return None
+
+        # Parse JSON with fallback extraction
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    logger.error("Precision questions: could not parse JSON", raw=content[:500])
+                    return None
+            else:
+                logger.error("Precision questions: no JSON found", raw=content[:500])
+                return None
 
         questions = result.get("questions", [])
         if not questions or len(questions) < 1:

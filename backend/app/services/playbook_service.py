@@ -515,7 +515,7 @@ async def _call_claude(
     max_tokens: int = 4000,
 ) -> dict[str, Any]:
     """
-    Call Claude Opus 4.6 via OpenRouter.
+    Call GLM-4 Plus via OpenRouter.
     Returns {"content": str, "usage": dict, "latency_ms": int}.
     """
     settings = get_settings()
