@@ -12,6 +12,7 @@ import re
 import traceback
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ from app.services.playbook_service import (
     run_agent1_context_parser,
     run_agent2_icp_analyst,
     run_full_playbook_pipeline,
+    run_playbook_pipeline_stream,
 )
 
 logger = structlog.get_logger()
@@ -112,6 +114,21 @@ async def start_playbook(request: Request, body: StartPlaybookRequest = Body(...
     if not session.rca_complete:
         raise HTTPException(status_code=400, detail="RCA diagnostic must be completed before generating playbook")
 
+    # ── Return cached Agent 1+2 if already pre-computed ──────────
+    if session.playbook_agent1_output and session.playbook_agent2_output:
+        logger.info(
+            "Playbook /start — returning cached Agent 1+2 (pre-fired)",
+            session_id=body.session_id,
+        )
+        session_store.set_playbook_stage(body.session_id, "generating")
+        return StartPlaybookResponse(
+            session_id=body.session_id,
+            stage="ready",
+            agent1_output=session.playbook_agent1_output,
+            agent2_output=session.playbook_agent2_output,
+            message="Context parsed and ICP built (cached). Ready to generate playbook.",
+        )
+
     try:
         # Mark playbook as starting
         session_store.set_playbook_stage(body.session_id, "generating_context")
@@ -181,36 +198,7 @@ async def start_playbook(request: Request, body: StartPlaybookRequest = Body(...
             s.playbook_agent2_output = agent2["output"]
             session_store.update_session(s)
 
-        # Check if Agent 2 output contains gap questions
-        agent2_text = agent2["output"]
-        has_gap_questions = _detect_gap_questions(agent2_text)
-
-        if has_gap_questions:
-            # Extract gap questions portion and return to user
-            session_store.set_playbook_gap_questions(body.session_id, agent2_text)
-
-            # Parse gap questions into structured format with options
-            parsed_gaps = _parse_gap_questions(agent2_text)
-
-            logger.info(
-                "Playbook pipeline paused for gap answers",
-                session_id=body.session_id,
-                gap_questions_count=len(parsed_gaps),
-            )
-
-            return StartPlaybookResponse(
-                session_id=body.session_id,
-                stage="gap_questions",
-                gap_questions=agent2_text,
-                gap_questions_parsed=[
-                    GapQuestion(**g) for g in parsed_gaps
-                ],
-                agent1_output=agent1["output"],
-                agent2_output=agent2["output"],
-                message="I need a few more details before building your playbook.",
-            )
-
-        # No gap questions — proceed to full pipeline
+        # Skip gap questions — proceed directly to playbook generation for speed
         session_store.set_playbook_stage(body.session_id, "generating")
 
         return StartPlaybookResponse(
@@ -286,7 +274,12 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
         crawl_summary = session.crawl_summary or {}
         gap_answers = body.gap_answers or session.playbook_gap_answers or ""
 
-        # Run the full pipeline
+        # Reuse Agent 1+2 outputs from /start (avoid double-execution)
+        cached_agent1 = session.playbook_agent1_output or ""
+        cached_agent2 = session.playbook_agent2_output or ""
+        curated_tools = session.early_recommendations or []
+
+        # Run the full pipeline (skips Agent 1+2 if cached)
         result = await run_full_playbook_pipeline(
             outcome_label=outcome_label,
             domain=domain,
@@ -296,6 +289,10 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             rca_summary=rca_summary,
             crawl_summary=crawl_summary,
             gap_answers=gap_answers,
+            cached_agent1_output=cached_agent1,
+            cached_agent2_output=cached_agent2,
+            curated_tools=curated_tools,
+            crawl_raw=session.crawl_raw or None,
         )
 
         # Store all results in session
@@ -329,6 +326,16 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             "Full playbook pipeline completed",
             session_id=body.session_id,
             total_latency_ms=result["total_latency_ms"],
+        )
+
+        # Record playbook phase timing + cost
+        session_store.log_phase_timing(body.session_id, "playbook_total_ms", result["total_latency_ms"])
+        total_usage = result.get("total_usage", {})
+        session_store.add_cost_and_tokens(
+            body.session_id,
+            result.get("estimated_cost_inr", 0.0),
+            total_usage.get("prompt_tokens", 0),
+            total_usage.get("completion_tokens", 0),
         )
 
         return GenerateFullPlaybookResponse(
@@ -374,6 +381,77 @@ async def get_playbook(request: Request, session_id: str):
         context_brief=session.playbook_agent1_output,
         icp_card=session.playbook_agent2_output,
         latencies=session.playbook_latencies,
+    )
+
+
+@router.post("/stream")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def stream_playbook(request: Request, body: GenerateFullPlaybookRequest = Body(...)):
+    """
+    SSE streaming endpoint for the playbook pipeline.
+    Streams Agent 3 output token-by-token, then sends Agent 4+5 as final events.
+    """
+    session = session_store.get_session(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.rca_complete:
+        raise HTTPException(status_code=400, detail="RCA diagnostic must be completed first")
+
+    session_store.set_playbook_stage(body.session_id, "generating")
+
+    gap_answers = body.gap_answers or session.playbook_gap_answers or ""
+    cached_agent1 = session.playbook_agent1_output or ""
+    cached_agent2 = session.playbook_agent2_output or ""
+    curated_tools = session.early_recommendations or []
+
+    async def event_generator():
+        import json as _json
+        try:
+            final_result = None
+            async for event in run_playbook_pipeline_stream(
+                outcome_label=session.outcome_label or "",
+                domain=session.domain or "",
+                task=session.task or "",
+                business_profile=session.business_profile or {},
+                rca_history=session.rca_history or [],
+                rca_summary=session.rca_summary or "",
+                crawl_summary=session.crawl_summary or {},
+                gap_answers=gap_answers,
+                cached_agent1_output=cached_agent1,
+                cached_agent2_output=cached_agent2,
+                curated_tools=curated_tools,
+                crawl_raw=session.crawl_raw or None,
+            ):
+                yield event
+                # Capture the result event to store in session
+                if event.startswith("event: result\n"):
+                    data_line = event.split("data: ", 1)[1].split("\n")[0]
+                    final_result = _json.loads(data_line)
+
+            # Persist results after stream completes
+            if final_result:
+                session_store.set_playbook_results(
+                    session_id=body.session_id,
+                    agent1_output=final_result["agent1_context_brief"],
+                    agent2_output=final_result["agent2_icp_card"],
+                    agent3_output=final_result["agent3_playbook"],
+                    agent4_output=final_result["agent4_tool_matrix"],
+                    agent5_output=final_result["agent5_website_audit"],
+                    latencies=final_result.get("agent_latencies", {}),
+                )
+
+        except Exception as exc:
+            logger.error("Playbook stream failed", error=str(exc))
+            yield f"event: error\ndata: {str(exc)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

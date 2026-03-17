@@ -101,6 +101,11 @@ def _session_to_row(session) -> dict[str, Any]:
         # Persona
         "persona_doc_name": session.persona_doc_name,
         "llm_call_log": llm_log,
+
+        # Per-session timing & cost
+        "phase_timings": session.phase_timings or {},
+        "estimated_cost_inr": round(session.estimated_cost_inr, 4),
+        "total_llm_tokens": session.total_llm_tokens or {},
     }
 
 

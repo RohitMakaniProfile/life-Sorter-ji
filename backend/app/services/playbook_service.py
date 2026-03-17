@@ -34,6 +34,7 @@ import httpx
 import structlog
 
 from app.config import get_settings
+from app.services.model_router import get_model_config, estimate_cost_inr
 
 logger = structlog.get_logger()
 
@@ -245,9 +246,11 @@ YOUR ONLY JOB: Build a 10-step playbook this team executes starting Monday.
 Not theory. Not strategy documents. Execution.
 
 
-YOU DO NOT: Recommend specific SaaS tools (use "[a tool for X]" as placeholder).
 YOU DO NOT: Define ICP. Audit websites. Write general advice.
 YOU DO: Build step-by-step execution with company-specific examples and non-obvious edges.
+YOU DO: Use REAL tool names from the CURATED TOOL CATALOG provided (if available).
+         When a step needs a tool, pick the best match from the catalog and name it explicitly.
+         If no catalog tool fits a step, use a descriptive placeholder like "[a tool for X]".
 
 
 ━━━ STUDY THIS EXACT STYLE AND MATCH IT ━━━
@@ -513,40 +516,55 @@ async def _call_claude(
     *,
     temperature: float = 0.7,
     max_tokens: int = 4000,
+    task: str = "",
 ) -> dict[str, Any]:
     """
-    Call GLM-4 Plus via OpenRouter.
-    Returns {"content": str, "usage": dict, "latency_ms": int}.
+    Call LLM via the model router.
+    If `task` is provided, the model router selects the appropriate tier.
+    Otherwise falls back to the default OpenRouter/GLM-5 config.
+    Returns {"content": str, "usage": dict, "latency_ms": int, "model": str}.
     """
-    settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL
+    if task:
+        mc = get_model_config(task, temperature=temperature, max_tokens=max_tokens)
+    else:
+        settings = get_settings()
+        from app.services.model_router import ModelConfig
+        mc = ModelConfig(
+            model=settings.OPENROUTER_MODEL,
+            provider="openrouter",
+            api_key=settings.OPENROUTER_API_KEY,
+            base_url=OPENROUTER_CHAT_URL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=120.0,
+        )
 
     payload = {
-        "model": model,
+        "model": mc.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "temperature": mc.temperature,
+        "max_tokens": mc.max_tokens,
     }
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {mc.api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Playbook Engine",
     }
+    if mc.provider == "openrouter":
+        headers["HTTP-Referer"] = mc.referer
+        headers["X-Title"] = mc.title
 
     t0 = time.perf_counter()
     max_retries = 3
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=mc.timeout) as client:
         for attempt in range(max_retries):
-            resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
+            resp = await client.post(mc.base_url, json=payload, headers=headers)
             if resp.status_code == 429 and attempt < max_retries - 1:
                 wait = 2 ** attempt + 1  # 2s, 3s, 5s
-                logger.warning("OpenRouter 429 rate limit, retrying", attempt=attempt + 1, wait_s=wait)
+                logger.warning("Rate limit 429, retrying", attempt=attempt + 1, wait_s=wait, provider=mc.provider)
                 await asyncio.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -556,9 +574,110 @@ async def _call_claude(
     data = resp.json()
 
     content = data["choices"][0]["message"]["content"]
+    # GLM-5 reasoning models may return reasoning separately
+    if not content or not content.strip():
+        content = data["choices"][0]["message"].get("reasoning", "")
     usage = data.get("usage", {})
 
-    return {"content": content, "usage": usage, "latency_ms": latency_ms}
+    logger.info(
+        "LLM call completed",
+        model=mc.model,
+        provider=mc.provider,
+        task=task,
+        latency_ms=latency_ms,
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+    )
+
+    return {"content": content, "usage": usage, "latency_ms": latency_ms, "model": mc.model}
+
+
+async def _call_claude_stream(
+    system_prompt: str,
+    user_message: str,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 4000,
+    task: str = "",
+):
+    """
+    Streaming version of _call_claude. Yields text chunks as they arrive.
+    After the stream ends, yields a final dict with usage/latency metadata.
+    """
+    import json as _json
+
+    if task:
+        mc = get_model_config(task, temperature=temperature, max_tokens=max_tokens)
+    else:
+        settings = get_settings()
+        from app.services.model_router import ModelConfig
+        mc = ModelConfig(
+            model=settings.OPENROUTER_MODEL,
+            provider="openrouter",
+            api_key=settings.OPENROUTER_API_KEY,
+            base_url=OPENROUTER_CHAT_URL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=120.0,
+        )
+
+    payload = {
+        "model": mc.model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "temperature": mc.temperature,
+        "max_tokens": mc.max_tokens,
+        "stream": True,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {mc.api_key}",
+        "Content-Type": "application/json",
+    }
+    if mc.provider == "openrouter":
+        headers["HTTP-Referer"] = mc.referer
+        headers["X-Title"] = mc.title
+
+    t0 = time.perf_counter()
+    full_content = []
+
+    async with httpx.AsyncClient(timeout=mc.timeout) as client:
+        async with client.stream("POST", mc.base_url, json=payload, headers=headers) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content", "")
+                    if text:
+                        full_content.append(text)
+                        yield text
+                except Exception:
+                    continue
+
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    logger.info(
+        "LLM streaming call completed",
+        model=mc.model,
+        provider=mc.provider,
+        task=task,
+        latency_ms=latency_ms,
+    )
+    # Yield final metadata dict so the caller can collect it
+    yield {
+        "_meta": True,
+        "content": "".join(full_content),
+        "latency_ms": latency_ms,
+        "model": mc.model,
+        "usage": {},
+    }
 
 
 # ══════════════════════════════════════════════════════════════
@@ -676,6 +795,23 @@ async def run_phase0_gap_questions(
 
 
 # ══════════════════════════════════════════════════════════════
+#  AGENT 1 OUTPUT VALIDATION
+# ══════════════════════════════════════════════════════════════
+
+def _validate_agent1_output(content: str) -> bool:
+    """
+    Validate that Agent 1's output contains the key sections
+    expected by Agent 2. Returns True if output looks valid.
+    """
+    required_markers = [
+        "COMPANY SNAPSHOT",
+        "GOAL CLASSIFICATION",
+        "BUYER SITUATION",
+    ]
+    return all(marker in content for marker in required_markers)
+
+
+# ══════════════════════════════════════════════════════════════
 #  AGENT 1 — Context Parser
 # ══════════════════════════════════════════════════════════════
 
@@ -709,11 +845,27 @@ async def run_agent1_context_parser(
         user_message=user_message,
         temperature=0.4,
         max_tokens=3000,
+        task="playbook_agent1",
     )
+
+    # Validate Agent 1 structured output — retry with premium model if bad
+    if not _validate_agent1_output(result["content"]):
+        logger.warning(
+            "Agent 1 output validation failed on cheap model, retrying with premium",
+            model=result.get("model", ""),
+        )
+        result = await _call_claude(
+            system_prompt=AGENT1_PROMPT,
+            user_message=user_message,
+            temperature=0.4,
+            max_tokens=3000,
+            # No task = defaults to premium OpenRouter model
+        )
 
     logger.info(
         "Agent 1 (Context Parser) completed",
         latency_ms=result["latency_ms"],
+        model=result.get("model", ""),
     )
 
     return {
@@ -739,26 +891,8 @@ async def run_agent2_icp_analyst(
     user_message = (
         "Here is the Business Context Brief from the Context Parser:\n\n"
         f"{agent1_output}\n\n"
-        "Build the ICP Card. Then check what's missing and produce gap questions "
-        "(maximum 3) if needed. If nothing is missing, skip the gap questions section entirely.\n\n"
-        "IMPORTANT: If you DO produce gap questions, you MUST format them EXACTLY like this:\n"
-        "**GAP QUESTIONS** (to improve ICP accuracy):\n\n"
-        "Q1 — [Question label]: [Question text]\n"
-        "  A) [option]\n"
-        "  B) [option]\n"
-        "  C) [option]\n"
-        "  D) [option]\n\n"
-        "Q2 — [Question label]: [Question text]\n"
-        "  A) [option]\n"
-        "  B) [option]\n"
-        "  C) [option]\n"
-        "  D) [option]\n\n"
-        "Rules for gap question options:\n"
-        "- Each question MUST have 3-5 options labeled A) B) C) D) E)\n"
-        "- Options must be specific, contextual, and mutually exclusive\n"
-        "- The LAST option should always be 'Other / Not sure'\n"
-        "- Options must be short (under 15 words each)\n"
-        "- Do NOT use generic options — make them specific to THIS company's context\n"
+        "Build the ICP Card. Do NOT produce gap questions — proceed with reasonable "
+        "assumptions for any missing information. We have enough context to build the playbook."
     )
 
     result = await _call_claude(
@@ -766,6 +900,7 @@ async def run_agent2_icp_analyst(
         user_message=user_message,
         temperature=0.6,
         max_tokens=4000,
+        task="playbook_agent2",
     )
 
     logger.info(
@@ -789,10 +924,11 @@ async def run_agent3_playbook_architect(
     agent1_output: str,
     agent2_output: str,
     gap_answers: str = "",
+    curated_tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Agent 3: Build the 10-step execution playbook.
-    Input: Agent 1 output + Agent 2 output + gap answers.
+    Input: Agent 1 output + Agent 2 output + gap answers + curated tool catalog.
     """
     user_message = (
         "═══ BUSINESS CONTEXT BRIEF (Agent 1) ═══\n"
@@ -805,6 +941,17 @@ async def run_agent3_playbook_architect(
             "═══ GAP QUESTION ANSWERS ═══\n"
             f"{gap_answers}\n\n"
         )
+    if curated_tools:
+        user_message += "═══ CURATED TOOL CATALOG (use these by name in TOOL + AI SHORTCUT sections) ═══\n"
+        for i, tool in enumerate(curated_tools[:15], 1):
+            name = tool.get("name", "Unknown")
+            desc = tool.get("description", "")[:120]
+            best_use = tool.get("best_use_case", "")[:80]
+            user_message += f"{i}. {name} — {desc}"
+            if best_use:
+                user_message += f" | Best for: {best_use}"
+            user_message += "\n"
+        user_message += "\n"
     user_message += (
         "Build the 10-step playbook now. Follow the exact output format. "
         "Every step must be specific to THIS company — nothing generic. "
@@ -815,7 +962,7 @@ async def run_agent3_playbook_architect(
         system_prompt=AGENT3_PROMPT,
         user_message=user_message,
         temperature=0.7,
-        max_tokens=10000,
+        max_tokens=4500,
     )
 
     logger.info(
@@ -838,18 +985,48 @@ async def run_agent3_playbook_architect(
 async def run_agent4_tool_intelligence(
     agent1_output: str,
     agent3_output: str,
+    curated_tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Agent 4: Match best tool to each playbook step.
-    Input: Agent 1 output + Agent 3 playbook.
+    Input: Agent 1 output + Agent 3 playbook + curated tool catalog.
     """
     user_message = (
         "═══ BUSINESS CONTEXT BRIEF (Agent 1) ═══\n"
         f"{agent1_output}\n\n"
         "═══ 10-STEP PLAYBOOK (Agent 3) ═══\n"
         f"{agent3_output}\n\n"
-        "Match the best tool for each playbook step. Follow the exact output format."
     )
+
+    if curated_tools:
+        user_message += "═══ CURATED TOOL CATALOG (verified, with ratings) ═══\n"
+        user_message += (
+            "IMPORTANT: Prefer tools from this catalog — they are verified with real user ratings. "
+            "Use the exact tool name from the catalog. Only suggest tools outside this list if "
+            "no catalog tool fits a step.\n\n"
+        )
+        for i, tool in enumerate(curated_tools[:20], 1):
+            name = tool.get("name", "Unknown")
+            desc = tool.get("description", "")[:150]
+            cat = tool.get("category", "")
+            rating = tool.get("rating", "")
+            url = tool.get("url", "")
+            best_use = tool.get("best_use_case", "") or tool.get("why_relevant", "")
+            parts = [f"{i}. **{name}**"]
+            if cat:
+                parts.append(f"Category: {cat}")
+            if rating:
+                parts.append(f"Rating: {rating}/5")
+            if desc:
+                parts.append(f"Description: {desc}")
+            if best_use:
+                parts.append(f"Best for: {best_use[:100]}")
+            if url:
+                parts.append(f"URL: {url}")
+            user_message += " | ".join(parts) + "\n"
+        user_message += "\n"
+
+    user_message += "Match the best tool for each playbook step. Follow the exact output format."
 
     result = await _call_claude(
         system_prompt=AGENT4_PROMPT,
@@ -878,16 +1055,80 @@ async def run_agent4_tool_intelligence(
 async def run_agent5_website_critic(
     crawl_summary: dict[str, Any],
     agent2_output: str,
+    crawl_raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Agent 5: Audit the website through the ICP's eyes.
-    Input: Crawl data + Agent 2 ICP Card.
+    Input: Full crawl data + Agent 2 ICP Card.
     """
-    crawl_text = ""
-    if crawl_summary and crawl_summary.get("points"):
-        crawl_text = "\n".join(f"  • {pt}" for pt in crawl_summary["points"])
-    else:
-        crawl_text = "(No crawl data available — CRITICAL WARNING)"
+    parts: list[str] = []
+
+    # Build rich crawl context from crawl_raw (detailed data)
+    if crawl_raw:
+        hp = crawl_raw.get("homepage", {})
+        if hp.get("title"):
+            parts.append(f"Homepage Title: {hp['title']}")
+        if hp.get("meta_desc"):
+            parts.append(f"Meta Description: {hp['meta_desc']}")
+        if hp.get("h1s"):
+            parts.append(f"H1 Headlines: {', '.join(hp['h1s'][:5])}")
+        if hp.get("headings"):
+            parts.append(f"Sub-headings: {', '.join(hp['headings'][:10])}")
+        if hp.get("nav_links"):
+            nav_labels = [n.get("text", "") for n in hp["nav_links"][:10] if isinstance(n, dict)]
+            if nav_labels:
+                parts.append(f"Navigation Links: {', '.join(nav_labels)}")
+
+        tech = crawl_raw.get("tech_signals", [])
+        if tech:
+            parts.append(f"Tech Stack: {', '.join(tech[:12])}")
+
+        ctas = crawl_raw.get("cta_patterns", [])
+        if ctas:
+            parts.append(f"CTAs Found: {', '.join(ctas[:8])}")
+
+        socials = crawl_raw.get("social_links", [])
+        if socials:
+            parts.append(f"Social Links: {', '.join(socials[:6])}")
+
+        seo = crawl_raw.get("seo_basics", {})
+        seo_notes = []
+        if seo.get("has_meta"):
+            seo_notes.append("Has meta tags")
+        else:
+            seo_notes.append("Missing meta tags")
+        if seo.get("has_viewport"):
+            seo_notes.append("Mobile viewport set")
+        else:
+            seo_notes.append("No mobile viewport")
+        if seo.get("has_sitemap"):
+            seo_notes.append("Sitemap detected")
+        else:
+            seo_notes.append("No sitemap")
+        if seo_notes:
+            parts.append(f"SEO Basics: {', '.join(seo_notes)}")
+
+        schema = crawl_raw.get("schema_markup", [])
+        if schema:
+            parts.append(f"Schema Markup: {', '.join(str(s) for s in schema[:5])}")
+
+        pages = crawl_raw.get("pages_crawled", [])
+        if pages:
+            parts.append(f"\nPages Crawled ({len(pages)}):")
+            for p in pages[:8]:
+                content = p.get("key_content", "")[:500]
+                parts.append(f"  [{p.get('type', 'page')}] {p.get('url', '')}")
+                if content:
+                    parts.append(f"    Content: {content}")
+
+    # Fallback to summary if no raw data
+    if not parts:
+        if crawl_summary and crawl_summary.get("points"):
+            parts = [f"  • {pt}" for pt in crawl_summary["points"]]
+        else:
+            parts = ["(No crawl data available — CRITICAL WARNING)"]
+
+    crawl_text = "\n".join(parts)
 
     user_message = (
         "═══ WEBSITE CRAWL DATA ═══\n"
@@ -931,12 +1172,18 @@ async def run_full_playbook_pipeline(
     rca_summary: str,
     crawl_summary: dict[str, Any],
     gap_answers: str = "",
+    cached_agent1_output: str = "",
+    cached_agent2_output: str = "",
+    curated_tools: list[dict[str, Any]] | None = None,
+    crawl_raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run the complete 5-agent pipeline:
       Agent 1 → Agent 2 → (wait for gap answers if needed) → Agent 3 → Agent 4 + 5 (parallel)
 
     This is the FULL pipeline called AFTER gap answers are collected.
+    If cached_agent1_output and cached_agent2_output are provided (from /start),
+    Agent 1 and 2 are skipped to avoid double-execution.
     Returns all agent outputs + total timing.
     """
     t0 = time.perf_counter()
@@ -947,51 +1194,70 @@ async def run_full_playbook_pipeline(
         total_usage["prompt_tokens"] += u.get("prompt_tokens", 0)
         total_usage["completion_tokens"] += u.get("completion_tokens", 0)
 
-    # ── Step 1: Agent 1 — Context Parser ──────────────────────
-    agent1 = await run_agent1_context_parser(
-        outcome_label=outcome_label,
-        domain=domain,
-        task=task,
-        business_profile=business_profile,
-        rca_history=rca_history,
-        rca_summary=rca_summary,
-        crawl_summary=crawl_summary,
-        gap_answers=gap_answers,
-    )
+    # ── Step 1: Agent 1 — Context Parser (skip if cached) ────
+    if cached_agent1_output:
+        agent1 = {"agent": "agent1_context_parser", "output": cached_agent1_output, "usage": {}, "latency_ms": 0}
+        logger.info("Agent 1 skipped — using cached output from /start")
+    else:
+        agent1 = await run_agent1_context_parser(
+            outcome_label=outcome_label,
+            domain=domain,
+            task=task,
+            business_profile=business_profile,
+            rca_history=rca_history,
+            rca_summary=rca_summary,
+            crawl_summary=crawl_summary,
+            gap_answers=gap_answers,
+        )
     _accum_usage(agent1)
 
-    # ── Step 2: Agent 2 — ICP Analyst ─────────────────────────
-    agent2 = await run_agent2_icp_analyst(agent1_output=agent1["output"])
+    # ── Step 2: Agent 2 — ICP Analyst (skip if cached) ────────
+    if cached_agent2_output:
+        agent2 = {"agent": "agent2_icp_analyst", "output": cached_agent2_output, "usage": {}, "latency_ms": 0}
+        logger.info("Agent 2 skipped — using cached output from /start")
+    else:
+        agent2 = await run_agent2_icp_analyst(agent1_output=agent1["output"])
     _accum_usage(agent2)
 
-    # ── Step 3: Agent 3 — Playbook Architect ──────────────────
-    agent3 = await run_agent3_playbook_architect(
+    # ── Step 3: Agent 3 + Agent 5 in parallel ──────────────────
+    # Agent 5 only needs crawl_summary + agent2_output (both ready now)
+    # so it runs alongside Agent 3 instead of waiting for it.
+    agent3_task = run_agent3_playbook_architect(
         agent1_output=agent1["output"],
         agent2_output=agent2["output"],
         gap_answers=gap_answers,
-    )
-    _accum_usage(agent3)
-
-    # ── Step 4: Agent 4 + Agent 5 in parallel ─────────────────
-    agent4_task = run_agent4_tool_intelligence(
-        agent1_output=agent1["output"],
-        agent3_output=agent3["output"],
+        curated_tools=curated_tools,
     )
     agent5_task = run_agent5_website_critic(
         crawl_summary=crawl_summary,
         agent2_output=agent2["output"],
+        crawl_raw=crawl_raw,
     )
-    agent4, agent5 = await asyncio.gather(agent4_task, agent5_task)
-    _accum_usage(agent4)
+    agent3, agent5 = await asyncio.gather(agent3_task, agent5_task)
+    _accum_usage(agent3)
     _accum_usage(agent5)
 
+    # ── Step 4: Agent 4 (needs Agent 3 output) ────────────────
+    agent4 = await run_agent4_tool_intelligence(
+        agent1_output=agent1["output"],
+        agent3_output=agent3["output"],
+        curated_tools=curated_tools,
+    )
+    _accum_usage(agent4)
+
     total_ms = int((time.perf_counter() - t0) * 1000)
+
+    pipeline_cost = estimate_cost_inr(
+        total_usage["prompt_tokens"],
+        total_usage["completion_tokens"],
+    )
 
     logger.info(
         "Full playbook pipeline completed",
         total_latency_ms=total_ms,
         total_prompt_tokens=total_usage["prompt_tokens"],
         total_completion_tokens=total_usage["completion_tokens"],
+        estimated_cost_inr=round(pipeline_cost, 4),
     )
 
     return {
@@ -1002,6 +1268,7 @@ async def run_full_playbook_pipeline(
         "agent5_website_audit": agent5["output"],
         "total_latency_ms": total_ms,
         "total_usage": total_usage,
+        "estimated_cost_inr": pipeline_cost,
         "agent_latencies": {
             "agent1": agent1["latency_ms"],
             "agent2": agent2["latency_ms"],
@@ -1010,3 +1277,138 @@ async def run_full_playbook_pipeline(
             "agent5": agent5["latency_ms"],
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════
+#  STREAMING PIPELINE — SSE generator for /playbook/stream
+# ══════════════════════════════════════════════════════════════
+
+async def run_playbook_pipeline_stream(
+    outcome_label: str,
+    domain: str,
+    task: str,
+    business_profile: dict[str, Any],
+    rca_history: list[dict[str, str]],
+    rca_summary: str,
+    crawl_summary: dict[str, Any],
+    gap_answers: str = "",
+    cached_agent1_output: str = "",
+    cached_agent2_output: str = "",
+    curated_tools: list[dict[str, Any]] | None = None,
+    crawl_raw: dict[str, Any] | None = None,
+):
+    """
+    Streaming version of the pipeline.
+    Yields SSE-formatted events as strings:
+      event: status    → progress updates
+      event: chunk     → Agent 3 text chunks
+      event: result    → JSON blobs (agent4, agent5)
+      event: done      → final summary
+    """
+    import json as _json
+
+    t0 = time.perf_counter()
+
+    def _sse(event: str, data: str) -> str:
+        return f"event: {event}\ndata: {data}\n\n"
+
+    # ── Agent 1 (cached) ──────────────────────────────────────
+    yield _sse("status", "Preparing context...")
+    agent1_output = cached_agent1_output
+    if not agent1_output:
+        agent1 = await run_agent1_context_parser(
+            outcome_label=outcome_label, domain=domain, task=task,
+            business_profile=business_profile, rca_history=rca_history,
+            rca_summary=rca_summary, crawl_summary=crawl_summary,
+            gap_answers=gap_answers,
+        )
+        agent1_output = agent1["output"]
+
+    # ── Agent 2 (cached) ──────────────────────────────────────
+    agent2_output = cached_agent2_output
+    if not agent2_output:
+        agent2 = await run_agent2_icp_analyst(agent1_output=agent1_output)
+        agent2_output = agent2["output"]
+
+    yield _sse("status", "Building your playbook...")
+
+    # ── Agent 5 — kick off in background ──────────────────────
+    agent5_task = asyncio.create_task(run_agent5_website_critic(
+        crawl_summary=crawl_summary,
+        agent2_output=agent2_output,
+        crawl_raw=crawl_raw,
+    ))
+
+    # ── Agent 3 — stream output ───────────────────────────────
+    a3_user_message = (
+        "═══ BUSINESS CONTEXT BRIEF (Agent 1) ═══\n"
+        f"{agent1_output}\n\n"
+        "═══ ICP CARD (Agent 2) ═══\n"
+        f"{agent2_output}\n\n"
+    )
+    if gap_answers:
+        a3_user_message += (
+            "═══ GAP QUESTION ANSWERS ═══\n"
+            f"{gap_answers}\n\n"
+        )
+    if curated_tools:
+        a3_user_message += "═══ CURATED TOOL CATALOG (use these by name in TOOL + AI SHORTCUT sections) ═══\n"
+        for i, tool in enumerate(curated_tools[:15], 1):
+            name = tool.get("name", "Unknown")
+            desc = tool.get("description", "")[:120]
+            best_use = tool.get("best_use_case", "")[:80]
+            a3_user_message += f"{i}. {name} — {desc}"
+            if best_use:
+                a3_user_message += f" | Best for: {best_use}"
+            a3_user_message += "\n"
+        a3_user_message += "\n"
+    a3_user_message += (
+        "Build the 10-step playbook now. Follow the exact output format. "
+        "Every step must be specific to THIS company — nothing generic. "
+        "You MUST include all 10 steps — do NOT stop early. Exactly 10 numbered steps."
+    )
+
+    agent3_content = ""
+    agent3_latency = 0
+    async for chunk in _call_claude_stream(
+        system_prompt=AGENT3_PROMPT,
+        user_message=a3_user_message,
+        temperature=0.7,
+        max_tokens=4500,
+    ):
+        if isinstance(chunk, dict) and chunk.get("_meta"):
+            agent3_content = chunk["content"]
+            agent3_latency = chunk["latency_ms"]
+        else:
+            yield _sse("chunk", chunk)
+
+    yield _sse("status", "Matching tools & auditing website...")
+
+    # ── Agent 5 — await result ────────────────────────────────
+    agent5 = await agent5_task
+
+    # ── Agent 4 — needs Agent 3 output ────────────────────────
+    agent4 = await run_agent4_tool_intelligence(
+        agent1_output=agent1_output,
+        agent3_output=agent3_content,
+        curated_tools=curated_tools,
+    )
+
+    total_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ── Send final results ────────────────────────────────────
+    yield _sse("result", _json.dumps({
+        "agent1_context_brief": agent1_output,
+        "agent2_icp_card": agent2_output,
+        "agent3_playbook": agent3_content,
+        "agent4_tool_matrix": agent4["output"],
+        "agent5_website_audit": agent5["output"],
+        "total_latency_ms": total_ms,
+        "agent_latencies": {
+            "agent3": agent3_latency,
+            "agent4": agent4["latency_ms"],
+            "agent5": agent5["latency_ms"],
+        },
+    }))
+
+    yield _sse("done", "complete")

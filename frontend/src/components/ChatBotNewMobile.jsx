@@ -953,6 +953,18 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       return;
     }
 
+    // If signed in during scale-questions or diagnostic, just acknowledge — don't reset flow
+    if (['scale-questions', 'diagnostic', 'playbook'].includes(flowStage)) {
+      const ackMsg = {
+        id: getNextMessageId(),
+        text: `✅ Signed in as **${payload.name}**. Keep going — your playbook will be unlocked automatically.`,
+        sender: 'bot',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, ackMsg]);
+      return;
+    }
+
     setSelectedDomain(null);
     setSelectedSubDomain(null);
     setUserRole(null);
@@ -1463,6 +1475,20 @@ const ChatBotNewMobile = ({ onNavigate }) => {
               crawlSummaryRef.current = null;
             }
 
+            // Pre-fire Agent 1+2 in background (will be cached when startPlaybook runs later)
+            try {
+              const sid = getSessionId();
+              if (sid) {
+                fetch(`${API_BASE}/api/v1/playbook/start`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ session_id: sid }),
+                }).catch(e => console.log('Pre-fire /playbook/start failed (non-blocking)', e));
+              }
+            } catch (e) {
+              // Non-blocking — if it fails, startPlaybook will run it fresh
+            }
+
             // Try to fetch precision questions
             setIsTyping(true);
             try {
@@ -1483,7 +1509,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
                 const transMsg = {
                   id: getNextMessageId(),
-                  text: `I've cross-referenced your answers with what I found on your website. I have **3 precision questions** that dig into the gaps I spotted.`,
+                  text: `I've cross-referenced your answers with what I found on your website. I have **2 precision questions** that dig into the gaps I spotted.`,
                   sender: 'bot',
                   timestamp: new Date(),
                 };
@@ -1805,6 +1831,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
         sender: 'bot',
         timestamp: new Date(),
         showScaleForm: true,
+        showAuthGate: !userEmail,
       };
       setMessages(prev => [...prev, introMsg]);
       setFlowStage('scale-questions');
@@ -1842,27 +1869,29 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       setFlowStage('dynamic-questions');
       setIsTyping(true);
 
-      // Submit scale answers while fetching diagnostic question
+      // Submit scale answers (start-diagnostic eliminated — crawl context used in Q2+ automatically)
       const sid = getSessionId();
-      const submitScalePromise = (async () => {
-        try {
-          if (sid) {
-            await fetch(`${API_BASE}/api/v1/agent/session/scale-answers`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                session_id: sid,
-                answers: scaleAnswersRef.current,
-              }),
-            });
-          }
-        } catch (e) {
-          console.log('Scale answers submission failed (non-blocking)', e);
-        }
-      })();
+      try {
+        if (sid) {
+          fetch(`${API_BASE}/api/v1/agent/session/scale-answers`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              session_id: sid,
+              answers: scaleAnswersRef.current,
+            }),
+          }).catch(e => console.log('Scale answers submission failed (non-blocking)', e));
 
-      // Wait for scale answers to submit
-      await submitScalePromise;
+          // Pre-fire Agent 1+2 in background (will be cached when startPlaybook runs later)
+          fetch(`${API_BASE}/api/v1/playbook/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sid }),
+          }).catch(e => console.log('Pre-fire /playbook/start failed (non-blocking)', e));
+        }
+      } catch (e) {
+        console.log('Scale submit failed (non-blocking)', e);
+      }
 
       // ── Business Intelligence Verdict — DISABLED (removed from chat) ──
 
@@ -1874,49 +1903,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       };
       setMessages(prev => [...prev, transitionMsg]);
 
-      try {
-        if (sid) {
-          const diagRes = await fetch(`${API_BASE}/api/v1/agent/session/start-diagnostic`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sid }),
-          });
-          const diagData = await diagRes.json();
-
-          if (diagData.question && diagData.rca_mode) {
-            const firstQ = diagData.question;
-            setRcaMode(true);
-            setDynamicQuestions([firstQ]);
-            setCurrentDynamicQIndex(0);
-            setDynamicAnswers({});
-
-            const insight = firstQ.insight || diagData.insight || '';
-            const parts = [];
-            if (insight) parts.push(`💡 *${insight}*`);
-            parts.push(firstQ.question);
-
-            const botMsg = {
-              id: getNextMessageId(),
-              text: parts.join('\n\n'),
-              sender: 'bot',
-              timestamp: new Date(),
-              diagnosticOptions: firstQ.options,
-              sectionIndex: 0,
-              sectionKey: firstQ.section,
-              allowsFreeText: firstQ.allows_free_text !== false,
-              isRcaQuestion: true,
-              insightText: insight,
-            };
-            setMessages(prev => [...prev, botMsg]);
-            setIsTyping(false);
-            pendingDiagnosticDataRef.current = null;
-            return;
-          }
-        }
-      } catch (e) {
-        console.log('Context-aware diagnostic failed, using stashed question', e);
-      }
-
+      // Use the stashed first question from Q3 (crawl context flows into Q2+ via session)
       setIsTyping(false);
       resumeDiagnosticQuestions();
     }
@@ -2143,39 +2130,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
         return updated;
       });
 
-      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid }),
-      });
-
-      if (!genRes.ok) {
-        const errBody = await genRes.json().catch(() => ({}));
-        console.error('Playbook /generate error:', genRes.status, errBody);
-        throw new Error(errBody.detail || `Server error ${genRes.status}`);
-      }
-
-      const genData = await genRes.json();
-
-      setPlaybookStage('complete');
-      setIsTyping(false);
-
-      const playbookMsg = {
-        id: getNextMessageId(),
-        text: '',
-        sender: 'bot',
-        timestamp: new Date(),
-        isPlaybook: true,
-        playbookData: {
-          contextBrief: genData.context_brief || '',
-          icpCard: genData.icp_card || '',
-          playbook: genData.playbook || '',
-          toolMatrix: genData.tool_matrix || '',
-          websiteAudit: genData.website_audit || '',
-          latencies: genData.latencies || {},
-        },
-      };
-      setMessages(prev => [...prev, playbookMsg]);
+      // Step 2: Stream via /playbook/stream
+      await _streamPlaybookGenerate(sid, '', startData);
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
@@ -2189,6 +2145,96 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       };
       setMessages(prev => [...prev, errMsg]);
     }
+  };
+
+  // ── SSE streaming helper for playbook generation ──
+  const _streamPlaybookGenerate = async (sessionId, gapAnswers = '', startData = null) => {
+    const streamRes = await fetch(`${API_BASE}/api/v1/playbook/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, gap_answers: gapAnswers }),
+    });
+
+    if (!streamRes.ok) {
+      const errBody = await streamRes.json().catch(() => ({}));
+      throw new Error(errBody.detail || `Server error ${streamRes.status}`);
+    }
+
+    const playbookMsgId = getNextMessageId();
+    const playbookMsg = {
+      id: playbookMsgId,
+      text: '',
+      sender: 'bot',
+      timestamp: new Date(),
+      isPlaybook: true,
+      playbookData: {
+        contextBrief: startData?.agent1_output || '',
+        icpCard: startData?.agent2_output || '',
+        playbook: '',
+        toolMatrix: '',
+        websiteAudit: '',
+        latencies: {},
+      },
+    };
+    setMessages(prev => [...prev, playbookMsg]);
+
+    const reader = streamRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let playbookText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && eventType) {
+          const data = line.slice(6);
+          if (eventType === 'chunk') {
+            playbookText += data;
+            setMessages(prev => prev.map(m =>
+              m.id === playbookMsgId
+                ? { ...m, playbookData: { ...m.playbookData, playbook: playbookText } }
+                : m
+            ));
+          } else if (eventType === 'result') {
+            try {
+              const result = JSON.parse(data);
+              setMessages(prev => prev.map(m =>
+                m.id === playbookMsgId
+                  ? {
+                      ...m,
+                      playbookData: {
+                        contextBrief: result.agent1_context_brief || m.playbookData.contextBrief,
+                        icpCard: result.agent2_icp_card || m.playbookData.icpCard,
+                        playbook: result.agent3_playbook || playbookText,
+                        toolMatrix: result.agent4_tool_matrix || '',
+                        websiteAudit: result.agent5_website_audit || '',
+                        latencies: result.agent_latencies || {},
+                      },
+                    }
+                  : m
+              ));
+            } catch (e) {
+              console.error('Failed to parse result event:', e);
+            }
+          } else if (eventType === 'error') {
+            throw new Error(data);
+          }
+          eventType = '';
+        }
+      }
+    }
+
+    setPlaybookStage('complete');
+    setIsTyping(false);
   };
 
   // ── Handle gap question answer submission ──
@@ -2233,38 +2279,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
         throw new Error(errBody.detail || `Server error ${gapRes.status}`);
       }
 
-      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid, gap_answers: answerText }),
-      });
-
-      if (!genRes.ok) {
-        const errBody = await genRes.json().catch(() => ({}));
-        throw new Error(errBody.detail || `Server error ${genRes.status}`);
-      }
-
-      const genData = await genRes.json();
-
-      setPlaybookStage('complete');
-      setIsTyping(false);
-
-      const playbookMsg = {
-        id: getNextMessageId(),
-        text: '',
-        sender: 'bot',
-        timestamp: new Date(),
-        isPlaybook: true,
-        playbookData: {
-          contextBrief: genData.context_brief || '',
-          icpCard: genData.icp_card || '',
-          playbook: genData.playbook || '',
-          toolMatrix: genData.tool_matrix || '',
-          websiteAudit: genData.website_audit || '',
-          latencies: genData.latencies || {},
-        },
-      };
-      setMessages(prev => [...prev, playbookMsg]);
+      // Generate full playbook via streaming
+      await _streamPlaybookGenerate(sid, answerText);
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
