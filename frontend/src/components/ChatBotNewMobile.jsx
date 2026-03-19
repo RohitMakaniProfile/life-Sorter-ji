@@ -5,6 +5,33 @@ import remarkGfm from 'remark-gfm';
 import './ChatBotNewMobile.css';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 
+// ── Markdown normaliser — ensures consistent heading levels across LLM output ──
+const formatSectionMarkdown = (text) => {
+  let r = text;
+  r = r.replace(/^\*\*([A-Z][A-Z &\-\/():'0-9,.]+?)\*\*\s*$/gm, (_, l) => `### ${l.trim()}`);
+  r = r.replace(/^(?![#>|*\-])([A-Z][A-Z &\-\/():'0-9,.]{7,})\s*$/gm, (_, l) => `### ${l.trim()}`);
+  r = r.replace(/^(?:#{0,4}\s*)?(?:\*\*)?STEP\s+(\d{1,2})\s*[\u2192\->]+\s*(.+?)(?:\*\*)?\s*$/gm,
+    (_, n, t) => `#### STEP ${n} → ${t.trim()}`);
+  return r;
+};
+
+const formatPlaybookSteps = (text) => {
+  let r = text;
+  r = r.replace(
+    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?\s*$/gm,
+    (_, _h, num, name) => `## **STEP ${num} — ${name.trim()}**`
+  );
+  const subs = [
+    [/^(?:#{0,4}\s*)?(?:\*\*)?WHAT TO DO(?:\*\*)?\s*$/gm, '#### 📌 WHAT TO DO'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*$/gm, '#### 🤖 TOOL + AI SHORTCUT'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?REAL EXAMPLE(?:\*\*)?\s*$/gm, '#### 💡 REAL EXAMPLE'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?THE EDGE(?:\*\*)?\s*$/gm, '#### ⚡ THE EDGE'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?WEEK\s*1\s*EXECUTION\s*CHECKLIST(?:\*\*)?\s*$/gm, '### 📅 WEEK 1 EXECUTION CHECKLIST'],
+  ];
+  for (const [pat, rep] of subs) r = r.replace(pat, rep);
+  return r;
+};
+
 // Generate unique message IDs to prevent React key conflicts
 const generateUniqueId = () => `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -4057,7 +4084,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             👤 Ideal Customer Profile
                           </div>
                           <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.icpCard}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.icpCard)}</ReactMarkdown>
                           </div>
                         </div>
                       )}
@@ -4073,8 +4100,8 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                           <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#7c3aed', marginBottom: '0.6rem' }}>
                             📋 Your 10-Step Growth Playbook
                           </div>
-                          <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.playbook}</ReactMarkdown>
+                          <div className="playbook-markdown playbook-steps" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatPlaybookSteps(message.playbookData.playbook)}</ReactMarkdown>
                           </div>
                         </div>
                       )}
@@ -4091,7 +4118,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             🛠 Tool & Tech Matrix
                           </div>
                           <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.toolMatrix}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.toolMatrix)}</ReactMarkdown>
                           </div>
                         </div>
                       )}
@@ -4108,7 +4135,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             🌐 Website Audit & Recommendations
                           </div>
                           <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.playbookData.websiteAudit}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.websiteAudit)}</ReactMarkdown>
                           </div>
                         </div>
                       )}

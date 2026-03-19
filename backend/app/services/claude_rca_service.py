@@ -15,6 +15,7 @@ questions are served directly (pre-parsed from persona docs).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Optional
 
@@ -217,10 +218,15 @@ async def generate_task_alignment_filter(
     try:
         t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                OPENROUTER_CHAT_URL, json=payload, headers=headers
-            )
-            resp.raise_for_status()
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -895,10 +901,15 @@ async def generate_next_rca_question(
     try:
         t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                OPENROUTER_CHAT_URL, json=payload, headers=headers
-            )
-            resp.raise_for_status()
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -1182,10 +1193,15 @@ async def generate_precision_questions(
     try:
         t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                OPENROUTER_CHAT_URL, json=payload, headers=headers
-            )
-            resp.raise_for_status()
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 

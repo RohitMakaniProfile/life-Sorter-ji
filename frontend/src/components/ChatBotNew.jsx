@@ -7,19 +7,42 @@ import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser
 import ContextPoolPanel from './ContextPoolPanel';
 
 
+// ── Markdown normaliser — ensures consistent heading levels across LLM output ──
+const formatSectionMarkdown = (text) => {
+  let r = text;
+  // Standalone **ALL CAPS LABEL** lines → ### heading
+  r = r.replace(/^\*\*([A-Z][A-Z &\-\/():'0-9,.]+?)\*\*\s*$/gm, (_, l) => `### ${l.trim()}`);
+  // Standalone ALL-CAPS lines (8+ chars, not already heading/table/list) → ### heading
+  r = r.replace(/^(?![#>|*\-])([A-Z][A-Z &\-\/():'0-9,.]{7,})\s*$/gm, (_, l) => `### ${l.trim()}`);
+  // STEP N → Tool  (tool matrix) → #### heading
+  r = r.replace(/^(?:#{0,4}\s*)?(?:\*\*)?STEP\s+(\d{1,2})\s*[\u2192\->]+\s*(.+?)(?:\*\*)?\s*$/gm,
+    (_, n, t) => `#### STEP ${n} → ${t.trim()}`);
+  return r;
+};
+
 // ── Collapsible playbook section (stable component — must live outside render) ──
 const formatPlaybookSteps = (text) => {
-  // Transform lines like: 1. The "Step Name"  or  1. Step Name  or  ## 1. Step Name
-  // Into: ## **STEP 1 — Step Name**
-  return text.replace(
-    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""]?([^"""\n]+?)[""]?\s*$/gm,
-    (_, _hashes, num, name) => `## **STEP ${num} — ${name.trim()}**`
+  let r = text;
+  // Step numbers: "1. The "Step Name"" or "## 1. Step" → ## **STEP N — Name**
+  r = r.replace(
+    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?\s*$/gm,
+    (_, _h, num, name) => `## **STEP ${num} — ${name.trim()}**`
   );
+  // Sub-labels: WHAT TO DO, TOOL + AI SHORTCUT, REAL EXAMPLE, THE EDGE → #### headings
+  const subs = [
+    [/^(?:#{0,4}\s*)?(?:\*\*)?WHAT TO DO(?:\*\*)?\s*$/gm, '#### 📌 WHAT TO DO'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*$/gm, '#### 🤖 TOOL + AI SHORTCUT'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?REAL EXAMPLE(?:\*\*)?\s*$/gm, '#### 💡 REAL EXAMPLE'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?THE EDGE(?:\*\*)?\s*$/gm, '#### ⚡ THE EDGE'],
+    [/^(?:#{0,4}\s*)?(?:\*\*)?WEEK\s*1\s*EXECUTION\s*CHECKLIST(?:\*\*)?\s*$/gm, '### 📅 WEEK 1 EXECUTION CHECKLIST'],
+  ];
+  for (const [pat, rep] of subs) r = r.replace(pat, rep);
+  return r;
 };
 
 const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isPlaybookSteps }) => {
   const [expanded, setExpanded] = useState(false);
-  const displayContent = isPlaybookSteps ? formatPlaybookSteps(content) : content;
+  const displayContent = isPlaybookSteps ? formatPlaybookSteps(content) : formatSectionMarkdown(content);
   const previewLines = displayContent.split('\n').slice(0, 6).join('\n');
   return (
     <div className="playbook-section" style={{

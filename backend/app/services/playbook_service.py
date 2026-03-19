@@ -705,9 +705,17 @@ async def _call_claude(
     }
 
     t0 = time.perf_counter()
+    max_retries = 3
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
-        resp.raise_for_status()
+        for attempt in range(max_retries):
+            resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
+            if resp.status_code == 429 and attempt < max_retries - 1:
+                wait = 2 ** attempt + 1  # 2s, 3s, 5s
+                logger.warning("OpenRouter 429 rate limit, retrying", attempt=attempt + 1, wait_s=wait)
+                await asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     data = resp.json()
