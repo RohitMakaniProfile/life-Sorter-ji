@@ -1,3 +1,4 @@
+
 """
 Generate tools_by_q1_q2_q3.json — Pre-maps tools to Q1→Q2→Q3 diagnostic paths.
 Reads: tools.xlsx (All Tools sheet) + categories CSV

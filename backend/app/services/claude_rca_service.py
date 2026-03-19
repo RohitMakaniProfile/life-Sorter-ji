@@ -204,7 +204,7 @@ async def generate_task_alignment_filter(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.3,
-        "max_tokens": 4000,
+        "max_tokens": 800,
     }
 
     headers = {
