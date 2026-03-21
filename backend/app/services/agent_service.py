@@ -3,6 +3,7 @@
 AI AGENT SERVICE — Dynamic Persona-Driven Question Generation
 ═══════════════════════════════════════════════════════════════
 Uses OpenAI with loaded persona context to:
+
   1. Generate 2-3 highly relevant follow-up questions after Q1-Q3
   2. Produce personalized tool recommendations based on all answers
   3. Dynamically switch persona based on the domain selected

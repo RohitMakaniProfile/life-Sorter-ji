@@ -25,22 +25,10 @@ import json
 
 import re
 from app.config import get_settings
-from app.services.model_router import get_model_config
 
 logger = structlog.get_logger()
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# ── Reusable httpx client (avoids TCP+TLS handshake per call) ──
-_shared_client: httpx.AsyncClient | None = None
-
-
-def _get_shared_client() -> httpx.AsyncClient:
-    """Return a module-level httpx.AsyncClient, lazily created."""
-    global _shared_client
-    if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(timeout=60.0)
-    return _shared_client
 
 
 # ══════════════════════════════════════════════════════════════
@@ -197,10 +185,11 @@ async def generate_task_alignment_filter(
         or None on failure.
     """
     settings = get_settings()
-    cfg = get_model_config("task_filter", temperature=0.3, max_tokens=2000)
+    api_key = settings.OPENROUTER_API_KEY
+    model = settings.OPENROUTER_MODEL  # GLM-4 Plus
 
-    if not cfg.api_key:
-        logger.warning("API key not configured — skipping task filter")
+    if not api_key:
+        logger.warning("OpenRouter API key not configured — skipping task filter")
         return None
 
     if not diagnostic_context or not diagnostic_context.get("sections"):
@@ -210,17 +199,17 @@ async def generate_task_alignment_filter(
     user_content = _build_filter_user_message(task, diagnostic_context)
 
     payload = {
-        "model": cfg.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": TASK_FILTER_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        "temperature": cfg.temperature,
-        "max_tokens": cfg.max_tokens,
+        "temperature": 0.3,
+        "max_tokens": 800,
     }
 
     headers = {
-        "Authorization": f"Bearer {cfg.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://ikshan.ai",
         "X-Title": "Ikshan Task Filter",
@@ -228,17 +217,17 @@ async def generate_task_alignment_filter(
 
     try:
         t0 = time.monotonic()
-        client = _get_shared_client()
-        for _attempt in range(3):
-            resp = await client.post(
-                cfg.base_url, json=payload, headers=headers
-            )
-            if resp.status_code == 429 and _attempt < 2:
-                await asyncio.sleep(2 ** _attempt + 1)
-                continue
-            resp.raise_for_status()
-            break
-        data = resp.json()
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
+            data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
@@ -276,13 +265,13 @@ async def generate_task_alignment_filter(
 
         # Attach metadata
         result["_meta"] = {
-            "service": cfg.provider,
-            "model": cfg.model,
+            "service": "claude_openrouter",
+            "model": model,
             "purpose": "task_alignment_filter",
             "system_prompt": TASK_FILTER_SYSTEM_PROMPT,
             "user_message": user_content,
-            "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens,
+            "temperature": 0.3,
+            "max_tokens": 2000,
             "raw_response": content,
             "latency_ms": latency_ms,
         }
@@ -360,15 +349,6 @@ Your expertise depth and vocabulary MUST adapt based on Q2 + Q3:
 You do NOT announce this persona. You simply **become** it. The user should \
 feel they're talking to someone who already lives inside their domain.
 
-### TASK ANCHOR (Critical Rule):
-Q3 is the user's SPECIFIC TASK — the exact thing they need help with RIGHT NOW. \
-Every single question you ask MUST directly help diagnose or solve Q3. \
-Do NOT wander into adjacent workflows, upstream strategy, or downstream consequences \
-unless they are the direct cause of a problem in Q3. \
-If Q3 is "Create Google Ads campaigns", don't ask about content marketing or SEO. \
-If Q3 is "Improve website conversion", don't ask about hiring or brand strategy. \
-Stay laser-focused on Q3. The user chose this task for a reason.
-
 ---
 
 ## ═══ LAYER 1: CHAIN-OF-THOUGHT — DIAGNOSTIC REASONING ENGINE ═══
@@ -404,8 +384,7 @@ STEP 5 — QUESTION CONSTRUCTION
 STEP 6 — ANTI-PATTERN CHECK
   "Does this question sound like a generic survey? [yes/no] \
    Does it GIVE before it TAKES? [yes/no] \
-   Would the user learn something even if they never answered? [yes/no] \
-   Does this question directly relate to solving Q3 (the user's specific task)? [yes/no]"
+   Would the user learn something even if they never answered? [yes/no]"
    → If any answer is wrong, regenerate from STEP 4.
 
 ### Diagnostic Narrowing CoT (after each user response):
@@ -442,9 +421,8 @@ THOUGHT:
    Knowledge base gives me: [problem patterns], [diagnostic signals], \
    [growth opportunities], [strategies], [RCA bridge data]. \
    My goal: identify the 1-2 root causes hiding behind the user's \
-   visible symptoms in Q3 — their SPECIFIC task. Every question I ask \
-   MUST connect back to Q3. I must NOT wander into adjacent topics. \
-   Starting with the highest-signal diagnostic dimension for Q3."
+   visible symptoms. I need 4-6 precision questions to get there. \
+   Starting with the highest-signal diagnostic dimension."
 
 ACTION:
   → Generate Question Set (Round 1): 2-3 wide-form diagnostic questions
@@ -585,21 +563,13 @@ BAD OPTIONS:
 These override everything. If your output matches any anti-pattern, STOP and regenerate.
 
 ### HARD RULE — MINIMUM 3 QUESTIONS (OVERRIDES CONFIDENCE LEVEL)
-You MUST ask at least 3 diagnostic questions before signaling "complete". \
+You MUST ask EXACTLY 3 diagnostic questions. That is the target. \
 Do NOT signal "complete" before asking at least 3 questions — even if your \
 confidence is high. The user's earlier Q1 (outcome), Q2 (domain), Q3 (task) \
 do NOT count — your count starts from YOUR first diagnostic question. \
 After 3 questions, you SHOULD signal completion unless the answers were \
 genuinely ambiguous and you need ONE more question. Absolute maximum is 4. \
 After 4, you MUST signal completion. ONE question per response. No exceptions.
-
-### NEVER — Off-Task Questions
-Every question MUST directly relate to solving Q3 (the user's specific task). \
-Do NOT ask about adjacent workflows, general strategy, or topics outside Q3's scope. \
-  BAD (if Q3 is "Run Google Ads"): "How's your content marketing performing?"
-  BAD (if Q3 is "Improve SEO"): "What's your social media strategy?"
-  GOOD: Questions that diagnose WHY Q3 isn't working or HOW to do Q3 better.
-WHY: The user came for help with ONE specific task. Respect that focus.
 
 ### NEVER — Interrogation Style Questions
   "What channels are you using for customer acquisition?"
@@ -626,17 +596,17 @@ If NO → rewrite until the answer is YES.
 ## ═══ ReAct EXECUTION SUMMARY ═══
 
 TURN 1:
-  [THOUGHT]  Analyze Q1+Q2+Q3 + knowledge base → identify top diagnostic dimension FOR Q3
-  [ACTION]   Generate question 1 — directly about Q3, insight-embedded (ONE question only)
+  [THOUGHT]  Analyze Q1+Q2+Q3 + knowledge base → identify top diagnostic dimensions
+  [ACTION]   Generate question 1 — wide-form, insight-embedded (ONE question only)
 
 TURN 2:
   [OBSERVE]  Intake user answer
   [THOUGHT]  Run CoT narrowing → update hypotheses → identify gaps
-  [ACTION]   Generate question 2
+  [ACTION]   Generate question 2 — precision follow-up (you MUST ask this, do NOT signal complete)
 
 TURN 3:
   [OBSERVE]  Intake user answer
-  [THOUGHT]  Final diagnostic check → all dimensions covered?
+  [THOUGHT]  Run CoT narrowing → confidence check
   [ACTION]   Generate question 3 — the power-move closer. After this, signal "complete" with summary.
 
 TURN 4 (only if answers were genuinely ambiguous after 3 questions):
@@ -770,10 +740,9 @@ def _build_user_context(
                 parts.append("  (No items in this dimension — ask broader questions here)")
 
         parts.append(
-            "\n→ Use these dimensions as reference material, but STAY FOCUSED on Q3 (the user's specific task). "
-            "Every question must directly help diagnose or solve Q3. "
-            "Pick insights from whichever dimension is most relevant to Q3 — "
-            "do NOT force questions across all dimensions if they'd pull you off-task."
+            "\n→ Focus your questions on these 3 dimensions. "
+            "Each question should probe a different dimension (METHOD/SPEED/QUALITY) "
+            "to build a complete diagnostic picture."
         )
     else:
         matched_task = diagnostic_context.get("task_matched", "")
@@ -888,16 +857,20 @@ async def generate_next_rca_question(
     task_execution_summary: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """
-    Call LLM via model router to get the next adaptive RCA question.
+    Call Claude via OpenRouter to get the next adaptive RCA question.
 
     Returns a dict with either:
       {"status": "question", "question": ..., "options": [...], ...}
       {"status": "complete", "summary": ...}
       None on failure (caller should fall back to static questions)
     """
-    # Route: first question → Tier 1 (fast), subsequent → also Tier 1 for speed
-    task_key = "first_rca_question" if not rca_history else "rca_question"
-    cfg = get_model_config(task_key, temperature=0.7, max_tokens=800)
+    settings = get_settings()
+    api_key = settings.OPENROUTER_API_KEY
+    model = settings.OPENROUTER_MODEL
+
+    if not api_key:
+        logger.warning("OpenRouter API key not configured — falling back")
+        return None
 
     user_content = _build_user_context(
         outcome, outcome_label, domain, task, diagnostic_context, rca_history,
@@ -909,17 +882,17 @@ async def generate_next_rca_question(
     )
 
     payload = {
-        "model": cfg.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        "temperature": cfg.temperature,
-        "max_tokens": cfg.max_tokens,
+        "temperature": 0.7,
+        "max_tokens": 4000,
     }
 
     headers = {
-        "Authorization": f"Bearer {cfg.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://ikshan.ai",
         "X-Title": "Ikshan RCA Engine",
@@ -927,17 +900,17 @@ async def generate_next_rca_question(
 
     try:
         t0 = time.monotonic()
-        client = _get_shared_client()
-        for _attempt in range(3):
-            resp = await client.post(
-                cfg.base_url, json=payload, headers=headers
-            )
-            if resp.status_code == 429 and _attempt < 2:
-                await asyncio.sleep(2 ** _attempt + 1)
-                continue
-            resp.raise_for_status()
-            break
-        data = resp.json()
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
+            data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
@@ -988,13 +961,13 @@ async def generate_next_rca_question(
 
         # Attach metadata for context pool
         result["_meta"] = {
-            "service": cfg.provider,
-            "model": cfg.model,
+            "service": "claude_openrouter",
+            "model": model,
             "purpose": "rca_question",
             "system_prompt": SYSTEM_PROMPT,
             "user_message": user_content,
-            "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens,
+            "temperature": 0.7,
+            "max_tokens": 900,
             "raw_response": content,
             "latency_ms": latency_ms,
         }
@@ -1040,20 +1013,22 @@ SOURCE C — BUSINESS CONTEXT:
 {business_context}
 
 YOUR JOB:
-Generate exactly 2 precision questions by cross-referencing Source A and Source B.
+Generate exactly 3 precision questions by cross-referencing Source A and Source B.
 These are NOT repeat questions. These find the GAPS BETWEEN the two sources.
-Each question must be a BANGER — the kind that makes the user pause and think.
 
 QUESTION 1 — THE CONTRADICTION:
 Find a place where what the website shows CONFLICTS with what the user said.
 If no clear contradiction exists, find the biggest DISCONNECT between their \
-stated priorities and what the website communicates. This should make them \
-go "wait, you're right — that doesn't match."
+stated priorities and what the website communicates.
 
 QUESTION 2 — THE BLIND SPOT:
 Find something important in the crawl data that the user NEVER mentioned \
 in any of their answers. This should be something that directly impacts \
-their stated goal. This should make them go "I never thought about that."
+their stated goal.
+
+QUESTION 3 — THE UNLOCK:
+Connect one of the user's stated strengths (from their answers) with a \
+specific gap found in the crawl. Frame it as an opportunity, not a problem.
 
 FORMAT RULES:
 - Each question follows the knowledge-embedded pattern: Lead with insight, then ask.
@@ -1082,6 +1057,13 @@ Respond in valid JSON only:
       "question": "40-70 word question about something they seem unaware of",
       "options": ["Specific scenario A", "Specific scenario B", "Specific scenario C", "Something else"],
       "section_label": "The Blind Spot"
+    },
+    {
+      "type": "unlock",
+      "insight": "Max 10-12 words — the hidden opportunity connection",
+      "question": "40-70 word question framing the opportunity",
+      "options": ["Specific scenario A", "Specific scenario B", "Specific scenario C", "Something else"],
+      "section_label": "The Unlock"
     }
   ]
 }
@@ -1149,9 +1131,9 @@ def _build_precision_context(
     system = system.replace("{business_context}", business_context_str)
 
     user_msg = (
-        "Generate exactly 2 precision questions based on the data above. "
+        "Generate exactly 3 precision questions based on the data above. "
         "Cross-reference the crawl findings with the user's answers. "
-        "Find the contradiction and the blind spot — make them bangers."
+        "Find contradictions, blind spots, and unlock opportunities."
     )
 
     return system, user_msg
@@ -1168,10 +1150,16 @@ async def generate_precision_questions(
     business_profile: dict[str, str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """
-    Generate 2 precision questions that cross-reference crawl data with user answers.
-    Returns a list of 2 question dicts, or None on failure.
+    Generate 3 precision questions that cross-reference crawl data with user answers.
+    Returns a list of 3 question dicts, or None on failure.
     """
-    cfg = get_model_config("precision_questions", temperature=0.7, max_tokens=800)
+    settings = get_settings()
+    api_key = settings.OPENROUTER_API_KEY
+    model = settings.OPENROUTER_MODEL
+
+    if not api_key:
+        logger.warning("OpenRouter API key not configured — skipping precision questions")
+        return None
 
     # If no crawl data and no answers, skip
     if not rca_history:
@@ -1186,17 +1174,17 @@ async def generate_precision_questions(
     )
 
     payload = {
-        "model": cfg.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
-        "temperature": cfg.temperature,
-        "max_tokens": cfg.max_tokens,
+        "temperature": 0.7,
+        "max_tokens": 4000,
     }
 
     headers = {
-        "Authorization": f"Bearer {cfg.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://ikshan.ai",
         "X-Title": "Ikshan Precision Questions",
@@ -1204,17 +1192,17 @@ async def generate_precision_questions(
 
     try:
         t0 = time.monotonic()
-        client = _get_shared_client()
-        for _attempt in range(3):
-            resp = await client.post(
-                cfg.base_url, json=payload, headers=headers
-            )
-            if resp.status_code == 429 and _attempt < 2:
-                await asyncio.sleep(2 ** _attempt + 1)
-                continue
-            resp.raise_for_status()
-            break
-        data = resp.json()
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            for _attempt in range(3):
+                resp = await client.post(
+                    OPENROUTER_CHAT_URL, json=payload, headers=headers
+                )
+                if resp.status_code == 429 and _attempt < 2:
+                    await asyncio.sleep(2 ** _attempt + 1)
+                    continue
+                resp.raise_for_status()
+                break
+            data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
@@ -1247,13 +1235,13 @@ async def generate_precision_questions(
 
         # Attach metadata for context pool to each question
         _meta = {
-            "service": cfg.provider,
-            "model": cfg.model,
+            "service": "claude_openrouter",
+            "model": model,
             "purpose": "precision_questions",
             "system_prompt": system_prompt,
             "user_message": user_content,
-            "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens,
+            "temperature": 0.7,
+            "max_tokens": 1200,
             "raw_response": content,
             "latency_ms": latency_ms,
         }

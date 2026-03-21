@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     # ── OpenRouter (GLM-5 RCA) ──────────────────────────────────
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "z-ai/glm-5"
+    OPENROUTER_CLAUDE_MODEL: str = "anthropic/claude-sonnet-4-6"  # Used only for playbook Agent C comparison
 
     # ── Supabase ───────────────────────────────────────────────
     SUPABASE_URL: str = "https://bbaydychuoahmdkbgghw.supabase.co"

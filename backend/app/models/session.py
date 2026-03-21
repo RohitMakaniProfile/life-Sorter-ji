@@ -131,11 +131,11 @@ class SessionContext(BaseModel):
     playbook_stage: str = ""                             # "gap_questions", "waiting_gap_answers", "generating", "complete"
     playbook_gap_questions: str = ""                      # Phase 0 / Agent 2 gap questions text
     playbook_gap_answers: str = ""                        # User's gap question answers
-    playbook_agent1_output: str = ""                      # Context Brief from Agent 1
-    playbook_agent2_output: str = ""                      # ICP Card from Agent 2
-    playbook_agent3_output: str = ""                      # 10-step Playbook from Agent 3
-    playbook_agent4_output: str = ""                      # Tool Matrix from Agent 4
-    playbook_agent5_output: str = ""                      # Website Audit from Agent 5
+    playbook_agent1_output: str = ""                      # Context Brief + ICP from Agent A (Sonnet)
+    playbook_agent2_output: str = ""                      # ICP Card portion from Agent A
+    playbook_agent3_output: str = ""                      # 10-step Playbook from Agent C (Sonnet)
+    playbook_agent4_output: str = ""                      # (unused — reserved)
+    playbook_agent5_output: str = ""                      # Website Audit from Agent E (Sonnet)
     playbook_complete: bool = False                       # True when full pipeline is done
     playbook_latencies: dict[str, Any] = {}               # Per-agent timing data
 

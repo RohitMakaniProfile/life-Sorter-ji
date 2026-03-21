@@ -99,6 +99,232 @@ const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isP
   );
 };
 
+// ── Heuristic: pick the "better" model output by word count ──
+const pickBestModel = (glm, opus) => {
+  if (!glm && !opus) return 'glm';
+  if (!opus) return 'glm';
+  if (!glm) return 'opus';
+  const wordCount = (s) => s.trim().split(/\s+/).length;
+  const glmWords = wordCount(glm);
+  const opusWords = wordCount(opus);
+  // Opus wins ties and slight leads; GLM wins only if clearly longer (>20%)
+  return glmWords > opusWords * 1.2 ? 'glm' : 'opus';
+};
+
+// ── Generic dual-model section (GLM vs Claude Sonnet 4.6 + Best) ──
+const DualModelSection = ({
+  glmContent, opusContent,
+  title, icon,
+  glmColor, glmBg, glmBorder,
+  opusColor, opusBg, opusBorder,
+  isPlaybookSteps = false,
+}) => {
+  const bestWinner = pickBestModel(glmContent, opusContent);
+  const [tab, setTab] = useState(opusContent ? 'best' : 'glm');
+
+  // No opus content → plain section (no tabs)
+  if (!opusContent) {
+    return (
+      <PlaybookCollapsible
+        title={title} icon={icon}
+        color={glmColor} bg={glmBg} borderColor={glmBorder}
+        content={glmContent} isPlaybookSteps={isPlaybookSteps}
+      />
+    );
+  }
+
+  const activeContent = tab === 'best'
+    ? (bestWinner === 'opus' ? opusContent : glmContent)
+    : tab === 'opus' ? opusContent : glmContent;
+  const activeColor  = (tab === 'best' ? bestWinner : tab) === 'opus' ? opusColor : glmColor;
+  const activeBg     = (tab === 'best' ? bestWinner : tab) === 'opus' ? opusBg     : glmBg;
+  const activeBorder = (tab === 'best' ? bestWinner : tab) === 'opus' ? opusBorder : glmBorder;
+
+  const TABS = [
+    {
+      id: 'best',
+      label: `🏆 Best (${bestWinner === 'opus' ? 'Claude Opus' : 'GLM-5'})`,
+      activeColor: '#065f46',
+      idleColor: '#059669',
+      idleBg: '#d1fae5',
+    },
+    { id: 'glm',  label: '⚡ GLM-5',           activeColor: '#1d4ed8', idleColor: '#0284c7', idleBg: '#dbeafe' },
+    { id: 'opus', label: '✨ Claude Sonnet 4.6', activeColor: '#6d28d9', idleColor: '#7c3aed', idleBg: '#ede9fe' },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.55rem', flexWrap: 'wrap' }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: '0.28rem 0.8rem',
+            fontSize: '0.77rem',
+            fontWeight: 700,
+            color: tab === t.id ? '#fff' : t.idleColor,
+            background: tab === t.id ? t.activeColor : t.idleBg,
+            border: `1.5px solid ${t.idleColor}`,
+            borderRadius: '7px',
+            cursor: 'pointer',
+            transition: 'all 0.15s',
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <PlaybookCollapsible
+        key={tab}
+        title={title} icon={icon}
+        color={activeColor}
+        bg={activeBg}
+        borderColor={activeBorder}
+        content={activeContent}
+        isPlaybookSteps={isPlaybookSteps}
+      />
+    </div>
+  );
+};
+
+// ── Gap Questions — Opus comparison tab (read-only) ──
+const GapQuestionsOpusView = ({ parsed, raw }) => {
+  if (parsed && parsed.length > 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {parsed.map((gq, i) => (
+          <div key={i} style={{
+            background: 'rgba(237,233,254,0.5)',
+            borderRadius: '10px', padding: '0.9rem',
+            border: '1px solid rgba(139,92,246,0.18)',
+          }}>
+            <div style={{ fontSize: '0.86rem', fontWeight: 600, color: '#6d28d9', marginBottom: '0.4rem' }}>
+              {gq.id} — {gq.label}
+            </div>
+            <div style={{ fontSize: '0.83rem', color: '#4b5563', lineHeight: 1.5, marginBottom: '0.5rem' }}>
+              {gq.question}
+            </div>
+            {gq.options && gq.options.map((opt, oi) => (
+              <div key={oi} style={{
+                padding: '0.4rem 0.75rem', marginBottom: '0.25rem',
+                borderRadius: '7px', border: '1px solid rgba(139,92,246,0.2)',
+                background: '#f5f3ff', fontSize: '0.82rem', color: '#5b21b6',
+              }}>{opt}</div>
+            ))}
+          </div>
+        ))}
+        <div style={{ fontSize: '0.78rem', color: '#9ca3af', fontStyle: 'italic' }}>
+          ✨ Claude Sonnet 4.6 questions — shown for comparison only. Answer GLM-5's questions above.
+        </div>
+      </div>
+    );
+  }
+  if (raw) {
+    return (
+      <div style={{ fontSize: '0.86rem', color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+        {raw}
+        <div style={{ fontSize: '0.78rem', color: '#9ca3af', fontStyle: 'italic', marginTop: '0.5rem' }}>
+          ✨ Claude Sonnet 4.6 questions — shown for comparison only.
+        </div>
+      </div>
+    );
+  }
+  return <div style={{ fontSize: '0.84rem', color: '#9ca3af' }}>Opus gap questions not available.</div>;
+};
+
+// ── Gap Questions container with GLM/Opus model tabs ──
+const GapQuestionsPanel = ({
+  message, playbookStage, playbookGapSelections, setPlaybookGapSelections,
+  playbookGapAnswer, setPlaybookGapAnswer, handlePlaybookGapSubmit,
+}) => (
+  <div className="playbook-gap-container" style={{
+    background: 'linear-gradient(135deg, #faf5ff 0%, #f0f9ff 100%)',
+    border: '1px solid rgba(139, 92, 246, 0.25)',
+    borderRadius: '16px', padding: '1.5rem', marginTop: '0.75rem',
+  }}>
+    <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#7c3aed', marginBottom: '1rem' }}>
+      📋 A few more details needed
+    </div>
+
+    {message.gapQuestionsParsed && message.gapQuestionsParsed.length > 0 ? (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {message.gapQuestionsParsed.map((gq) => (
+          <div key={gq.id} style={{
+            background: 'rgba(255,255,255,0.7)', borderRadius: '12px',
+            padding: '1rem', border: '1px solid rgba(139, 92, 246, 0.12)',
+          }}>
+            <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#374151', marginBottom: '0.6rem' }}>
+              {gq.id} — {gq.label}
+            </div>
+            <div style={{ fontSize: '0.84rem', color: '#6b7280', marginBottom: '0.6rem', lineHeight: 1.5 }}>
+              {gq.question}
+            </div>
+            {playbookStage === 'gap-questions' && gq.options && gq.options.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                {gq.options.map((opt, oi) => {
+                  const isSelected = playbookGapSelections[gq.id] === opt;
+                  return (
+                    <button key={oi}
+                      onClick={() => setPlaybookGapSelections(prev => ({ ...prev, [gq.id]: opt }))}
+                      style={{
+                        padding: '0.55rem 0.85rem', borderRadius: '8px', textAlign: 'left',
+                        border: isSelected ? '2px solid #7c3aed' : '1px solid rgba(139, 92, 246, 0.2)',
+                        background: isSelected ? 'rgba(124,58,237,0.08)' : '#fff',
+                        color: isSelected ? '#7c3aed' : '#374151',
+                        fontWeight: isSelected ? 600 : 400, fontSize: '0.84rem',
+                        cursor: 'pointer', transition: 'all 0.15s ease',
+                      }}
+                    >{opt}</button>
+                  );
+                })}
+              </div>
+            )}
+            {playbookStage !== 'gap-questions' && playbookGapSelections[gq.id] && (
+              <div style={{ fontSize: '0.84rem', color: '#7c3aed', fontWeight: 500, marginTop: '0.3rem' }}>
+                ✓ {playbookGapSelections[gq.id]}
+              </div>
+            )}
+          </div>
+        ))}
+        {playbookStage === 'gap-questions' && (
+          <button
+            onClick={handlePlaybookGapSubmit}
+            disabled={!message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])}
+            style={{
+              padding: '0.75rem 1.5rem', borderRadius: '10px', border: 'none',
+              background: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id]) ? '#7c3aed' : '#d1d5db',
+              color: '#fff', fontWeight: 600, fontSize: '0.9rem', alignSelf: 'flex-end',
+              cursor: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id]) ? 'pointer' : 'not-allowed',
+              transition: 'background 0.2s',
+            }}
+          >Submit Answers →</button>
+        )}
+      </div>
+    ) : (
+      <>
+        <div style={{ fontSize: '0.88rem', color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.6, marginBottom: '1rem' }}>
+          {message.gapQuestionsText}
+        </div>
+        {playbookStage === 'gap-questions' && (
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <textarea value={playbookGapAnswer} onChange={(e) => setPlaybookGapAnswer(e.target.value)}
+              placeholder="Type your answers here..." rows={3} style={{
+                flex: 1, padding: '0.75rem', borderRadius: '10px',
+                border: '1px solid rgba(139, 92, 246, 0.3)', fontSize: '0.88rem',
+                resize: 'vertical', fontFamily: 'inherit',
+              }} />
+            <button onClick={() => { if (playbookGapAnswer.trim()) handlePlaybookGapSubmit(); }}
+              disabled={!playbookGapAnswer.trim()}
+              style={{
+                padding: '0.75rem 1.25rem', borderRadius: '10px', border: 'none',
+                background: playbookGapAnswer.trim() ? '#7c3aed' : '#d1d5db',
+                color: '#fff', fontWeight: 600, alignSelf: 'flex-end',
+                cursor: playbookGapAnswer.trim() ? 'pointer' : 'not-allowed',
+              }}>Submit →</button>
+          </div>
+        )}
+      </>
+    )}
+  </div>
+);
+
 // Generate unique message IDs to prevent React key conflicts
 const generateUniqueId = () => `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -1658,18 +1884,6 @@ const ChatBotNew = ({ onNavigate }) => {
       return;
     }
 
-    // If signed in during scale-questions or diagnostic, just acknowledge — don't reset flow
-    if (['scale-questions', 'diagnostic', 'playbook'].includes(flowStage)) {
-      const ackMsg = {
-        id: getNextMessageId(),
-        text: `✅ Signed in as **${payload.name}**. Keep going — your playbook will be unlocked automatically.`,
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, ackMsg]);
-      return;
-    }
-
     setSelectedDomain(null);
     setSelectedSubDomain(null);
     setUserRole(null);
@@ -2086,7 +2300,7 @@ const ChatBotNew = ({ onNavigate }) => {
           const data = await res.json();
 
           if (data.all_answered) {
-            // Claude says we have enough — go directly to report
+            // Claude says we have enough — try precision questions first, then report
             setIsTyping(false);
 
             const rcaSummaryText = data.acknowledgment
@@ -2122,20 +2336,6 @@ const ChatBotNew = ({ onNavigate }) => {
               crawlSummaryRef.current = null;
             }
 
-            // Pre-fire Agent 1+2 in background (will be cached when startPlaybook runs later)
-            try {
-              const sid = getSessionId();
-              if (sid) {
-                fetch(`${API_BASE}/api/v1/playbook/start`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ session_id: sid }),
-                }).catch(e => console.log('Pre-fire /playbook/start failed (non-blocking)', e));
-              }
-            } catch (e) {
-              // Non-blocking — if it fails, startPlaybook will run it fresh
-            }
-
             // Try to fetch precision questions
             setIsTyping(true);
             try {
@@ -2158,7 +2358,7 @@ const ChatBotNew = ({ onNavigate }) => {
                 // Transition message
                 const transMsg = {
                   id: getNextMessageId(),
-                  text: `I've cross-referenced your answers with what I found on your website. I have **2 precision questions** that dig into the gaps I spotted.`,
+                  text: `I've cross-referenced your answers with what I found on your website. I have **3 precision questions** that dig into the gaps I spotted.`,
                   sender: 'bot',
                   timestamp: new Date(),
                 };
@@ -2488,7 +2688,6 @@ const ChatBotNew = ({ onNavigate }) => {
         sender: 'bot',
         timestamp: new Date(),
         showScaleForm: true,
-        showAuthGate: !userEmail, // Show auth prompt alongside scale questions
       };
       setMessages(prev => [...prev, introMsg]);
       setFlowStage('scale-questions');
@@ -2529,29 +2728,27 @@ const ChatBotNew = ({ onNavigate }) => {
       setFlowStage('diagnostic');
       setIsTyping(true);
 
-      // Submit scale answers (start-diagnostic eliminated — crawl context used in Q2+ automatically)
+      // Submit scale answers (fire-and-forget) while fetching diagnostic question
       const sid = getSessionId();
-      try {
-        if (sid) {
-          fetch(`${API_BASE}/api/v1/agent/session/scale-answers`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: sid,
-              answers: scaleAnswersRef.current,
-            }),
-          }).catch(e => console.log('Scale answers submission failed (non-blocking)', e));
-
-          // Pre-fire Agent 1+2 in background (will be cached when startPlaybook runs later)
-          fetch(`${API_BASE}/api/v1/playbook/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sid }),
-          }).catch(e => console.log('Pre-fire /playbook/start failed (non-blocking)', e));
+      const submitScalePromise = (async () => {
+        try {
+          if (sid) {
+            await fetch(`${API_BASE}/api/v1/agent/session/scale-answers`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: sid,
+                answers: scaleAnswersRef.current,
+              }),
+            });
+          }
+        } catch (e) {
+          console.log('Scale answers submission failed (non-blocking)', e);
         }
-      } catch (e) {
-        console.log('Scale submit failed (non-blocking)', e);
-      }
+      })();
+
+      // Wait for scale answers to submit
+      await submitScalePromise;
 
       // ── Business Intelligence Verdict — DISABLED (removed from chat) ──
 
@@ -2564,7 +2761,51 @@ const ChatBotNew = ({ onNavigate }) => {
       };
       setMessages(prev => [...prev, transitionMsg]);
 
-      // Use the stashed first question from Q3 (crawl context flows into Q2+ via session)
+      try {
+        if (sid) {
+          const diagRes = await fetch(`${API_BASE}/api/v1/agent/session/start-diagnostic`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sid }),
+          });
+          const diagData = await diagRes.json();
+
+          if (diagData.question && diagData.rca_mode) {
+            // Got context-aware first question — use it instead of stashed
+            const firstQ = diagData.question;
+            setRcaMode(true);
+            setDynamicQuestions([firstQ]);
+            setCurrentDynamicQIndex(0);
+            setDynamicAnswers({});
+
+            const insight = firstQ.insight || diagData.insight || '';
+            const parts = [];
+            if (insight) parts.push(`💡 *${insight}*`);
+            parts.push(firstQ.question);
+
+            const botMsg = {
+              id: getNextMessageId(),
+              text: parts.join('\n\n'),
+              sender: 'bot',
+              timestamp: new Date(),
+              diagnosticOptions: firstQ.options,
+              sectionIndex: 0,
+              sectionKey: firstQ.section,
+              allowsFreeText: firstQ.allows_free_text !== false,
+              isRcaQuestion: true,
+              insightText: insight,
+            };
+            setMessages(prev => [...prev, botMsg]);
+            setIsTyping(false);
+            pendingDiagnosticDataRef.current = null; // Clear stashed — no longer needed
+            return;
+          }
+        }
+      } catch (e) {
+        console.log('Context-aware diagnostic failed, using stashed question', e);
+      }
+
+      // Fallback: use the stashed first question from Q3
       setIsTyping(false);
       resumeDiagnosticQuestions();
     }
@@ -2841,19 +3082,49 @@ const ChatBotNew = ({ onNavigate }) => {
         return;
       }
 
-      // No gap questions — proceed directly to full pipeline (streaming)
+      // No gap questions — proceed directly to full pipeline
       setPlaybookStage('generating');
       setMessages(prev => {
         const updated = [...prev];
         const lastBot = updated.findLastIndex(m => m.sender === 'bot');
         if (lastBot >= 0) {
-          updated[lastBot] = { ...updated[lastBot], text: '🚀 Building your **AI Growth Playbook**...\n\nContext parsed ✓ ICP built ✓\n\nGenerating 10-step playbook, tool matrix & website audit...' };
+          updated[lastBot] = { ...updated[lastBot], text: '🚀 Building your **AI Growth Playbook**...\n\nContext parsed ✓ ICP built ✓\n\nGenerating 10-step playbook & website audit...' };
         }
         return updated;
       });
 
-      // Step 2: Stream via /playbook/stream
-      await _streamPlaybookGenerate(sid, '', startData);
+      // Step 2: Call /playbook/generate
+      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      });
+
+      if (!genRes.ok) {
+        const errBody = await genRes.json().catch(() => ({}));
+        console.error('Playbook /generate error:', genRes.status, errBody);
+        throw new Error(errBody.detail || `Server error ${genRes.status}`);
+      }
+
+      const genData = await genRes.json();
+
+      setPlaybookStage('complete');
+      setIsTyping(false);
+
+      const playbookMsg = {
+        id: getNextMessageId(),
+        text: '',
+        sender: 'bot',
+        timestamp: new Date(),
+        isPlaybook: true,
+        playbookData: {
+          contextBrief: genData.context_brief || '',
+          icpCard: genData.icp_card || '',
+          playbook: genData.playbook || '',
+          websiteAudit: genData.website_audit || '',
+        },
+      };
+      setMessages(prev => [...prev, playbookMsg]);
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
@@ -2867,98 +3138,6 @@ const ChatBotNew = ({ onNavigate }) => {
       };
       setMessages(prev => [...prev, errMsg]);
     }
-  };
-
-  // ── SSE streaming helper for playbook generation ──
-  const _streamPlaybookGenerate = async (sessionId, gapAnswers = '', startData = null) => {
-    const streamRes = await fetch(`${API_BASE}/api/v1/playbook/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, gap_answers: gapAnswers }),
-    });
-
-    if (!streamRes.ok) {
-      const errBody = await streamRes.json().catch(() => ({}));
-      throw new Error(errBody.detail || `Server error ${streamRes.status}`);
-    }
-
-    // Create the streaming playbook message immediately
-    const playbookMsgId = getNextMessageId();
-    const playbookMsg = {
-      id: playbookMsgId,
-      text: '',
-      sender: 'bot',
-      timestamp: new Date(),
-      isPlaybook: true,
-      playbookData: {
-        contextBrief: startData?.agent1_output || '',
-        icpCard: startData?.agent2_output || '',
-        playbook: '',
-        toolMatrix: '',
-        websiteAudit: '',
-        latencies: {},
-      },
-    };
-    setMessages(prev => [...prev, playbookMsg]);
-
-    // Read SSE stream
-    const reader = streamRes.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let playbookText = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      let eventType = '';
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith('data: ') && eventType) {
-          const data = line.slice(6);
-          if (eventType === 'chunk') {
-            playbookText += data;
-            setMessages(prev => prev.map(m =>
-              m.id === playbookMsgId
-                ? { ...m, playbookData: { ...m.playbookData, playbook: playbookText } }
-                : m
-            ));
-          } else if (eventType === 'result') {
-            try {
-              const result = JSON.parse(data);
-              setMessages(prev => prev.map(m =>
-                m.id === playbookMsgId
-                  ? {
-                      ...m,
-                      playbookData: {
-                        contextBrief: result.agent1_context_brief || m.playbookData.contextBrief,
-                        icpCard: result.agent2_icp_card || m.playbookData.icpCard,
-                        playbook: result.agent3_playbook || playbookText,
-                        toolMatrix: result.agent4_tool_matrix || '',
-                        websiteAudit: result.agent5_website_audit || '',
-                        latencies: result.agent_latencies || {},
-                      },
-                    }
-                  : m
-              ));
-            } catch (e) {
-              console.error('Failed to parse result event:', e);
-            }
-          } else if (eventType === 'error') {
-            throw new Error(data);
-          }
-          eventType = '';
-        }
-      }
-    }
-
-    setPlaybookStage('complete');
-    setIsTyping(false);
   };
 
   // ── Handle gap question answer submission ──
@@ -2986,7 +3165,7 @@ const ChatBotNew = ({ onNavigate }) => {
 
     const genMsg = {
       id: getNextMessageId(),
-      text: '🚀 Got it! Now generating your **10-step playbook**, tool matrix & website audit...',
+      text: '🚀 Got it! Now generating your **10-step playbook** & website audit...',
       sender: 'bot',
       timestamp: new Date(),
     };
@@ -3007,8 +3186,37 @@ const ChatBotNew = ({ onNavigate }) => {
         throw new Error(errBody.detail || `Server error ${gapRes.status}`);
       }
 
-      // Generate full playbook via streaming
-      await _streamPlaybookGenerate(sid, answerText);
+      // Generate full playbook
+      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, gap_answers: answerText }),
+      });
+
+      if (!genRes.ok) {
+        const errBody = await genRes.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Server error ${genRes.status}`);
+      }
+
+      const genData = await genRes.json();
+
+      setPlaybookStage('complete');
+      setIsTyping(false);
+
+      const playbookMsg = {
+        id: getNextMessageId(),
+        text: '',
+        sender: 'bot',
+        timestamp: new Date(),
+        isPlaybook: true,
+        playbookData: {
+          contextBrief: genData.context_brief || '',
+          icpCard: genData.icp_card || '',
+          playbook: genData.playbook || '',
+          websiteAudit: genData.website_audit || '',
+        },
+      };
+      setMessages(prev => [...prev, playbookMsg]);
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
@@ -4340,8 +4548,21 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
     setFlowStage('complete');
   };
 
+  // Compute header progress for the typeform stages
+  const headerProgressInfo = (() => {
+    const stageOrder = ['outcome', 'domain', 'task', 'url-input', 'scale-questions', 'rca', 'playbook', 'complete'];
+    const idx = stageOrder.indexOf(flowStage);
+    if (idx <= 0) return null;
+    const pct = Math.round((idx / (stageOrder.length - 1)) * 100);
+    const labels = { domain: 'Step 2', task: 'Step 3', 'url-input': 'Step 4', 'scale-questions': 'Step 5', rca: 'Step 6', playbook: 'Step 7', complete: 'Done' };
+    return { pct, label: labels[flowStage] || `Step ${idx}` };
+  })();
+
   return (
     <div className="chatbot-container">
+      {/* 3px brand gradient accent bar at very top */}
+      <div className="top-accent-bar" />
+
       {/* Header */}
       <header className="chatbot-header">
         <div className="header-left">
@@ -4359,6 +4580,15 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         </div>
 
         <div className="header-right">
+          {/* Step progress indicator */}
+          {headerProgressInfo && (
+            <div className="header-progress visible">
+              <span className="header-progress-label">{headerProgressInfo.label}</span>
+              <div className="header-progress-track">
+                <div className="header-progress-fill" style={{ width: `${headerProgressInfo.pct}%` }} />
+              </div>
+            </div>
+          )}
           <button
             onClick={() => setContextPoolOpen(!contextPoolOpen)}
             title={contextPoolOpen ? "Close Context Pool" : "Context Pool"}
@@ -4426,45 +4656,56 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
             <div className="empty-state">
               {flowStage === 'outcome' && (
                 <>
-                  {/* Icon removed */}
+                  {/* Brand icon */}
+                  <div className="empty-state-icon">
+                    <BarChart3 size={30} strokeWidth={2} />
+                  </div>
                   <h1>Professional expertise, on-demand—without the salary or recruiting.</h1>
-                  <p>Select what matters most to you right now</p>
+                  <p className="empty-state-subtitle">Select what matters most to you right now</p>
                   <div className="suggestions-grid">
                     {outcomeOptions.map((outcome, index) => (
                       <div
                         key={outcome.id}
                         className="suggestion-card"
                         onClick={() => !outcomeClickProcessing && handleOutcomeClick(outcome)}
-                        style={{ animationDelay: `${index * 0.1}s`, animation: 'fadeIn 0.5s ease-out forwards', opacity: outcomeClickProcessing ? 0.5 : 1, pointerEvents: outcomeClickProcessing ? 'none' : 'auto' }}
+                        style={{ animationDelay: `${index * 0.08}s`, animation: 'fadeIn 0.4s ease-out both', opacity: outcomeClickProcessing ? 0.5 : 1, pointerEvents: outcomeClickProcessing ? 'none' : 'auto' }}
                       >
                         <h3>{outcome.text}</h3>
                         {outcome.subtext && <p className="goal-subtext">{outcome.subtext}</p>}
                       </div>
                     ))}
                   </div>
-                  <p style={{ marginTop: '4rem', fontSize: '0.9rem', fontStyle: 'italic', color: '#6b7280', opacity: 0.7, textAlign: 'center' }}>"I don't have time or team to figure out AI" - Netizen</p>
+                  {/* Trust badges */}
+                  <div className="trust-badges">
+                    {['Free forever', 'No signup needed', 'Personalized results'].map(badge => (
+                      <span key={badge} className="trust-badge">
+                        <span className="trust-badge-check">✓</span>
+                        {badge}
+                      </span>
+                    ))}
+                  </div>
                 </>
               )}
 
               {flowStage === 'domain' && (
                 <>
-                  {/* Icon removed */}
+                  <span className="empty-state-step-label">Step 2 of 6</span>
                   <h1>Which domain best matches your need?</h1>
-                  <p>Select a domain to see relevant tasks</p>
+                  <p className="empty-state-subtitle">Select a domain to see relevant tasks</p>
                   <div className="suggestions-grid">
                     {getDomainsForSelection().map((domain, index) => (
                       <div
                         key={index}
                         className="suggestion-card"
                         onClick={() => !domainClickProcessing && handleDomainClick(domain)}
-                        style={{ animationDelay: `${index * 0.1}s`, animation: 'fadeIn 0.5s ease-out forwards', opacity: domainClickProcessing ? 0.5 : 1, pointerEvents: domainClickProcessing ? 'none' : 'auto' }}
+                        style={{ animationDelay: `${index * 0.07}s`, animation: 'fadeIn 0.4s ease-out both', opacity: domainClickProcessing ? 0.5 : 1, pointerEvents: domainClickProcessing ? 'none' : 'auto' }}
                       >
                         <h3>{domain}</h3>
                       </div>
                     ))}
                   </div>
                   <button
-                    style={{ marginTop: '2rem', background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
+                    className="back-nav-btn"
                     onClick={() => { setSelectedGoal(null); setSelectedDomainName(null); setFlowStage('outcome'); }}
                   >
                     ← Back
@@ -4488,6 +4729,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                     </div>
                   ) : (
                     <>
+                      <span className="empty-state-step-label">Step 3 of 6</span>
                       <h1>What task would you like help with?</h1>
                       <div className="suggestions-grid">
                         {getTasksForSelection().map((task, index) => (
@@ -4497,7 +4739,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             onClick={() => handleTaskClick(task)}
                             style={{
                               animationDelay: `${index * 0.05}s`,
-                              animation: 'fadeIn 0.3s ease-out forwards',
+                              animation: 'fadeIn 0.3s ease-out both',
                             }}
                           >
                             <h3>{task}</h3>
@@ -4505,13 +4747,14 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                         ))}
                         <div
                           className="suggestion-card"
+                          style={{ borderStyle: 'dashed', borderColor: '#c7d2fe' }}
                           onClick={handleTypeCustomProblem}
                         >
-                          <h3>Type my own problem...</h3>
+                          <h3 style={{ color: '#6366f1' }}>Type my own problem...</h3>
                         </div>
                       </div>
                       <button
-                        style={{ marginTop: '2rem', background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
+                        className="back-nav-btn"
                         onClick={() => { setSelectedDomainName(null); setFlowStage('domain'); }}
                       >
                         ← Back
@@ -4548,6 +4791,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                         })}
                       </div>
                       <button
+                        className="back-nav-btn"
                         onClick={() => {
                           if (rcaCurrentQuestionIndex > 0) {
                             setRcaCurrentQuestionIndex(rcaCurrentQuestionIndex - 1);
@@ -4556,7 +4800,6 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             setFlowStage('complete');
                           }
                         }}
-                        style={{ marginTop: '2rem', background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
                       >
                         ← Back
                       </button>
@@ -5057,143 +5300,17 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       </div>
                     )}
 
-                    {/* ── AI Playbook — Gap Questions with Options ── */}
+                    {/* ── AI Playbook — Gap Questions (GLM interactive + Opus comparison) ── */}
                     {message.isPlaybookGapQuestions && (
-                      <div className="playbook-gap-container" style={{
-                        background: 'linear-gradient(135deg, #faf5ff 0%, #f0f9ff 100%)',
-                        border: '1px solid rgba(139, 92, 246, 0.25)',
-                        borderRadius: '16px',
-                        padding: '1.5rem',
-                        marginTop: '0.75rem',
-                      }}>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#7c3aed', marginBottom: '0.75rem' }}>
-                          📋 A few more details needed
-                        </div>
-
-                        {/* Render parsed gap questions with option buttons */}
-                        {message.gapQuestionsParsed && message.gapQuestionsParsed.length > 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                            {message.gapQuestionsParsed.map((gq) => (
-                              <div key={gq.id} style={{
-                                background: 'rgba(255,255,255,0.7)',
-                                borderRadius: '12px',
-                                padding: '1rem',
-                                border: '1px solid rgba(139, 92, 246, 0.12)',
-                              }}>
-                                <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#374151', marginBottom: '0.6rem' }}>
-                                  {gq.id} — {gq.label}
-                                </div>
-                                <div style={{ fontSize: '0.84rem', color: '#6b7280', marginBottom: '0.6rem', lineHeight: 1.5 }}>
-                                  {gq.question}
-                                </div>
-                                {playbookStage === 'gap-questions' && gq.options && gq.options.length > 0 && (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                                    {gq.options.map((opt, oi) => {
-                                      const isSelected = playbookGapSelections[gq.id] === opt;
-                                      return (
-                                        <button
-                                          key={oi}
-                                          onClick={() => setPlaybookGapSelections(prev => ({ ...prev, [gq.id]: opt }))}
-                                          style={{
-                                            padding: '0.55rem 0.85rem',
-                                            borderRadius: '8px',
-                                            border: isSelected ? '2px solid #7c3aed' : '1px solid rgba(139, 92, 246, 0.2)',
-                                            background: isSelected ? 'rgba(124, 58, 237, 0.08)' : '#fff',
-                                            color: isSelected ? '#7c3aed' : '#374151',
-                                            fontWeight: isSelected ? 600 : 400,
-                                            fontSize: '0.84rem',
-                                            cursor: 'pointer',
-                                            textAlign: 'left',
-                                            transition: 'all 0.15s ease',
-                                          }}
-                                        >
-                                          {opt}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                                {/* Show selected state after submission */}
-                                {playbookStage !== 'gap-questions' && playbookGapSelections[gq.id] && (
-                                  <div style={{ fontSize: '0.84rem', color: '#7c3aed', fontWeight: 500, marginTop: '0.3rem' }}>
-                                    ✓ {playbookGapSelections[gq.id]}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-
-                            {/* Submit button */}
-                            {playbookStage === 'gap-questions' && (
-                              <button
-                                onClick={handlePlaybookGapSubmit}
-                                disabled={
-                                  !message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
-                                }
-                                style={{
-                                  padding: '0.75rem 1.5rem',
-                                  borderRadius: '10px',
-                                  border: 'none',
-                                  background: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
-                                    ? '#7c3aed' : '#d1d5db',
-                                  color: '#fff',
-                                  fontWeight: 600,
-                                  fontSize: '0.9rem',
-                                  cursor: message.gapQuestionsParsed.every(gq => playbookGapSelections[gq.id])
-                                    ? 'pointer' : 'not-allowed',
-                                  alignSelf: 'flex-end',
-                                  transition: 'background 0.2s',
-                                }}
-                              >
-                                Submit Answers →
-                              </button>
-                            )}
-                          </div>
-                        ) : (
-                          /* Fallback: show raw text + textarea if parsing failed */
-                          <>
-                            <div style={{ fontSize: '0.88rem', color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.6, marginBottom: '1rem' }}>
-                              {message.gapQuestionsText}
-                            </div>
-                            {playbookStage === 'gap-questions' && (
-                              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                <textarea
-                                  value={playbookGapAnswer}
-                                  onChange={(e) => setPlaybookGapAnswer(e.target.value)}
-                                  placeholder="Type your answers here..."
-                                  rows={3}
-                                  style={{
-                                    flex: 1,
-                                    padding: '0.75rem',
-                                    borderRadius: '10px',
-                                    border: '1px solid rgba(139, 92, 246, 0.3)',
-                                    fontSize: '0.88rem',
-                                    resize: 'vertical',
-                                    fontFamily: 'inherit',
-                                  }}
-                                />
-                                <button
-                                  onClick={() => {
-                                    if (playbookGapAnswer.trim()) handlePlaybookGapSubmit();
-                                  }}
-                                  disabled={!playbookGapAnswer.trim()}
-                                  style={{
-                                    padding: '0.75rem 1.25rem',
-                                    borderRadius: '10px',
-                                    border: 'none',
-                                    background: playbookGapAnswer.trim() ? '#7c3aed' : '#d1d5db',
-                                    color: '#fff',
-                                    fontWeight: 600,
-                                    cursor: playbookGapAnswer.trim() ? 'pointer' : 'not-allowed',
-                                    alignSelf: 'flex-end',
-                                  }}
-                                >
-                                  Submit →
-                                </button>
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
+                      <GapQuestionsPanel
+                        message={message}
+                        playbookStage={playbookStage}
+                        playbookGapSelections={playbookGapSelections}
+                        setPlaybookGapSelections={setPlaybookGapSelections}
+                        playbookGapAnswer={playbookGapAnswer}
+                        setPlaybookGapAnswer={setPlaybookGapAnswer}
+                        handlePlaybookGapSubmit={handlePlaybookGapSubmit}
+                      />
                     )}
 
                     {/* ── AI Playbook Result ── */}
@@ -5201,62 +5318,25 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                       <div className="playbook-container" style={{ marginTop: '0.75rem' }}>
                         {message.playbookData.icpCard && (
                           <PlaybookCollapsible
-                            key="icp"
-                            title="Ideal Customer Profile"
-                            icon="👤"
-                            color="#0284c7"
-                            bg="linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)"
-                            borderColor="rgba(14, 165, 233, 0.25)"
+                            title="Ideal Customer Profile" icon="👤"
+                            color="#0284c7" bg="linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)" borderColor="rgba(14, 165, 233, 0.25)"
                             content={message.playbookData.icpCard}
                           />
                         )}
                         {message.playbookData.playbook && (
                           <PlaybookCollapsible
-                            key="playbook"
-                            title="Your 10-Step Growth Playbook"
-                            icon="📋"
-                            color="#7c3aed"
-                            bg="linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)"
-                            borderColor="rgba(139, 92, 246, 0.25)"
+                            title="10-Step Growth Playbook" icon="📋"
+                            color="#7c3aed" bg="linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)" borderColor="rgba(139, 92, 246, 0.25)"
                             content={message.playbookData.playbook}
                             isPlaybookSteps
                           />
                         )}
-                        {message.playbookData.toolMatrix && (
-                          <PlaybookCollapsible
-                            key="tools"
-                            title="Tool & Tech Matrix"
-                            icon="🛠"
-                            color="#059669"
-                            bg="linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%)"
-                            borderColor="rgba(16, 185, 129, 0.25)"
-                            content={message.playbookData.toolMatrix}
-                          />
-                        )}
                         {message.playbookData.websiteAudit && (
                           <PlaybookCollapsible
-                            key="audit"
-                            title="Website Audit & Recommendations"
-                            icon="🌐"
-                            color="#d97706"
-                            bg="linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)"
-                            borderColor="rgba(245, 158, 11, 0.25)"
+                            title="Website Audit & Recommendations" icon="🌐"
+                            color="#d97706" bg="linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)" borderColor="rgba(245, 158, 11, 0.25)"
                             content={message.playbookData.websiteAudit}
                           />
-                        )}
-                        {message.playbookData.latencies && Object.keys(message.playbookData.latencies).length > 0 && (
-                          <div style={{
-                            display: 'flex',
-                            gap: '0.75rem',
-                            flexWrap: 'wrap',
-                            fontSize: '0.75rem',
-                            color: '#9ca3af',
-                            marginTop: '0.5rem',
-                          }}>
-                            {Object.entries(message.playbookData.latencies).map(([agent, ms]) => (
-                              <span key={agent}>{agent}: {(ms / 1000).toFixed(1)}s</span>
-                            ))}
-                          </div>
                         )}
                       </div>
                     )}
