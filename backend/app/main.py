@@ -15,6 +15,11 @@ from fastapi.responses import ORJSONResponse, JSONResponse
 from app.config import get_settings
 from app.middleware.rate_limit import setup_rate_limiter
 
+from app.phase2.db import connect_db as p2_connect_db
+from app.phase2.skills import load_skills as p2_load_skills
+from app.phase2.stores import ensure_default_agents as p2_ensure_agents
+from app.phase2.db import close_db as p2_close_db
+
 # ── Structured Logging ─────────────────────────────────────────
 structlog.configure(
     processors=[
@@ -71,7 +76,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️  Skipping RAG ingest — no OpenAI API key for embeddings")
 
+    # ── Phase 2: Research Agent startup ───────────────────────────────────────
+    try:
+        await p2_connect_db()
+        p2_load_skills()
+        await p2_ensure_agents()
+        logger.info("✅ Phase 2 (Research Agent) started")
+    except Exception as e:
+        logger.warning("⚠️  Phase 2 startup failed — research agent routes unavailable", error=str(e))
+
     yield
+
+    # ── Phase 2 shutdown ───────────────────────────────────────────────────────
+    try:
+        await p2_close_db()
+    except Exception:
+        pass
+
     logger.info("🛑 Ikshan Backend shutting down")
 
 def create_app() -> FastAPI:
@@ -145,6 +166,10 @@ def create_app() -> FastAPI:
 
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
     app.include_router(legacy.router, prefix="/api", tags=["Legacy"])
+
+    # ── Phase 2: Research Agent routes (/api/chat/*, /api/agents, /api/skills) ─
+    from app.phase2.router import router as phase2_router
+    app.include_router(phase2_router, tags=["Phase2-ResearchAgent"])
 
     @app.get("/health", tags=["System"])
     async def health_check():

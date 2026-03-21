@@ -1,0 +1,24 @@
+{
+  "id": "scrape-agentbrowser",
+  "name": "Agent-Browser Scraper",
+  "emoji": "🌐",
+  "description": "Primary deep website crawler using the agent-browser CLI. Given a start URL (for the main site or a competitor) and optional high-level instructions, drive a real browser, navigate complex flows, and build structured snapshots of each page. Use this first for deep analysis of UX, information architecture, and content when the site is JS-heavy or has multi-step navigation; also use it on competitor domains during competitor and market analysis.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["agent-browser", "browser", "automation", "navigation", "scrape"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "Start URL" },
+      "instructions": { "type": "string", "description": "High-level navigation instructions (optional)", "optional": true }
+    }
+  },
+  "stages": ["thinking", "crawling", "done"],
+  "stageLabels": {
+    "thinking": "Planning agent-browser crawl",
+    "crawling": "Scraping with agent-browser",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

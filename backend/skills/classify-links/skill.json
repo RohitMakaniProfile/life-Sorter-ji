@@ -1,0 +1,24 @@
+{
+  "id": "classify-links",
+  "name": "Classify Links",
+  "emoji": "🧭",
+  "description": "Classify a list of URLs into platform buckets (maps/reviews, food delivery, hotel booking, marketplaces, social, app stores, SaaS review sites, etc.). Use after scraping or web-search to decide which platform-specific skills to run next.",
+  "entry": "runner.py",
+  "language": "python",
+  "stages": ["thinking", "running", "done"],
+  "stageLabels": {
+    "thinking": "Thinking",
+    "running": "Classifying",
+    "done": "Done",
+    "error": "Error"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "urls": { "type": "string", "description": "URLs separated by newlines or commas. If empty, the skill will try to extract URLs from the user message.", "optional": true },
+      "taxonomyJson": { "type": "string", "description": "Optional JSON string produced by platform-taxonomy. When provided, classification uses taxonomy.domainRules for unlimited ecosystems.", "optional": true }
+    }
+  },
+  "keywords": ["classify", "links", "platforms", "reviews", "social", "apps"]
+}
+

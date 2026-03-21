@@ -1,0 +1,27 @@
+{
+  "id": "instagram-sentiment",
+  "name": "Instagram Sentiment",
+  "emoji": "📸",
+  "description": "Deep Instagram sentiment module for full-funnel analysis. Given a handle or page URL (typically discovered by find-platform-handles), collect posts and comments, score sentiment, and surface themes, strengths, and risks. Use this whenever the user asks for Instagram-specific sentiment, social listening, or when building a multi-channel deep analysis that must include Instagram as a channel.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["instagram", "social", "comments", "sentiment", "posts"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "handle": { "type": "string", "description": "Instagram handle or page URL" },
+      "postUrl": { "type": "string", "optional": true, "description": "Specific post URL (optional)" },
+      "brand": { "type": "string", "description": "Brand or product name" }
+    }
+  },
+  "stages": ["thinking", "collecting", "sentiment-scoring", "sentiment-report"],
+  "stageLabels": {
+    "thinking": "Planning Instagram sentiment scan",
+    "collecting": "Collecting Instagram posts & comments",
+    "sentiment-scoring": "Scoring sentiment",
+    "sentiment-report": "Summarizing findings",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

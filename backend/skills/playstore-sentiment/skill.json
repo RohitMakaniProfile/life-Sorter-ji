@@ -1,0 +1,28 @@
+{
+  "id": "playstore-sentiment",
+  "name": "Play Store Sentiment",
+  "emoji": "📱",
+  "description": "Deep Play Store sentiment module for Android apps. Given an app ID or store URL (preferably resolved first via find-platform-handles), scrape reviews, score sentiment across star ratings, and extract themes, complaints, and feature requests. Use this whenever the user asks about mobile app feedback, store reputation, or wants Play Store included in a multi-channel deep analysis.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["play store", "reviews", "android", "sentiment", "app"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "appId": { "type": "string", "description": "Play Store app ID or full store URL" },
+      "country": { "type": "string", "description": "Store country code (e.g. in, us)", "optional": true },
+      "lang": { "type": "string", "description": "Store language code (e.g. en)", "optional": true },
+      "distribution": { "type": "string", "description": "Reviews per star: 1:N,2:N,3:N,4:N,5:N (e.g. 1:2,2:2,3:5,4:5,5:1)", "optional": true }
+    }
+  },
+  "stages": ["thinking", "collecting", "sentiment-scoring", "sentiment-report"],
+  "stageLabels": {
+    "thinking": "Planning Play Store review scan",
+    "collecting": "Collecting reviews",
+    "sentiment-scoring": "Scoring sentiment",
+    "sentiment-report": "Summarizing findings",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

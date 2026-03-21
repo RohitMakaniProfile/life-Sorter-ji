@@ -1,0 +1,26 @@
+{
+  "id": "platform-taxonomy",
+  "name": "Platform Taxonomy",
+  "emoji": "🗺️",
+  "description": "Given a business landing page summary and web-search results, generate a dynamic platform taxonomy (categories + domain rules) for this business/region. Use this to classify discovered URLs across any ecosystem (India, China, US, etc.) without hardcoded lists.",
+  "entry": "runner.py",
+  "language": "python",
+  "stages": ["thinking", "running", "done"],
+  "stageLabels": {
+    "thinking": "Thinking",
+    "running": "Building taxonomy",
+    "done": "Done",
+    "error": "Error"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "businessUrl": { "type": "string", "description": "Business landing page URL (optional but recommended).", "optional": true },
+      "businessSummary": { "type": "string", "description": "Short landing-page summary (e.g. output text from business-scan).", "optional": true },
+      "searchResultsJson": { "type": "string", "description": "JSON string containing web-search results {query, results:[{title,url,snippet}]}. You can pass output.data from web-search.", "optional": true },
+      "regionHint": { "type": "string", "description": "Optional region hint (e.g. 'in', 'cn', 'us').", "optional": true }
+    }
+  },
+  "keywords": ["taxonomy", "platforms", "reviews", "delivery", "booking", "marketplaces", "social"]
+}
+
