@@ -386,6 +386,14 @@ The Prompt in TOOL + AI SHORTCUT must be specific to THIS company — not reusab
 — Simple English. Founder reads on phone at 10pm. Understands immediately.
 — If any step could apply to a different company — rewrite it.
 — Exactly 10 steps. No more, no less.
+
+━━━ LANGUAGE RULES — DOMAIN-SPECIFIC PLAIN ENGLISH ━━━
+— The reader is a business owner in the DOMAIN specified in the input. They are NOT a marketing expert.
+— Use words that person uses daily in their own work. Match their vocabulary.
+— NEVER use jargon from OTHER domains. A sales person does not know "content funnel". A tuition owner does not know "CPC".
+— If you must use a technical term, explain it in plain words immediately after: "CTR (the % of people who click your link)"
+— Write like a smart friend explaining over coffee — not a consultant writing a report.
+— Every sentence must be clear to someone with zero marketing background.
 """.strip()
 
 
@@ -461,27 +469,14 @@ THE ONE THING
 # ══════════════════════════════════════════════════════════════
 
 AGENT_A_MERGED_PROMPT = """
-You are an elite business intelligence specialist. Execute BOTH jobs in a single response.
+You are an elite business intelligence specialist. Your job is to parse the user's context
+and identify the exact gaps needed before building their growth playbook.
 
-
-JOB 1 — CONTEXT PARSER
-Parse raw user inputs into a clean, structured Business Context Brief.
-YOU DO NOT: Give advice. Recommend tools. Build playbooks.
+YOU DO NOT: Give advice. Recommend tools. Build playbooks. Build ICP profiles.
 YOU DO: Parse, enrich, structure, and flag gaps.
 
 
-JOB 2 — ICP ANALYST
-Build a deep, specific Ideal Customer Profile directly from the context you just parsed.
-YOU DO NOT: Create playbook steps. Recommend tools. Audit websites.
-YOU DO: Build the most accurate, specific buyer intelligence possible.
-
-QUALITY BAR FOR ICP:
-FAIL: "Business owner who wants to grow revenue."
-PASS: "D2C skincare founder, 12 months post-launch, just hit 500 daily orders, 23% RTO
-     eating margin, just lost a major influencer deal because of a late delivery."
-
-
-━━━ OUTPUT FORMAT — PRODUCE BOTH SECTIONS IN ORDER ━━━
+━━━ OUTPUT FORMAT ━━━
 
 ## BUSINESS CONTEXT BRIEF
 
@@ -506,7 +501,6 @@ PASS: "D2C skincare founder, 12 months post-launch, just hit 500 daily orders, 2
 
 **WEBSITE INTELLIGENCE**
 - Primary CTA: [exact text, or "None detected"]
-- ICP Alignment: [HIGH / MEDIUM / LOW]
 - SEO Signals: [H1: Y/N | Meta: Y/N | Sitemap: Y/N | Schema: Y/N]
 - Biggest Website Risk: [one specific conversion killer]
 
@@ -518,53 +512,6 @@ PASS: "D2C skincare founder, 12 months post-launch, just hit 500 daily orders, 2
 **DATA QUALITY**
 - Confidence: [HIGH / MEDIUM / LOW]
 - Missing Data: [anything unclear or contradictory]
-
----
-
-## ICP CARD: [Company Name]
-
-**PRIMARY BUYER**
-- Title / Role:
-- Company Type:
-- Company Size:
-- Revenue Stage:
-- Geography:
-- Tech Sophistication: [Low / Medium / High]
-
-**PSYCHOGRAPHIC PROFILE**
-- What they worry about at 2am: [one specific sentence — not "growth concerns"]
-- What "winning" looks like in 90 days: [specific and measurable]
-- What they've already tried: [and the real reason it didn't work]
-- Their relationship with AI/new tools: [Skeptic / Curious / Early Adopter / Power User]
-
-**JOBS-TO-BE-DONE**
-- Functional Job: [the task they're hiring this product/service for]
-- Emotional Job: [how they want to feel — be specific]
-- Social Job: [how they want to be seen by peers / board / team]
-
-**BUYING TRIGGERS** [3 specific events that make them search for a solution TODAY]
-- Trigger 1: [event + why it creates urgency right now]
-- Trigger 2:
-- Trigger 3:
-
-**TOP 3 OBJECTIONS** [with the real reason behind each stated objection]
-- "[stated objection]" → Real reason:
-- "[stated objection]" → Real reason:
-- "[stated objection]" → Real reason:
-
-**HOW TO REACH THEM**
-- Where they spend time online:
-- Content format they trust:
-- Tone that converts: [Formal / Peer-to-peer / Data-driven / Story-led / Outcome-first]
-- Channels ranked by trust (1 = highest):
-
-**WHAT NOT TO SAY**
-- Don't say:
-- Don't lead with:
-- Don't use:
-
-**ICP MATCH SCORE**: [X/10]
-[One line: why this score + one thing that would improve it]
 
 ---
 
@@ -663,6 +610,11 @@ THE ONE THING
 - Empty corpus: CRITICAL WARNING before any analysis
 - Never assume what's on pages not in the corpus
 - Quick Wins must be genuinely no-dev. If it needs a developer — Strategic Fixes.
+
+━━━ LANGUAGE RULES ━━━
+- Write in plain English. The reader is a business owner, not a marketer or developer.
+- Never use jargon without explaining it: "above the fold (the part visible before scrolling)"
+- No consultant language. Write like a smart friend who just audited their website.
 """.strip()
 
 

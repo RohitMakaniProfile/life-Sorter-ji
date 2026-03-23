@@ -49,6 +49,9 @@ npm-debug.log*
 # Vercel
 .vercel/
 
+# Credentials / secrets
+credentials/
+
 # Large media files
 *.mp4
 *.mov

@@ -1,3 +1,4 @@
+
 """
 ═══════════════════════════════════════════════════════════════
 PLAYBOOK ROUTER — AI Growth Playbook Generation Endpoints
@@ -496,63 +497,66 @@ def _extract_icp_section(agent_a_output: str) -> str:
 
 def _detect_gap_questions(agent2_output: str) -> bool:
     """
-    Detect whether Agent A's output contains gap questions.
-    Case-insensitive, handles different dash variants.
+    Detect gap questions only if we can actually parse structured Q1/Q2/Q3 blocks.
+    This prevents false positives from phrases like 'before the gap questions'.
     """
-    lower = agent2_output.lower()
-    markers_lower = [
-        "gap questions",
-        "before i build your playbook",
-        "i need clarity on",
-        "things the data didn't tell me",
-        "q1 —", "q1 –", "q1 -", "q1:",
-    ]
-    return any(m in lower for m in markers_lower)
+    return len(_parse_gap_questions(agent2_output)) > 0
 
 
 def _parse_gap_questions(agent2_output: str) -> list[dict[str, Any]]:
     """
-    Parse Agent 2's gap questions into structured list with options.
-    Expected format:
-        Q1 — Label: Question text
-          A) option text
-          B) option text
-          ...
+    Parse Agent A's gap questions into structured list with options.
+    Line-by-line parser — handles bold markers, dash variants, inline question text.
     """
-    parsed = []
-    # Match Q1/Q2/Q3 blocks: handles dash variants (—, –, -) and no-dash "Q1:" format
-    q_pattern = re.compile(
-        r'Q(\d+)\s*(?:[-—–]\s*\**([^:*\n]+?)\**\s*)?:\s*(.+?)(?=\nQ\d+\s*[-—–:|\s]|\Z)',
-        re.DOTALL
+    # Q header line: Q1 — Label: question  OR  Q1 — Label  (colon optional)
+    q_header_re = re.compile(
+        r'^\*{0,2}Q(\d+)\*{0,2}\s*(?:[—–\-]\s*)?(.+?)(?::\s*(.*))?$'
     )
+    # Options: A) text  OR  - A) text  OR  ↳ A) text  OR  • A) text
+    opt_re = re.compile(r'^[-*•↳]?\s*([A-E])\)\s*(.+)')
 
-    for match in q_pattern.finditer(agent2_output):
-        q_id = f"Q{match.group(1)}"
-        label = (match.group(2) or "").strip().strip('*') or q_id
-        body = match.group(3).strip()
+    parsed = []
+    current: dict | None = None
+    body_lines: list[str] = []
 
-        # Split body into question text and options
-        lines = body.split('\n')
-        question_parts = []
-        options = []
+    def _flush(q: dict, lines: list[str]) -> None:
+        question_parts: list[str] = []
+        options: list[str] = []
+        for raw in lines:
+            s = raw.strip().strip('*').strip()
+            if not s:
+                continue
+            m_opt = opt_re.match(s)
+            if m_opt:
+                # Normalize to "A) text" regardless of leading dash/bullet
+                options.append(f"{m_opt.group(1)}) {m_opt.group(2).strip()}")
+            elif not options:
+                question_parts.append(s)
+        # Inline text already pre-loaded into question_parts
+        question_text = ' '.join(question_parts) if question_parts else q['label']
+        if question_text and question_text != q['id']:
+            parsed.append({
+                "id": q['id'],
+                "label": q['label'],
+                "question": question_text,
+                "options": options,
+            })
 
-        for line in lines:
-            stripped = line.strip()
-            # Match option lines: A) ..., B) ..., etc.
-            opt_match = re.match(r'^([A-E])\)\s*(.+)', stripped)
-            if opt_match:
-                options.append(stripped)
-            elif stripped and not options:
-                # Still part of question text (before options start)
-                question_parts.append(stripped)
+    for raw_line in agent2_output.splitlines():
+        line = raw_line.strip()
+        m = q_header_re.match(line)
+        if m:
+            if current is not None:
+                _flush(current, body_lines)
+            q_num   = m.group(1)
+            label   = re.sub(r'\*+', '', m.group(2)).strip()        # strip ** bold
+            inline  = re.sub(r'\*+', '', m.group(3) or '').strip()  # text after colon (optional)
+            current = {'id': f'Q{q_num}', 'label': label}
+            body_lines = [inline] if inline else []
+        elif current is not None:
+            body_lines.append(raw_line)
 
-        question_text = ' '.join(question_parts) if question_parts else label
-
-        parsed.append({
-            "id": q_id,
-            "label": label,
-            "question": question_text,
-            "options": options,
-        })
+    if current is not None:
+        _flush(current, body_lines)
 
     return parsed

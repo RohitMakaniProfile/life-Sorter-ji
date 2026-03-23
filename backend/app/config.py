@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # ── SERP API ───────────────────────────────────────────────
     SERP_API_KEY: str = ""
 
+    # ── Serper API (serper.dev — web search for autonomous agents) ──
+    SERPER_API_KEY: str = ""
+
     # ── JusPay ─────────────────────────────────────────────────
     JUSPAY_MERCHANT_ID: str = ""
     JUSPAY_API_KEY: str = ""
@@ -86,6 +89,8 @@ class Settings(BaseSettings):
 
     # ── Google Sheets ──────────────────────────────────────────
     GOOGLE_SHEETS_WEBHOOK_URL: str = ""
+    GOOGLE_SHEETS_CREDENTIALS_JSON: str = ""   # Path to service account JSON
+    GOOGLE_SHEETS_FOLDER_ID: str = ""           # Target Drive folder ID (optional)
 
     # ── Rate Limiting ──────────────────────────────────────────
     RATE_LIMIT_CHAT: str = "10/minute"

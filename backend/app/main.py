@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
         rag,
         sandbox,
         playbook,
+        agent_executor,
     )
 
     # CRITICAL: Rebuild models here after routers are loaded
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(rag.router, prefix="/api/v1", tags=["RAG"])
     app.include_router(sandbox.router, prefix="/api/v1", tags=["Sandbox"])
     app.include_router(playbook.router, tags=["Playbook"])
+    app.include_router(agent_executor.router, tags=["Agent Executor"])
 
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
     app.include_router(legacy.router, prefix="/api", tags=["Legacy"])
