@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -88,7 +90,8 @@ def _build_agent_browser_command(url: str, instructions: Optional[str]) -> str:
     bin_name = os.environ.get("AGENT_BROWSER_BIN", "agent-browser")
 
     # Core sequence: open the URL, then take a JSON snapshot of the page.
-    base_cmd = f'{bin_name} open "{url}" && {bin_name} snapshot --json --compact'
+    # Use non-compact snapshot by default to preserve more visible content.
+    base_cmd = f'{bin_name} open "{url}" && {bin_name} snapshot --json'
 
     # Allow extra flags (e.g. --headed, --max-output) via env.
     extra = os.environ.get("AGENT_BROWSER_EXTRA_ARGS")
@@ -96,6 +99,103 @@ def _build_agent_browser_command(url: str, instructions: Optional[str]) -> str:
         base_cmd = f"{base_cmd} {extra}"
 
     return base_cmd
+
+
+def _visible_text_from_refs(refs: Any) -> str:
+    if not isinstance(refs, dict):
+        return ""
+    items: List[str] = []
+    for node in refs.values():
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("name") or "").strip()
+        if name:
+            items.append(name)
+    # Preserve order, remove duplicates.
+    seen = set()
+    deduped = [x for x in items if not (x in seen or seen.add(x))]
+    return "\n".join(deduped)
+
+
+def _normalize_visible_text(snapshot: str, refs: Any) -> str:
+    snap = (snapshot or "").strip()
+    refs_text = _visible_text_from_refs(refs)
+    parts = [p for p in [snap, refs_text] if p]
+    if not parts:
+        return ""
+    merged = "\n".join(parts)
+    # Remove obvious repeated blank lines while preserving readable structure.
+    merged = re.sub(r"\n{3,}", "\n\n", merged)
+    return merged.strip()
+
+
+def _strip_html_to_text(html: str) -> str:
+    cleaned = re.sub(r"(?is)<script\b[^>]*>.*?</script>", " ", html)
+    cleaned = re.sub(r"(?is)<style\b[^>]*>.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _collect_json_script_texts(html: str) -> list[str]:
+    chunks: list[str] = []
+    patterns = [
+        r'(?is)<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        r'(?is)<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        r'(?is)<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, html):
+            raw = (m.group(1) or "").strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+                chunks.append(json.dumps(obj, ensure_ascii=False))
+            except Exception:
+                chunks.append(raw)
+    return chunks
+
+
+def _fetch_js_enriched_text(url: str) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            )
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            html = raw.decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return ""
+
+    html_text = _strip_html_to_text(html)
+    script_chunks = _collect_json_script_texts(html)
+    if not script_chunks:
+        return html_text
+    merged = "\n".join([html_text, " ".join(script_chunks)])
+    merged = re.sub(r"\s+", " ", merged).strip()
+    return merged
+
+
+def _merge_sources(*texts: str) -> str:
+    lines: list[str] = []
+    seen = set()
+    for txt in texts:
+        for ln in (txt or "").splitlines():
+            l = ln.strip()
+            if not l:
+                continue
+            if l in seen:
+                continue
+            seen.add(l)
+            lines.append(l)
+    return "\n".join(lines).strip()
 
 
 def _run_single_page(url: str) -> Tuple[bool, Optional[Dict[str, Any]], str, str]:
@@ -151,6 +251,36 @@ def _run_single_page(url: str) -> Tuple[bool, Optional[Dict[str, Any]], str, str
 
     # Fallback: raw stdout as text.
     text = stdout or "agent-browser completed but produced no output."
+
+    # Try compact snapshot only if non-compact parse failed.
+    if not isinstance(data, dict):
+        compact_cmd = f'{os.environ.get("AGENT_BROWSER_BIN", "agent-browser")} open "{url}" && {os.environ.get("AGENT_BROWSER_BIN", "agent-browser")} snapshot --json --compact'
+        proc2 = subprocess.run(
+            compact_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=True,
+        )
+        stdout2 = (proc2.stdout or "").strip()
+        lines2 = [ln for ln in stdout2.splitlines() if ln.strip()]
+        cand2 = lines2[-1] if lines2 else ""
+        if proc2.returncode == 0 and cand2:
+            try:
+                parsed2 = json.loads(cand2)
+                if isinstance(parsed2, dict):
+                    data = parsed2
+                    text = stdout2 or text
+            except Exception:
+                pass
+
+    if isinstance(data, dict):
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        snapshot_str = str(inner.get("snapshot") or data.get("snapshot") or "")
+        refs = inner.get("refs") or data.get("refs") or {}
+        human_visible = _normalize_visible_text(snapshot_str, refs)
+        if human_visible:
+            text = human_visible
 
     return True, data if isinstance(data, dict) else None, text, stderr
 
@@ -361,6 +491,9 @@ def _crawl_agent_browser(
         origin = inner.get("origin") or data.get("origin") or url
         snapshot_str = inner.get("snapshot") or data.get("snapshot") or ""
         refs = inner.get("refs") or data.get("refs") or {}
+        visible_text = _normalize_visible_text(snapshot_str, refs)
+        js_text = _fetch_js_enriched_text(origin or url)
+        merged_visible_text = _merge_sources(visible_text, js_text)
 
         if not pages:
             base_url = origin or url
@@ -369,6 +502,7 @@ def _crawl_agent_browser(
             {
                 "url": origin or url,
                 "snapshot": snapshot_str,
+                "body_text": merged_visible_text or visible_text,
                 "refs": refs,
                 "depth": depth,
             }
@@ -376,11 +510,11 @@ def _crawl_agent_browser(
 
         # Emit page_data BEFORE marking the page as done so the UI doesn't show
         # "done" while content is still arriving.
-        if snapshot_str:
+        if merged_visible_text or visible_text:
             page_data_meta = {
                 "event": "page_data",
                 "url": origin or url,
-                "body_text": snapshot_str,
+                "body_text": merged_visible_text or visible_text,
             }
             print("PROGRESS:" + json.dumps(page_data_meta), flush=True)
 

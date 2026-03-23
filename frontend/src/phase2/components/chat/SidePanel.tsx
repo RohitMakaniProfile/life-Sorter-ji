@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PipelineState, TokenUsage } from '../../types';
@@ -156,6 +156,22 @@ export default function SidePanel({
     }
 
     return Object.values(cards);
+  }, [pipeline]);
+
+  const liveTokenEstimate = useMemo(() => {
+    const evs = pipeline?.progressEvents ?? [];
+    let outputChars = 0;
+    let outputTokensEstimated = 0;
+    for (const e of evs as any[]) {
+      const meta = (e?.meta ?? {}) as any;
+      if (meta?.kind !== 'token-usage') continue;
+      if (typeof meta.outputChars === 'number') outputChars = Math.max(outputChars, meta.outputChars);
+      if (typeof meta.outputTokensEstimated === 'number') {
+        outputTokensEstimated = Math.max(outputTokensEstimated, meta.outputTokensEstimated);
+      }
+    }
+    if (outputChars <= 0 && outputTokensEstimated <= 0) return null;
+    return { outputChars, outputTokensEstimated };
   }, [pipeline]);
 
   return (
@@ -402,7 +418,21 @@ export default function SidePanel({
               <p className="text-xs text-slate-500">No token usage recorded.</p>
             )
           ) : (
-            <p className="text-xs text-slate-500">Token usage appears after the run completes.</p>
+            liveTokenEstimate ? (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-3 py-2 text-xs font-semibold flex items-center justify-between bg-slate-50">
+                  <span>Live estimate</span>
+                  <span className="text-[11px] text-slate-600">
+                    ~{liveTokenEstimate.outputTokensEstimated.toLocaleString()} out
+                  </span>
+                </div>
+                <div className="px-3 py-2 text-[11px] text-slate-600">
+                  Output chars streamed: {liveTokenEstimate.outputChars.toLocaleString()}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Token usage appears after the run completes.</p>
+            )
           )}
         </div>
       </div>

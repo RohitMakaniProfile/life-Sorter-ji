@@ -225,6 +225,21 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             });
           },
           onProgress: (event: ApiProgressEvent) => {
+            const meta = (event as any)?.meta;
+            if (
+              meta?.kind === 'checklist-update' &&
+              typeof meta?.planId === 'string' &&
+              meta.planId === planId &&
+              typeof meta?.planMarkdown === 'string'
+            ) {
+              setMessages((prev) =>
+                prev.map((m: any) =>
+                  m?.role === 'assistant' && m?.kind === 'plan' && m?.planId === planId
+                    ? { ...m, content: meta.planMarkdown }
+                    : m
+                )
+              );
+            }
             setMessages((prev) => {
               const updated = [...prev];
               const last = updated[updated.length - 1];

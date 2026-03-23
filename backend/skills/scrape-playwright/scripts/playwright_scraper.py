@@ -67,6 +67,94 @@ def extract_text_from_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()[:50000]
 
 
+def extract_content_elements(html: str, max_items: int = 500) -> list[dict]:
+    """Fallback parser: preserve approximate DOM order as typed elements."""
+    html = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+    token_re = re.compile(
+        r"(?is)"
+        r"(<h[1-3][^>]*>.*?</h[1-3]>)|"
+        r"(<p[^>]*>.*?</p>)|"
+        r"(<li[^>]*>.*?</li>)|"
+        r"(<img[^>]*alt=[\"'][^\"']+[\"'][^>]*>)"
+    )
+    out: list[dict] = []
+    for m in token_re.finditer(html):
+        token = m.group(0)
+        if not token:
+            continue
+        low = token.lower()
+        if low.startswith("<img"):
+            am = re.search(r'(?is)alt=["\']([^"\']+)["\']', token)
+            val = re.sub(r"\s+", " ", (am.group(1) if am else "")).strip()
+            if val:
+                out.append({"type": "img_alt", "content": val})
+        else:
+            text = re.sub(r"<[^>]+>", " ", token)
+            text = re.sub(r"\s+", " ", text).strip()
+            if text:
+                tag = "text"
+                if low.startswith("<h1"):
+                    tag = "h1"
+                elif low.startswith("<h2"):
+                    tag = "h2"
+                elif low.startswith("<h3"):
+                    tag = "h3"
+                elif low.startswith("<p"):
+                    tag = "p"
+                elif low.startswith("<li"):
+                    tag = "li"
+                out.append({"type": tag, "content": text})
+        if len(out) >= max_items:
+            break
+    return out
+
+
+_ELEMENTS_EVAL_JS = """
+(maxItems) => {
+  const out = [];
+  const nodes = document.querySelectorAll('h1,h2,h3,p,li,img[alt]');
+  for (const node of nodes) {
+    if (out.length >= (maxItems || 500)) break;
+    const tag = (node.tagName || '').toLowerCase();
+    let type = tag;
+    let content = '';
+    if (tag === 'img') {
+      type = 'img_alt';
+      content = (node.getAttribute('alt') || '').trim();
+    } else {
+      content = (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
+    }
+    if (!content) continue;
+    out.push({ type, content });
+  }
+  return out;
+}
+"""
+
+
+def extract_content_elements_from_page(page, html: str, max_items: int = 500) -> list[dict]:
+    """Primary extractor: ordered DOM traversal via Playwright evaluate."""
+    try:
+        data = page.evaluate(_ELEMENTS_EVAL_JS, max_items)
+        if isinstance(data, list):
+            cleaned: list[dict] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                t = str(item.get("type") or "").strip().lower()
+                c = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+                if not t or not c:
+                    continue
+                cleaned.append({"type": t, "content": c})
+                if len(cleaned) >= max_items:
+                    break
+            if cleaned:
+                return cleaned
+    except Exception:
+        pass
+    return extract_content_elements(html, max_items=max_items)
+
+
 def parse_headings(html: str, level: int) -> list[str]:
     tag = f"h{level}"
     results = []
@@ -121,6 +209,12 @@ def parse_schema_types(html: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _progress(obj: dict) -> None:
+    # Explicit persistence hint for backend:
+    # - page_data: real scraped page payload (store in DB)
+    # - everything else: runtime status/info only (do not store)
+    if "streamKind" not in obj:
+        evt = str(obj.get("event") or "").strip().lower()
+        obj["streamKind"] = "data" if evt == "page_data" else "info"
     print(json.dumps(obj), file=sys.stderr, flush=True)
 
 
@@ -219,8 +313,8 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
         cookie_names = [c["name"] for c in context.cookies()]
 
         internal_links, _ = parse_links(html, url_norm, base_domain)
-        images_alt = re.findall(r'<img[^>]+alt=["\']([^"\']+)["\']', html, re.I)
         body_text = extract_text_from_html(html)
+        elements = extract_content_elements_from_page(page, html)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
 
         return {
@@ -230,12 +324,8 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
             "title": title,
             "meta_description": meta_desc,
             "meta_keywords": meta_keywords,
-            "h1": parse_headings(html, 1),
-            "h2": parse_headings(html, 2),
-            "h3": parse_headings(html, 3),
-            "body_text": body_text,
+            "elements": elements,
             "links_internal": internal_links,
-            "images_alt": images_alt[:50],
             "schema_types": parse_schema_types(html),
             "canonical": canonical,
             "robots": robots_meta,
@@ -375,8 +465,24 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
         cookie_names = [c["name"] for c in await context.cookies()]
 
         internal_links, _ = parse_links(html, url_norm, base_domain)
-        images_alt = re.findall(r'<img[^>]+alt=["\']([^"\']+)["\']', html, re.I)
         body_text = extract_text_from_html(html)
+        try:
+            data = await page.evaluate(_ELEMENTS_EVAL_JS, 500)
+            if isinstance(data, list):
+                elements = [
+                    {
+                        "type": str(it.get("type") or "").strip().lower(),
+                        "content": re.sub(r"\s+", " ", str(it.get("content") or "")).strip(),
+                    }
+                    for it in data
+                    if isinstance(it, dict) and str(it.get("type") or "").strip() and str(it.get("content") or "").strip()
+                ][:500]
+            else:
+                elements = []
+        except Exception:
+            elements = []
+        if not elements:
+            elements = extract_content_elements(html)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
 
         return {
@@ -386,12 +492,8 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
             "title": title,
             "meta_description": meta_desc,
             "meta_keywords": meta_keywords,
-            "h1": parse_headings(html, 1),
-            "h2": parse_headings(html, 2),
-            "h3": parse_headings(html, 3),
-            "body_text": body_text,
+            "elements": elements,
             "links_internal": internal_links,
-            "images_alt": images_alt[:50],
             "schema_types": parse_schema_types(html),
             "canonical": canonical,
             "robots": robots_meta,
@@ -623,7 +725,9 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
             with urllib.request.urlopen(robots_url, timeout=8) as r:
                 robots_txt = r.read().decode("utf-8", errors="replace")[:5000]
         except Exception:
-            pass
+            # If robots.txt is blocked/unavailable (common behind WAF), do not block crawl.
+            robots_parser = None
+            robots_txt = ""
 
     scraped_urls: list[str] = []
     failed_list: list[dict] = []  # [{"url": str, "error": str}, ...]
@@ -794,8 +898,8 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                 cookie_names = [c["name"] for c in context.cookies()]
 
                 internal_links, external_links = parse_links(html, url_norm, base_domain)
-                images_alt = re.findall(r'<img[^>]+alt=["\']([^"\']+)["\']', html, re.I)
                 body_text = extract_text_from_html(html)
+                elements = extract_content_elements_from_page(page, html)
                 content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
 
                 page_record = {
@@ -805,13 +909,9 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                     "title": title,
                     "meta_description": meta_desc,
                     "meta_keywords": meta_keywords,
-                    "h1": parse_headings(html, 1),
-                    "h2": parse_headings(html, 2),
-                    "h3": parse_headings(html, 3),
-                    "body_text": body_text,
+                    "elements": elements,
                     "links_internal": internal_links,
                     "links_external": external_links,
-                    "images_alt": images_alt[:50],
                     "schema_types": parse_schema_types(html),
                     "canonical": canonical,
                     "robots": robots_meta,

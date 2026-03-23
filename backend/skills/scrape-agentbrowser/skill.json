@@ -19,6 +19,12 @@
     "crawling": "Scraping with agent-browser",
     "done": "Done",
     "error": "Error"
+  },
+  "postprocessSummary": {
+    "mode": "multi_page",
+    "arrayPath": "pages",
+    "contentField": "snapshot",
+    "urlField": "url"
   }
 }
 

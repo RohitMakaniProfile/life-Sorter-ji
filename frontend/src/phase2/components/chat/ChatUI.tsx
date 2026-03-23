@@ -1,4 +1,4 @@
-import { useRef, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import VideoCard from './VideoCard';
@@ -232,12 +232,12 @@ function AssistantMessage({
   const isReport = m.role === 'assistant' && m.content.length > REPORT_THRESHOLD;
 
   // Start expanded while streaming; collapse once done and not loading
-  const [expanded, setExpanded] = useState(!isReport || loading);
+  const [expanded, setExpanded] = useState(!isReport);
 
   // Auto-expand while streaming tokens are coming in
   useEffect(() => {
-    if (loading && isReport) setExpanded(true);
-  }, [loading, isReport]);
+    if (loading && isReport && isLast) setExpanded(true);
+  }, [loading, isReport, isLast]);
 
   const previewContent = isReport
     ? m.content.split('\n').slice(0, PREVIEW_LINES).join('\n')
@@ -509,7 +509,7 @@ export default function ChatUI({
           (m.role === 'assistant' && !m.content && i !== messages.length - 1)
             ? null
             : (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div key={m.messageId ?? `${m.role}-${m.createdAt ?? ''}-${i}`} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {m.role === 'assistant' && (
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-white text-sm mr-3 flex-shrink-0 mt-1">
                 🤖

@@ -552,6 +552,39 @@ async def push_skill_output(skill_call_id: str, entry: dict[str, Any]) -> None:
         )
 
 
+async def append_skill_streamed_text(skill_call_id: str, text_chunk: str) -> None:
+    chunk = str(text_chunk or "")
+    if not chunk:
+        return
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        try:
+            await conn.execute(
+                """
+                UPDATE skill_calls
+                SET streamed_text = COALESCE(streamed_text, '') || $2,
+                    updated_at = NOW()
+                WHERE id = $1::bigint
+                """,
+                int(skill_call_id),
+                chunk,
+            )
+        except Exception:
+            await conn.execute(
+                "ALTER TABLE skill_calls ADD COLUMN IF NOT EXISTS streamed_text TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                """
+                UPDATE skill_calls
+                SET streamed_text = COALESCE(streamed_text, '') || $2,
+                    updated_at = NOW()
+                WHERE id = $1::bigint
+                """,
+                int(skill_call_id),
+                chunk,
+            )
+
+
 async def set_skill_call_result(skill_call_id: str, state: str, text: str | None, data: Any, error: str | None) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -565,7 +598,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         if not isinstance(output, list):
             output = []
         if text is not None or data is not None:
-            output.append({"type": "result", "text": text, "data": data, "at": now_iso()})
+            output.append({"type": "result", "summary": text, "text": text, "data": data, "at": now_iso()})
 
         started_at = row["started_at"] or now_iso()
         try:
@@ -608,6 +641,10 @@ async def get_skill_calls_by_message_id_full(message_id: str) -> list[dict[str, 
     out: list[dict[str, Any]] = []
     for r in rows:
         output = _to_obj(r["output"], [])
+        try:
+            streamed_text = r["streamed_text"] or ""
+        except Exception:
+            streamed_text = ""
         out.append(
             {
                 "id": str(r["id"]),
@@ -620,6 +657,7 @@ async def get_skill_calls_by_message_id_full(message_id: str) -> list[dict[str, 
                 "startedAt": r["started_at"],
                 "endedAt": r["ended_at"],
                 "durationMs": r["duration_ms"],
+                "streamedText": streamed_text,
             }
         )
     return out
@@ -634,6 +672,8 @@ async def get_skill_calls_by_message_id(message_id: str) -> list[dict[str, Any]]
             if isinstance(e, dict) and e.get("type") == "result":
                 last_result = e
                 break
+        streamed_text = str(c.get("streamedText") or "").strip()
+        result_text = (last_result or {}).get("text") if isinstance(last_result, dict) else ""
         out.append(
             {
                 "id": c["id"],
@@ -643,7 +683,8 @@ async def get_skill_calls_by_message_id(message_id: str) -> list[dict[str, Any]]
                 "startedAt": c.get("startedAt"),
                 "endedAt": c.get("endedAt"),
                 "durationMs": c.get("durationMs") or 0,
-                "rawText": (last_result or {}).get("text") if isinstance(last_result, dict) else "",
+                # Prefer per-page streamed NL text when available; fallback to final result text.
+                "rawText": streamed_text if streamed_text else result_text,
                 "rawData": (last_result or {}).get("data") if isinstance(last_result, dict) else None,
                 "error": c.get("error"),
             }
@@ -735,8 +776,39 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
         await conn.execute(q, *values)
 
 
-async def save_token_usage(message_id: str, model: str, input_tokens: int, output_tokens: int) -> None:
+def _encode_token_usage_model(model: str, stage: str | None, provider: str | None) -> str:
+    s = (stage or "").strip() or "unknown"
+    p = (provider or "").strip() or "unknown"
+    m = (model or "").strip() or "unknown"
+    return f"{s}||{p}||{m}"
+
+
+def _decode_token_usage_model(encoded: str) -> dict[str, str]:
+    if "||" not in (encoded or ""):
+        m = (encoded or "").strip() or "unknown"
+        return {"stage": "unknown", "provider": "unknown", "model": m}
+    parts = (encoded or "").split("||", 2)
+    if len(parts) != 3:
+        m = (encoded or "").strip() or "unknown"
+        return {"stage": "unknown", "provider": "unknown", "model": m}
+    return {
+        "stage": parts[0].strip() or "unknown",
+        "provider": parts[1].strip() or "unknown",
+        "model": parts[2].strip() or "unknown",
+    }
+
+
+async def save_token_usage(
+    message_id: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    stage: str | None = None,
+    provider: str | None = None,
+) -> None:
     pool = get_pool()
+    encoded_model = _encode_token_usage_model(model, stage, provider)
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -744,7 +816,7 @@ async def save_token_usage(message_id: str, model: str, input_tokens: int, outpu
             VALUES ($1, $2, $3, $4)
             """,
             message_id,
-            model,
+            encoded_model,
             input_tokens,
             output_tokens,
         )
@@ -758,12 +830,16 @@ async def get_token_usage(message_id: str) -> dict[str, Any]:
             message_id,
         )
     entries = [
-        {
-            "model": r["model"],
-            "inputTokens": r["input_tokens"],
-            "outputTokens": r["output_tokens"],
-            "createdAt": str(r["created_at"]),
-        }
+        (
+            lambda decoded: {
+                "stage": decoded["stage"],
+                "provider": decoded["provider"],
+                "model": decoded["model"],
+                "inputTokens": r["input_tokens"],
+                "outputTokens": r["output_tokens"],
+                "createdAt": str(r["created_at"]),
+            }
+        )(_decode_token_usage_model(str(r["model"])))
         for r in rows
     ]
     return {

@@ -28,12 +28,12 @@ Generate output in the exact order below:
 
 1. **Priority Actions Table (same final summary table at top)**  
    Keep the same style of final summary priority-actions table at the top.
-2. **Top 5 One-Liners: High-Leverage Brand & Product Levers**  
-   Provide 5 one-line takeaways from the strongest 5 insights.
-3. **Top 5 One-Liners: Competitive Intelligence**  
-   Provide 5 one-line takeaways from the strongest 5 insights.
-4. **Top 5 One-Liners: Conversion Optimizations**  
-   Provide 5 one-line takeaways from the strongest 5 insights.
+2. **One-Liner: High-Leverage Brand & Product Levers**  
+   Provide one-line takeaway from the strongest 5 insights.
+3. **One-Liners: Competitive Intelligence**  
+   Provide one-line takeaway from the strongest 5 insights.
+4. **One-Liners: Conversion Optimizations**  
+   Provide one-line takeaway from the strongest 5 insights.
 5. **1. High-Leverage Brand & Product Levers (10 Insights)**
 6. **2. Competitive Intelligence (10 Insights)**
 7. **3. Conversion Optimizations (10 Insights)**

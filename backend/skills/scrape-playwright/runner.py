@@ -31,6 +31,7 @@ def main() -> None:
   max_pages = int(args.get("maxPages") if args.get("maxPages") is not None else 9999)
   max_depth = int(args.get("maxDepth") if args.get("maxDepth") is not None else 10)
   deep = bool(args["deep"]) if "deep" in args and args["deep"] is not None else True
+  parallel = bool(args["parallel"]) if "parallel" in args and args["parallel"] is not None else False
 
   if not url:
     out: Dict[str, Any] = {"text": "scrape-playwright: missing url in args.url or message", "error": "missing_url"}
@@ -47,7 +48,10 @@ def main() -> None:
   ]
   if deep:
     cmd.append("--deep")
-  cmd.append("--parallel")
+  if parallel:
+    cmd.append("--parallel")
+  else:
+    cmd.append("--no-parallel")
 
   try:
     proc = subprocess.Popen(

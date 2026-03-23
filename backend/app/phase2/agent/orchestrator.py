@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
@@ -73,6 +74,7 @@ REPEATABLE_SKILLS = {
     "youtube-sentiment",
     "playstore-sentiment",
 }
+URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.I)
 
 DEFAULT_SELECTOR_CONTEXT = "\n".join([
     "You are a router that decides which local skill(s) to run next.",
@@ -149,6 +151,8 @@ def _build_planning_prompt(
     last_skill_raw_output: str,
     skill_calls: list[dict[str, Any]],
     used_skill_ids: list[str],
+    checklist_unchecked: list[str] | None = None,
+    parallel_limit: int = 3,
 ) -> str:
     skills_md = "\n".join(
         f"- **{s['id']}** — {s['name']}: {s.get('description', '')}"
@@ -161,20 +165,24 @@ def _build_planning_prompt(
         if raw_data is not None:
             last_data_excerpt = f"\nLast skill structured rawData (JSON excerpt):\n{json.dumps(raw_data)[:3000]}\n"
 
-    parts = [
-        selector_context,
-        "",
-        "Available skills:",
-        skills_md,
-        "",
-        f"User message:\n{message}",
-        "",
-        f"Skill calls so far (summary):\n{calls_summary}",
-    ]
-    if last_skill_raw_output:
-        parts.append(f"\nLast skill raw output:\n{last_skill_raw_output}\n")
-    if last_data_excerpt:
-        parts.append(last_data_excerpt)
+    checklist_unchecked = checklist_unchecked or []
+    parts = [selector_context, "", "Available skills:", skills_md, "", f"User message:\n{message}", ""]
+    if checklist_unchecked:
+        parts += [
+            "Unchecked plan checklist items (focus ONLY on these):",
+            "\n".join(f"- {it}" for it in checklist_unchecked),
+            "",
+            "Selection policy:",
+            "- Choose skills that best satisfy unchecked items only.",
+            f"- Select between 1 and {parallel_limit} skills this round.",
+            "- Do not over-call skills; run parallel only when items are independent.",
+        ]
+    else:
+        parts += [f"Skill calls so far (summary):\n{calls_summary}"]
+        if last_skill_raw_output:
+            parts.append(f"\nLast skill raw output:\n{last_skill_raw_output}\n")
+        if last_data_excerpt:
+            parts.append(last_data_excerpt)
     parts.append(
         f"Skills used so far in this turn (repeats allowed if args/target differs): {', '.join(used_skill_ids) or '(none)'}"
     )
@@ -193,6 +201,84 @@ def _is_retryable_gemini(err_msg: str) -> bool:
 def _is_404_gemini(err_msg: str) -> bool:
     lower = err_msg.lower()
     return any(k in lower for k in ["404", "not_found", '"code":404'])
+
+
+def _extract_url(message: str) -> str:
+    m = URL_RE.search(message or "")
+    return m.group(0).rstrip("),.;]\"'") if m else ""
+
+
+def _parse_checklist_items(markdown: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for ln in (markdown or "").splitlines():
+        line = ln.strip()
+        if not line.startswith(("- [", "* [")):
+            continue
+        checked = line.lower().startswith("- [x]") or line.lower().startswith("* [x]")
+        text = re.sub(r"^[-*]\s+\[[ xX]\]\s+", "", line).strip()
+        if not text:
+            continue
+        items.append({"text": text, "done": checked})
+    return items
+
+
+def _unchecked_items(items: list[dict[str, Any]]) -> list[str]:
+    return [str(i.get("text") or "").strip() for i in items if not i.get("done") and str(i.get("text") or "").strip()]
+
+
+def _optimal_parallel_count(unchecked_count: int) -> int:
+    if unchecked_count <= 1:
+        return 1
+    if unchecked_count <= 4:
+        return 2
+    return 3
+
+
+async def _mark_checklist_items_from_summary(
+    ai: AiHelper,
+    checklist_items: list[dict[str, Any]],
+    *,
+    skill_id: str,
+    summary_text: str,
+) -> None:
+    unchecked = _unchecked_items(checklist_items)
+    if not unchecked or not (summary_text or "").strip():
+        return
+    payload = {
+        "uncheckedItems": unchecked,
+        "skillId": skill_id,
+        "skillSummary": summary_text[:12000],
+    }
+    try:
+        res = await ai.chat(
+            message="\n".join(
+                [
+                    "Given unchecked checklist items and one skill summary, return which checklist items are now satisfied.",
+                    'Return JSON only with shape: { "checkedItems": ["exact item text", ...] }',
+                    "Rules: choose only items directly supported by evidence from the summary. No guessing.",
+                    json.dumps(payload, ensure_ascii=False),
+                ]
+            ),
+            system_prompt="You are a strict evidence matcher.",
+            conversation_history=[],
+        )
+        parsed = json.loads((res.message or "").strip())
+        checked = parsed.get("checkedItems") if isinstance(parsed, dict) else []
+        checked_set = {str(x).strip() for x in (checked or []) if str(x).strip()}
+        if checked_set:
+            for item in checklist_items:
+                txt = str(item.get("text") or "").strip()
+                if txt in checked_set:
+                    item["done"] = True
+    except Exception:
+        lower = (summary_text or "").lower()
+        for item in checklist_items:
+            if item.get("done"):
+                continue
+            txt = str(item.get("text") or "").strip().lower()
+            tokens = [t for t in re.findall(r"[a-z0-9]{4,}", txt) if t not in {"with", "from", "that", "this", "have", "will"}]
+            if tokens and sum(1 for t in tokens if t in lower) >= min(3, max(1, len(tokens) // 2)):
+                item["done"] = True
 
 
 async def run_single_skill_fallback(
@@ -334,6 +420,8 @@ async def run_agent_turn_stream(
     last_skill_result: dict[str, Any] | None = None
     last_skill_raw_output = ""
     gemini_unavailable = False
+    checklist_source = str(contexts.get("planMarkdown") or message)
+    checklist_items = _parse_checklist_items(checklist_source)
 
     for loop in range(MAX_LOOPS):
         if gemini_unavailable:
@@ -343,6 +431,8 @@ async def run_agent_turn_stream(
             skill_calls = await get_skill_calls_by_message_id(message_id_opt)
 
         calls_summary = await build_calls_summary(skill_calls, ai)
+        unchecked_items = _unchecked_items(checklist_items)
+        parallel_limit = _optimal_parallel_count(len(unchecked_items)) if unchecked_items else 3
 
         all_skills = list_skills()
         skills_for_prompt = [
@@ -364,6 +454,8 @@ async def run_agent_turn_stream(
             last_skill_raw_output=last_skill_raw_output,
             skill_calls=skill_calls,
             used_skill_ids=used_skill_ids,
+            checklist_unchecked=unchecked_items,
+            parallel_limit=parallel_limit,
         )
 
         plan_response_schema = {
@@ -418,8 +510,18 @@ async def run_agent_turn_stream(
             break
         if last_plan_error:
             break
+        if loop == 0:
+            seed_url = _extract_url(message)
+            already_used_playwright = any(c.get("skillId") == "scrape-playwright" for c in skill_calls)
+            can_use_playwright = (not allowed_skill_ids) or ("scrape-playwright" in allowed_skill_ids)
+            if seed_url and can_use_playwright and not already_used_playwright:
+                skill_ids_existing = plan.get("skillIds") or []
+                if "scrape-playwright" not in skill_ids_existing:
+                    plan["skillIds"] = ["scrape-playwright", *skill_ids_existing]
         if plan.get("done") or not plan.get("skillIds"):
             break
+        if parallel_limit > 0 and len(plan["skillIds"]) > parallel_limit:
+            plan["skillIds"] = plan["skillIds"][:parallel_limit]
 
         planned_manifests: list[SkillManifest] = []
         for sid in plan["skillIds"]:
@@ -435,7 +537,17 @@ async def run_agent_turn_stream(
         if not planned_manifests:
             break
 
-        skill_input_message = _append_prior_skill_outputs(message, skill_calls)
+        if unchecked_items:
+            skill_input_message = "\n".join(
+                [
+                    message.strip(),
+                    "",
+                    "Unchecked checklist items:",
+                    "\n".join(f"- {it}" for it in unchecked_items),
+                ]
+            )
+        else:
+            skill_input_message = _append_prior_skill_outputs(message, skill_calls)
 
         extracted_args_list: list[dict[str, Any]] = []
         filtered_manifests: list[SkillManifest] = []
@@ -563,6 +675,13 @@ async def run_agent_turn_stream(
                     "outputSummary": raw_text[:600],
                 },
             })
+            if checklist_items and skill_result.status != "error" and raw_text.strip():
+                await _mark_checklist_items_from_summary(
+                    ai,
+                    checklist_items,
+                    skill_id=m.id,
+                    summary_text=raw_text,
+                )
 
         last_skill_raw_output = "\n\n---\n\n".join(batch_excerpts)
         if persist_to_db and message_id_opt:

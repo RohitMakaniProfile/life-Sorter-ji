@@ -253,6 +253,7 @@ CREATE TABLE IF NOT EXISTS skill_calls (
     skill_id        TEXT        NOT NULL,
     run_id          TEXT        NOT NULL,
     input           JSONB       NOT NULL DEFAULT '{}'::JSONB,
+    streamed_text   TEXT        NOT NULL DEFAULT '',
     state           TEXT        NOT NULL DEFAULT 'running'
                                 CHECK (state IN ('running', 'done', 'error')),
     -- Array of output event objects: {type, event?, payload?, text?, data?, at}
@@ -264,6 +265,9 @@ CREATE TABLE IF NOT EXISTS skill_calls (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE skill_calls
+    ADD COLUMN IF NOT EXISTS streamed_text TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_skill_calls_message_id
     ON skill_calls (message_id);

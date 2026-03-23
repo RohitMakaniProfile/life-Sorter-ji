@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, PYTHON_BIN, SKILLS_ROOT
+from .ai import AiHelper
+from .config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -24,6 +25,10 @@ class SkillManifest:
     stages: list[str]
     stage_labels: dict[str, str]
     input_schema: dict[str, Any] | None
+    summary_mode: str = "single"
+    summary_array_path: str | None = None
+    summary_content_field: str = "snapshot"
+    summary_url_field: str = "url"
 
 
 @dataclass
@@ -69,6 +74,10 @@ def load_skills() -> None:
             labels = raw.get("stageLabels") if isinstance(raw.get("stageLabels"), dict) else {}
             stage_labels = {**_default_stage_labels(), **{str(k): str(v) for k, v in labels.items()}}
             stages = raw.get("stages") if isinstance(raw.get("stages"), list) else ["thinking", "running", "done"]
+            post_summary = raw.get("postprocessSummary") if isinstance(raw.get("postprocessSummary"), dict) else {}
+            summary_mode = str(post_summary.get("mode") or "single").strip().lower()
+            if summary_mode not in ("single", "multi_page"):
+                summary_mode = "single"
             skills[sid] = SkillManifest(
                 id=sid,
                 name=str(raw.get("name", sid)),
@@ -79,6 +88,10 @@ def load_skills() -> None:
                 stages=[str(s) for s in stages],
                 stage_labels=stage_labels,
                 input_schema=raw.get("inputSchema") if isinstance(raw.get("inputSchema"), dict) else None,
+                summary_mode=summary_mode,
+                summary_array_path=str(post_summary.get("arrayPath")).strip() if post_summary.get("arrayPath") else None,
+                summary_content_field=str(post_summary.get("contentField") or "snapshot"),
+                summary_url_field=str(post_summary.get("urlField") or "url"),
             )
 
     # Built-in platform-scout (TS-only in original, reimplemented here)
@@ -137,6 +150,160 @@ def _extract_url(message: str) -> str:
     if not m:
         return ""
     return m.group(0).rstrip("),.;]\"'")
+
+
+def _clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _get_by_path(data: Any, path: str | None) -> Any:
+    if not path:
+        return data
+    cur = data
+    for token in [p for p in path.split(".") if p]:
+        if isinstance(cur, dict):
+            cur = cur.get(token)
+        else:
+            return None
+    return cur
+
+
+def _progress_stream_kind(meta: dict[str, Any]) -> str:
+    explicit = str(meta.get("streamKind") or "").strip().lower()
+    if explicit in ("info", "data"):
+        return explicit
+    evt = str(meta.get("event") or "").strip().lower()
+    if evt in {"page_data", "data", "result", "record", "item"}:
+        return "data"
+    return "info"
+
+
+async def _emit_summary_token_usage(
+    on_progress: ProgressCb | None,
+    *,
+    stage: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    if on_progress is None:
+        return
+    try:
+        await on_progress(
+            {
+                "stage": "running",
+                "type": "task",
+                "message": f"Token usage recorded ({stage})",
+                "meta": {
+                    "kind": "token-usage",
+                    "stage": stage,
+                    "provider": "openai",
+                    "model": OPENAI_MODEL,
+                    "inputTokens": int(input_tokens or 0),
+                    "outputTokens": int(output_tokens or 0),
+                },
+            }
+        )
+    except Exception:
+        pass
+
+
+async def _summarize_single(
+    skill_id: str,
+    data: Any,
+    fallback_text: str,
+    *,
+    on_progress: ProgressCb | None = None,
+) -> str:
+    try:
+        raw_json = json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return fallback_text
+    raw_json = raw_json[:120_000]
+    ai = AiHelper(provider="openai", temperature=0.2)
+    prompt = "\n".join(
+        [
+            f"Skill: {skill_id}",
+            "Convert this raw JSON output into compact, faithful natural-language Markdown.",
+            "Rules:",
+            "- Preserve all information categories/keys at least once.",
+            "- Remove repetitive wording and duplicate entries.",
+            "- For long arrays, summarize with counts and representative examples.",
+            "- Do not invent data.",
+            "",
+            "Raw JSON:",
+            raw_json,
+        ]
+    )
+    res = await ai.chat(
+        message=prompt,
+        system_prompt="You are a precise data-to-text formatter. Keep full coverage with minimal redundancy.",
+    )
+    await _emit_summary_token_usage(
+        on_progress,
+        stage=f"skill-summary.{skill_id}",
+        input_tokens=res.input_tokens,
+        output_tokens=res.output_tokens,
+    )
+    text = (res.message or "").strip()
+    return text or fallback_text
+
+
+async def _summarize_multi_page(
+    skill_id: str,
+    data: Any,
+    *,
+    array_path: str | None,
+    content_field: str,
+    url_field: str,
+    fallback_text: str,
+    on_progress: ProgressCb | None = None,
+) -> str:
+    pages = _get_by_path(data, array_path)
+    if not isinstance(pages, list) or not pages:
+        return await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
+
+    ai = AiHelper(provider="openai", temperature=0.2)
+    blocks: list[str] = []
+
+    for idx, item in enumerate(pages, start=1):
+        if not isinstance(item, dict):
+            continue
+        page_url = str(item.get(url_field) or f"(page {idx})")
+        page_content = _clean_text(str(item.get(content_field) or ""))
+        if not page_content:
+            continue
+        page_content = page_content[:14_000]
+        prompt = "\n".join(
+            [
+                f"Skill: {skill_id}",
+                f"Page URL: {page_url}",
+                "Rewrite the page content into concise natural language, preserving all key information and removing redundant words/repetition.",
+                "Do not invent data. Keep it compact and faithful.",
+                "",
+                "Page content:",
+                page_content,
+            ]
+        )
+        try:
+            res = await ai.chat(
+                message=prompt,
+                system_prompt="You compress webpage extraction text into faithful natural-language notes.",
+            )
+            await _emit_summary_token_usage(
+                on_progress,
+                stage=f"skill-summary.{skill_id}.page",
+                input_tokens=res.input_tokens,
+                output_tokens=res.output_tokens,
+            )
+            page_summary = (res.message or "").strip()
+        except Exception:
+            page_summary = page_content
+        if page_summary:
+            blocks.append(f"page: {page_url}\ncontent: {page_summary}")
+
+    if not blocks:
+        return await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
+    return "\n\n".join(blocks)
 
 
 def _platform_scout_heuristic(
@@ -404,6 +571,9 @@ async def run_skill(
                 meta = json.loads(raw_json)
             except Exception:
                 meta = {"event": "info", "raw": raw_json}
+            if not isinstance(meta, dict):
+                meta = {"event": "info", "raw": raw_json}
+            meta["streamKind"] = _progress_stream_kind(meta)
             event_name = str(meta.get("event", "info"))
             message_text = str(meta.get("url") or meta.get("message") or event_name)
             await _emit(
@@ -442,6 +612,23 @@ async def run_skill(
     status = "error" if err else "ok"
     if not text and err:
         text = ""
+
+    if status == "ok" and data is not None and manifest.summary_mode in ("single", "multi_page"):
+        try:
+            if manifest.summary_mode == "multi_page":
+                text = await _summarize_multi_page(
+                    skill_id=skill_id,
+                    data=data,
+                    array_path=manifest.summary_array_path,
+                    content_field=manifest.summary_content_field,
+                    url_field=manifest.summary_url_field,
+                    fallback_text=text,
+                    on_progress=on_progress,
+                )
+            else:
+                text = await _summarize_single(skill_id=skill_id, data=data, fallback_text=text, on_progress=on_progress)
+        except Exception:
+            pass
 
     return SkillRunResult(
         status=status,

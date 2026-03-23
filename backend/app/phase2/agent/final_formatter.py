@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 from ..ai import AiHelper
-from ..config import CLAUDE_API_KEY, CLAUDE_MODEL
+from ..config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
 
 TokenCb = Callable[[str], Awaitable[None] | None]
 
@@ -18,6 +18,10 @@ class FormatterResult:
     error: str | None
     stage_outputs: dict[str, Any]
     duration_ms: int
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
 
 
 async def format_final_answer(
@@ -94,4 +98,8 @@ async def format_final_answer(
         error=error,
         stage_outputs=stage_outputs,
         duration_ms=duration_ms,
+        model=CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
+        provider="anthropic" if CLAUDE_API_KEY else "openai",
+        input_tokens=stream_result.input_tokens,
+        output_tokens=stream_result.output_tokens,
     )
