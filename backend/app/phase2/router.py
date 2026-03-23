@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .ai import AiHelper
+from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
 from .config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
 from .skills import first_skill_id, get_skill, list_skills, run_skill
@@ -201,6 +202,255 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _sse(data: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _emit_plan_progress(
+    cb,
+    message: str,
+    *,
+    event: str | None = None,
+    kind: str = "task",
+) -> None:
+    if cb is None:
+        return
+    await cb({
+        "stage": "thinking",
+        "type": kind,
+        "message": message,
+        "meta": {"event": event or "info"},
+    })
+
+
+async def _create_plan_draft(
+    *,
+    body: dict[str, Any],
+    emit_progress=None,
+) -> dict[str, Any]:
+    message = str(body.get("message") or "").strip()
+    resolved = await _resolve_agent_and_skill(body)
+    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    contexts = resolved.get("contexts", {})
+
+    cancel_plan_id = str(body.get("cancelPlanId") or "").strip()
+    if cancel_plan_id:
+        existing = await get_plan_run(cancel_plan_id)
+        if existing and existing.get("conversationId") == conv["id"] and existing.get("status") == "draft":
+            await update_plan_run(cancel_plan_id, {"status": "cancelled"})
+
+    user_message_id = await append_message(conv["id"], "user", message)
+
+    placeholder = "\n".join([
+        "## Plan (draft)",
+        "",
+        "- Collect on-site evidence (business-scan + agent browser crawl)",
+        "- Run platform-scout (mandatory) to infer scope/region and generate competitor + review queries",
+        "- Run web-search (mandatory) using scout queries to find competitor + review URLs",
+        "- Execute remaining steps (taxonomy/classify/targeted scraping) after approval",
+        "",
+        "*(Generating plan...)*",
+    ])
+    plan_message_id = await append_message(conv["id"], "assistant", placeholder, kind="plan")
+
+    await _emit_plan_progress(emit_progress, "Analyzing request context", event="plan-started")
+    url = _extract_url_from_message(message)
+
+    async def _run_skill_for_plan(sid: str, args: dict[str, Any], input_msg: str) -> Any:
+        if not get_skill(sid):
+            return None
+        run_id = f"plan-{plan_message_id}-{sid}-{int(_time.time() * 1000)}"
+        skill_call_id = await create_skill_call(conv["id"], plan_message_id, sid, run_id, {"args": args})
+
+        async def _on_prog(event: dict[str, Any]) -> None:
+            meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+            await push_skill_output(skill_call_id, {
+                "type": "progress",
+                "event": str(meta.get("event")) if meta.get("event") else None,
+                "payload": meta,
+            })
+
+        result = await run_skill(sid, input_msg, history=conv.get("messages") or [], args=args, on_progress=_on_prog)
+        await set_skill_call_result(
+            skill_call_id,
+            "error" if result.status == "error" else "done",
+            result.text, result.data, result.error,
+        )
+        return result
+
+    scan_args: dict[str, Any] = {"url": url} if url else {}
+    crawl_args_plan: dict[str, Any] = (
+        {"url": url, "maxPages": 5, "maxDepth": 2}
+        if url else {}
+    )
+    crawl_args_execute: dict[str, Any] = (
+        {"url": url, "maxPages": 30, "maxDepth": 3} if url else {}
+    )
+
+    if url:
+        await _emit_plan_progress(emit_progress, "Reading business information from website", event="business-scan-start")
+        scan_res, crawl_res = await asyncio.gather(
+            _run_skill_for_plan("business-scan", scan_args, message),
+            _run_skill_for_plan("scrape-bs4", crawl_args_plan, message),
+        )
+    else:
+        await _emit_plan_progress(
+            emit_progress,
+            "No URL detected, planning from your prompt context",
+            event="no-url",
+            kind="info",
+        )
+        scan_res = crawl_res = None
+
+    scan_text: str = str(scan_res.text) if scan_res and scan_res.text else ""
+    scan_data: Any = scan_res.data if scan_res else None
+    crawl_data: Any = crawl_res.data if crawl_res else None
+    crawl_pages_excerpt = _get_crawl_pages_excerpt(crawl_data)
+
+    scout_input = "\n".join(filter(None, [
+        message,
+        f"Business URL: {url}" if url else "",
+        f"business-scan (text):\n{scan_text}" if scan_text else "",
+        f"scrape-bs4 (page excerpts):\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
+    ]))
+    scout_args: dict[str, Any] = {"businessUrl": url, "regionHint": "", "language": ""} if url else {}
+    await _emit_plan_progress(emit_progress, "Inferring business scope and discovery queries", event="platform-scout-start")
+    scout_res = await _run_skill_for_plan("platform-scout", scout_args, scout_input) if url else None
+    scout_data: Any = scout_res.data if scout_res else None
+
+    queries, operation_type, covered_region, market_guess, business_name = _normalize_scout_queries(
+        scout_data or {}, scan_data or {}, url
+    )
+    business_ref = business_name or "business"
+    await _emit_plan_progress(
+        emit_progress,
+        f"Searching {business_ref} related information on web",
+        event="web-search-start",
+        kind="search",
+    )
+    web_search_args: dict[str, Any] = {
+        "queries": "\n".join(queries),
+        "maxResultsPerQuery": 6,
+        "maxTotalResults": 40 if queries else 30,
+        "region": covered_region,
+        "market": market_guess,
+        "operationType": operation_type,
+        "coveredRegion": covered_region,
+        "businessName": business_name,
+        "businessUrl": url,
+    }
+    search_res = await _run_skill_for_plan("web-search", web_search_args, message)
+    search_data: Any = search_res.data if search_res else None
+
+    candidate_urls: list[str] = []
+    if isinstance(search_data, dict):
+        results_list = (
+            search_data.get("result", {}).get("results")
+            or search_data.get("results")
+            or []
+        )
+        for r in (results_list if isinstance(results_list, list) else []):
+            u = r.get("url") or r.get("link") if isinstance(r, dict) else None
+            if isinstance(u, str) and u.startswith("http") and u not in candidate_urls:
+                candidate_urls.append(u)
+
+    planner_ctx = (contexts.get("skillSelectorContext") or "").strip()
+    active_model = CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL
+
+    plan_prompt = "\n".join(filter(None, [
+        "You generate an execution plan for a deep business analysis.",
+        "",
+        "Inputs:",
+        "- User request",
+        "- On-site evidence (business-scan + crawl excerpts)",
+        "- Platform scout output (scope/locality + queries)",
+        "- Web search results (candidate URLs)",
+        "",
+        "Requirements:",
+        "- Output MUST be Markdown only.",
+        "- Plan must contain a TODO checklist (Markdown checkboxes) that, when completed, guarantees enough evidence to write the final report.",
+        "- The checklist must adapt to local vs global scope. If local, include locality/region-specific tasks.",
+        "- The plan should be built USING the business context, but should not dump raw scraped data.",
+        "- Competitor discovery queries must be market/category + audience + (if local) region based; avoid using only business name for competitor search.",
+        "- Review/listing discovery should target exact business identity (name/domain + location for local businesses).",
+        '- Include a section titled "Phase 6 — Targeted Collection (Reviews + Competitors)".',
+        '- Include a short "Assumptions to verify" section so user can confirm the inferred basics (scope/region/category).',
+        '- Add an "Inferred Business Profile" section with: market, operation type (local/global), and region.',
+        "",
+        f"Planner context:\n{planner_ctx}" if planner_ctx else "",
+        "",
+        "User request:",
+        message,
+        "",
+        f"Inferred basics (may be wrong): market={market_guess} operationType={operation_type} region={covered_region}",
+        "",
+        f"business-scan (summary text):\n{scan_text}" if scan_text else "",
+        f"crawl excerpts:\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
+        f"platform-scout (JSON excerpt):\n{json.dumps(scout_data)[:5000]}" if scout_data else "",
+        ("web-search candidate URLs:\n" + "\n".join(f"- {u}" for u in candidate_urls[:30])) if candidate_urls else "",
+    ]))
+
+    await _emit_plan_progress(emit_progress, "Creating plan draft", event="plan-markdown-generation")
+    try:
+        ai = AiHelper(temperature=0.2)
+        ai_result = await ai.chat(
+            message=plan_prompt,
+            system_prompt="You are a planning assistant. Output only Markdown. No code fences.",
+        )
+        plan_markdown = ai_result.message.strip()
+        await save_token_usage(plan_message_id, active_model, ai_result.input_tokens, ai_result.output_tokens)
+    except Exception:
+        plan_markdown = "\n".join([
+            "## Execution Plan",
+            "",
+            f"User request: {message}",
+            "",
+            "### Checklist",
+            "- [ ] Run `business-scan` on target URL/context",
+            "- [ ] Run `scrape-bs4` for evidence collection",
+            "- [ ] Run `platform-scout` to derive discovery queries",
+            "- [ ] Run `web-search` with scout queries",
+            "- [ ] Run `platform-taxonomy` and `classify-links`",
+            "- [ ] Produce final synthesis",
+            "",
+            "### Assumptions to verify",
+            "- Scope (local/global)",
+            "- Region/market",
+            "- Primary business category",
+        ])
+
+    plan_json = {
+        "steps": [
+            {"stepId": "scan", "skillId": "business-scan", "args": scan_args, "purpose": "Extract landing page business facts"},
+            {"stepId": "crawl", "skillId": "scrape-bs4", "args": crawl_args_execute, "purpose": "Collect multi-page on-site evidence"},
+            {"stepId": "scout", "skillId": "platform-scout", "args": scout_args, "dependsOn": ["scan", "crawl"], "purpose": "Generate region-aware review + competitor queries"},
+            {"stepId": "search", "skillId": "web-search", "args": web_search_args, "dependsOn": ["scout"], "purpose": "Find review/listing URLs + competitor URLs"},
+            {"stepId": "taxonomy", "skillId": "platform-taxonomy", "args": {}, "dependsOn": ["crawl", "search"], "purpose": "Build ecosystem map + domain rules"},
+            {"stepId": "classify", "skillId": "classify-links", "args": {}, "dependsOn": ["taxonomy"], "purpose": "Classify discovered URLs"},
+        ],
+        "evidence": {
+            "businessUrl": url,
+            "marketGuess": market_guess,
+            "operationType": operation_type,
+            "coveredRegion": covered_region,
+            "scoutQueries": queries,
+            "candidateUrls": candidate_urls[:50],
+        },
+    }
+
+    plan_run = await create_plan_run(conv["id"], user_message_id, plan_message_id, plan_markdown, plan_json)
+    await update_message_content(conv["id"], plan_message_id, plan_markdown)
+    await update_message_meta(conv["id"], plan_message_id, "plan", plan_run["id"])
+
+    await _emit_plan_progress(emit_progress, "Plan ready for your approval", event="plan-ready", kind="done")
+    return {
+        "conversationId": conv["id"],
+        "planId": plan_run["id"],
+        "planMessageId": plan_message_id,
+        "planMarkdown": plan_markdown,
+        "agentId": resolved["agentId"],
+        "skillId": resolved["skillId"],
+        "allowedSkillIds": resolved.get("allowedSkillIds", []),
+        "contexts": contexts,
+    }
 
 
 def _build_retry_message(
@@ -482,213 +732,54 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+    return await _create_plan_draft(body=body)
 
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
-    contexts = resolved.get("contexts", {})
 
-    cancel_plan_id = str(body.get("cancelPlanId") or "").strip()
-    if cancel_plan_id:
-        existing = await get_plan_run(cancel_plan_id)
-        if existing and existing.get("conversationId") == conv["id"] and existing.get("status") == "draft":
-            await update_plan_run(cancel_plan_id, {"status": "cancelled"})
+@router.post("/api/chat/plan/stream")
+async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
+    body = await req.json()
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
 
-    user_message_id = await append_message(conv["id"], "user", message)
+    async def generator():
+        queue: asyncio.Queue[bytes] = asyncio.Queue()
+        done = asyncio.Event()
 
-    placeholder = "\n".join([
-        "## Plan (draft)",
-        "",
-        "- Collect on-site evidence (business-scan + agent browser crawl)",
-        "- Run platform-scout (mandatory) to infer scope/region and generate competitor + review queries",
-        "- Run web-search (mandatory) using scout queries to find competitor + review URLs",
-        "- Execute remaining steps (taxonomy/classify/targeted scraping) after approval",
-        "",
-        "*(Generating plan…)*",
-    ])
-    plan_message_id = await append_message(conv["id"], "assistant", placeholder, kind="plan")
+        async def emit(event: dict[str, Any]) -> None:
+            await queue.put(_sse(event))
 
-    url = _extract_url_from_message(message)
+        async def emit_progress(event: dict[str, Any]) -> None:
+            await emit({"progress": event})
 
-    async def _run_skill_for_plan(sid: str, args: dict[str, Any], input_msg: str) -> Any:
-        if not get_skill(sid):
-            return None
-        run_id = f"plan-{plan_message_id}-{sid}-{int(_time.time() * 1000)}"
-        skill_call_id = await create_skill_call(conv["id"], plan_message_id, sid, run_id, {"args": args})
+        async def worker() -> None:
+            try:
+                await emit({"stage": "thinking", "label": "Building plan", "stageIndex": 0})
+                result = await _create_plan_draft(body=body, emit_progress=emit_progress)
+                await emit({
+                    "done": True,
+                    "conversationId": result.get("conversationId"),
+                    "planId": result.get("planId"),
+                    "planMessageId": result.get("planMessageId"),
+                    "planMarkdown": result.get("planMarkdown"),
+                    "agentId": result.get("agentId"),
+                    "skillId": result.get("skillId"),
+                })
+            except Exception as exc:
+                await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
+            finally:
+                done.set()
 
-        async def _on_prog(event: dict[str, Any]) -> None:
-            meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
-            await push_skill_output(skill_call_id, {
-                "type": "progress",
-                "event": str(meta.get("event")) if meta.get("event") else None,
-                "payload": meta,
-            })
+        asyncio.create_task(worker())
 
-        result = await run_skill(sid, input_msg, history=conv.get("messages") or [], args=args, on_progress=_on_prog)
-        await set_skill_call_result(
-            skill_call_id,
-            "error" if result.status == "error" else "done",
-            result.text, result.data, result.error,
-        )
-        return result
+        while not done.is_set() or not queue.empty():
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=15)
+                yield chunk
+            except asyncio.TimeoutError:
+                yield b": ping\n\n"
 
-    scan_args: dict[str, Any] = {"url": url} if url else {}
-    crawl_args_plan: dict[str, Any] = (
-        {"url": url, "maxPages": 5, "maxDepth": 2}
-        if url else {}
-    )
-    crawl_args_execute: dict[str, Any] = (
-        {"url": url, "maxPages": 30, "maxDepth": 3} if url else {}
-    )
-
-    if url:
-        scan_res, crawl_res = await asyncio.gather(
-            _run_skill_for_plan("business-scan", scan_args, message),
-            _run_skill_for_plan("scrape-bs4", crawl_args_plan, message),
-        )
-    else:
-        scan_res = crawl_res = None
-
-    scan_text: str = str(scan_res.text) if scan_res and scan_res.text else ""
-    scan_data: Any = scan_res.data if scan_res else None
-    crawl_data: Any = crawl_res.data if crawl_res else None
-    crawl_pages_excerpt = _get_crawl_pages_excerpt(crawl_data)
-
-    scout_input = "\n".join(filter(None, [
-        message,
-        f"Business URL: {url}" if url else "",
-        f"business-scan (text):\n{scan_text}" if scan_text else "",
-        f"scrape-bs4 (page excerpts):\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
-    ]))
-    scout_args: dict[str, Any] = {"businessUrl": url, "regionHint": "", "language": ""} if url else {}
-    scout_res = await _run_skill_for_plan("platform-scout", scout_args, scout_input) if url else None
-    scout_data: Any = scout_res.data if scout_res else None
-
-    queries, operation_type, covered_region, market_guess, business_name = _normalize_scout_queries(
-        scout_data or {}, scan_data or {}, url
-    )
-    web_search_args: dict[str, Any] = {
-        "queries": "\n".join(queries),
-        "maxResultsPerQuery": 6,
-        "maxTotalResults": 40 if queries else 30,
-        "region": covered_region,
-        "market": market_guess,
-        "operationType": operation_type,
-        "coveredRegion": covered_region,
-        "businessName": business_name,
-        "businessUrl": url,
-    }
-    search_res = await _run_skill_for_plan("web-search", web_search_args, message)
-    search_data: Any = search_res.data if search_res else None
-
-    candidate_urls: list[str] = []
-    if isinstance(search_data, dict):
-        results_list = (
-            search_data.get("result", {}).get("results")
-            or search_data.get("results")
-            or []
-        )
-        for r in (results_list if isinstance(results_list, list) else []):
-            u = r.get("url") or r.get("link") if isinstance(r, dict) else None
-            if isinstance(u, str) and u.startswith("http") and u not in candidate_urls:
-                candidate_urls.append(u)
-
-    planner_ctx = (contexts.get("skillSelectorContext") or "").strip()
-    active_model = CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL
-
-    plan_prompt = "\n".join(filter(None, [
-        "You generate an execution plan for a deep business analysis.",
-        "",
-        "Inputs:",
-        "- User request",
-        "- On-site evidence (business-scan + crawl excerpts)",
-        "- Platform scout output (scope/locality + queries)",
-        "- Web search results (candidate URLs)",
-        "",
-        "Requirements:",
-        "- Output MUST be Markdown only.",
-        "- Plan must contain a TODO checklist (Markdown checkboxes) that, when completed, guarantees enough evidence to write the final report.",
-        "- The checklist must adapt to local vs global scope. If local, include locality/region-specific tasks.",
-        "- The plan should be built USING the business context, but should not dump raw scraped data.",
-        "- Competitor discovery queries must be market/category + audience + (if local) region based; avoid using only business name for competitor search.",
-        "- Review/listing discovery should target exact business identity (name/domain + location for local businesses).",
-        '- Include a section titled "Phase 6 — Targeted Collection (Reviews + Competitors)".',
-        '- Include a short "Assumptions to verify" section so user can confirm the inferred basics (scope/region/category).',
-        '- Add an "Inferred Business Profile" section with: market, operation type (local/global), and region.',
-        "",
-        f"Planner context:\n{planner_ctx}" if planner_ctx else "",
-        "",
-        "User request:",
-        message,
-        "",
-        f"Inferred basics (may be wrong): market={market_guess} operationType={operation_type} region={covered_region}",
-        "",
-        f"business-scan (summary text):\n{scan_text}" if scan_text else "",
-        f"crawl excerpts:\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
-        f"platform-scout (JSON excerpt):\n{json.dumps(scout_data)[:5000]}" if scout_data else "",
-        ("web-search candidate URLs:\n" + "\n".join(f"- {u}" for u in candidate_urls[:30])) if candidate_urls else "",
-    ]))
-
-    try:
-        ai = AiHelper(temperature=0.2)
-        ai_result = await ai.chat(
-            message=plan_prompt,
-            system_prompt="You are a planning assistant. Output only Markdown. No code fences.",
-        )
-        plan_markdown = ai_result.message.strip()
-        await save_token_usage(plan_message_id, active_model, ai_result.input_tokens, ai_result.output_tokens)
-    except Exception:
-        plan_markdown = "\n".join([
-            "## Execution Plan",
-            "",
-            f"User request: {message}",
-            "",
-            "### Checklist",
-            "- [ ] Run `business-scan` on target URL/context",
-            "- [ ] Run `scrape-bs4` for evidence collection",
-            "- [ ] Run `platform-scout` to derive discovery queries",
-            "- [ ] Run `web-search` with scout queries",
-            "- [ ] Run `platform-taxonomy` and `classify-links`",
-            "- [ ] Produce final synthesis",
-            "",
-            "### Assumptions to verify",
-            "- Scope (local/global)",
-            "- Region/market",
-            "- Primary business category",
-        ])
-
-    plan_json = {
-        "steps": [
-            {"stepId": "scan", "skillId": "business-scan", "args": scan_args, "purpose": "Extract landing page business facts"},
-            {"stepId": "crawl", "skillId": "scrape-bs4", "args": crawl_args_execute, "purpose": "Collect multi-page on-site evidence"},
-            {"stepId": "scout", "skillId": "platform-scout", "args": scout_args, "dependsOn": ["scan", "crawl"], "purpose": "Generate region-aware review + competitor queries"},
-            {"stepId": "search", "skillId": "web-search", "args": web_search_args, "dependsOn": ["scout"], "purpose": "Find review/listing URLs + competitor URLs"},
-            {"stepId": "taxonomy", "skillId": "platform-taxonomy", "args": {}, "dependsOn": ["crawl", "search"], "purpose": "Build ecosystem map + domain rules"},
-            {"stepId": "classify", "skillId": "classify-links", "args": {}, "dependsOn": ["taxonomy"], "purpose": "Classify discovered URLs"},
-        ],
-        "evidence": {
-            "businessUrl": url,
-            "marketGuess": market_guess,
-            "operationType": operation_type,
-            "coveredRegion": covered_region,
-            "scoutQueries": queries,
-            "candidateUrls": candidate_urls[:50],
-        },
-    }
-
-    plan_run = await create_plan_run(conv["id"], user_message_id, plan_message_id, plan_markdown, plan_json)
-    await update_message_content(conv["id"], plan_message_id, plan_markdown)
-    await update_message_meta(conv["id"], plan_message_id, "plan", plan_run["id"])
-
-    return {
-        "conversationId": conv["id"],
-        "planId": plan_run["id"],
-        "planMessageId": plan_message_id,
-        "planMarkdown": plan_markdown,
-        "agentId": resolved["agentId"],
-        "skillId": resolved["skillId"],
-        "allowedSkillIds": resolved.get("allowedSkillIds", []),
-        "contexts": contexts,
-    }
+    return StreamingResponse(generator(), media_type="text/event-stream")
 
 
 @router.post("/api/chat/plan/approve/stream")
@@ -727,11 +818,19 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
 
         async def worker() -> None:
             try:
+                exec_start_ms = _time.time() * 1000
+                tokens_emitted = 0
                 await update_plan_run(plan_id, {"status": "executing"})
                 await emit({"stage": "thinking", "label": "Executing plan", "stageIndex": 0, "agentId": resolved["agentId"]})
 
                 steps = plan.get("planJson", {}).get("steps", []) if isinstance(plan.get("planJson"), dict) else []
-                texts: list[str] = []
+                user_message = ""
+                for msg in reversed(conv.get("messages") or []):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        candidate = str(msg.get("content") or "").strip()
+                        if candidate:
+                            user_message = candidate
+                            break
                 stage_outputs: dict[str, str] = {}
                 step_results: dict[str, Any] = {}
 
@@ -793,11 +892,24 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                     await set_skill_call_result(call_id, "error" if result.status == "error" else "done", result.text, result.data, result.error)
 
                     if result.text:
-                        texts.append(f"## {sid}\n\n{result.text}")
                         stage_outputs[sid] = result.text
 
-                final_text = "\n\n---\n\n".join(texts).strip() or "Plan execution completed, but no textual output was produced."
-                await emit({"token": final_text})
+                formatter_calls = await get_skill_calls_by_message_id(assistant_message_id)
+                async def _on_final_token(token: str) -> None:
+                    nonlocal tokens_emitted
+                    tokens_emitted += len(token)
+                    await emit({"token": token})
+                fmt = await format_final_answer(
+                    message=user_message or (plan.get("planMarkdown") or ""),
+                    start_ms=exec_start_ms,
+                    skill_calls=formatter_calls,
+                    last_skill_result=None,
+                    contexts=resolved.get("contexts") or {},
+                    on_token=_on_final_token,
+                )
+                final_text = (fmt.text or "").strip()
+                if final_text and tokens_emitted == 0:
+                    await emit({"token": final_text})
 
                 skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
                 await update_message_content(conv["id"], assistant_message_id, final_text, None, skills_count)
@@ -810,9 +922,9 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                         "done": True,
                         "conversationId": conv["id"],
                         "messageId": assistant_message_id,
-                        "runId": f"plan-{plan_id}",
-                        "model": OPENAI_MODEL,
-                        "durationMs": None,
+                        "runId": fmt.run_id,
+                        "model": CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
+                        "durationMs": fmt.duration_ms,
                         "stageOutputs": stage_outputs,
                         "outputFile": None,
                         "agentId": resolved["agentId"],

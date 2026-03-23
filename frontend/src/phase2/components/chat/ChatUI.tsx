@@ -113,6 +113,7 @@ function PlanMessage({
   const [draft, setDraft] = useState(message.content);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     setDraft(message.content);
@@ -125,10 +126,10 @@ function PlanMessage({
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setEditing((v) => !v)}
-            className="text-[11px] font-semibold text-slate-600 hover:text-slate-800"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-[11px] font-semibold text-violet-600 hover:text-violet-700"
           >
-            {editing ? 'Hide editor' : 'Edit'}
+            {expanded ? 'Collapse' : 'Expand'}
           </button>
           {message.messageId && (
             <button
@@ -147,9 +148,18 @@ function PlanMessage({
         <div className="rounded-xl border border-slate-200 bg-white p-3 overflow-y-auto">
           <div className="prose prose-sm max-w-none">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-              {draft}
+              {expanded ? draft : draft.slice(0, 700)}
             </ReactMarkdown>
           </div>
+        </div>
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-xs font-semibold text-violet-600 hover:text-violet-700"
+          >
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
         </div>
 
         {/* Editor (optional) */}
@@ -167,6 +177,13 @@ function PlanMessage({
           </div>
         )}
         <div className="flex justify-end gap-2 mt-3">
+          <button
+            type="button"
+            onClick={() => setEditing((v) => !v)}
+            className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            {editing ? 'Done editing' : 'Edit'}
+          </button>
           <button
             type="button"
             disabled={!onApprovePlan || saving}

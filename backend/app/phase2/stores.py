@@ -69,9 +69,7 @@ async def ensure_default_agents() -> None:
                     allowed_skill_ids, skill_selector_context, final_output_formatting_context,
                     created_at, updated_at
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                ON CONFLICT (id) DO UPDATE SET
-                    allowed_skill_ids = EXCLUDED.allowed_skill_ids,
-                    updated_at = EXCLUDED.updated_at
+                ON CONFLICT (id) DO NOTHING
                 """,
                 a["id"],
                 a["name"],
@@ -163,6 +161,8 @@ async def create_agent(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    print("[update_agent] called", {"agent_id": agent_id, "patch_keys": sorted(list(patch.keys()))})
+
     fields: list[str] = []
     values: list[Any] = []
 
@@ -181,6 +181,7 @@ async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] |
             values.append(patch[key])
 
     if not fields:
+        print("[update_agent] no mutable fields in patch", {"agent_id": agent_id})
         return await get_agent(agent_id)
 
     fields.append(f"updated_at = ${len(values) + 1}")
@@ -188,12 +189,18 @@ async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] |
     values.append(agent_id)
 
     query = f"UPDATE agents SET {', '.join(fields)} WHERE id = ${len(values)} RETURNING *"
+    print(
+        "[update_agent] executing update",
+        {"agent_id": agent_id, "field_count": len(fields), "value_count": len(values), "query": query},
+    )
 
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, *values)
     if not row:
+        print("[update_agent] no row updated", {"agent_id": agent_id})
         return None
+    print("[update_agent] success", {"agent_id": agent_id})
     return {
         "id": row["id"],
         "name": row["name"],
