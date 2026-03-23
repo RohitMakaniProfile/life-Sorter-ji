@@ -19,9 +19,14 @@ DEFAULT_AGENTS = [
         "emoji": "🕵️",
         "description": "Agentic research using website scrapers, social and sentiment skills",
         "allowed_skill_ids": [
+            "business-scan",
             "scrape-bs4",
             "scrape-playwright",
             "scrape-googlebusiness",
+            "platform-scout",
+            "web-search",
+            "platform-taxonomy",
+            "classify-links",
             "instagram-sentiment",
             "youtube-sentiment",
             "playstore-sentiment",
@@ -55,9 +60,6 @@ def _to_obj(value: Any, fallback: Any) -> Any:
 async def ensure_default_agents() -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM agents")
-        if int(count or 0) > 0:
-            return
         now = now_iso()
         for a in DEFAULT_AGENTS:
             await conn.execute(
@@ -67,7 +69,9 @@ async def ensure_default_agents() -> None:
                     allowed_skill_ids, skill_selector_context, final_output_formatting_context,
                     created_at, updated_at
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE SET
+                    allowed_skill_ids = EXCLUDED.allowed_skill_ids,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 a["id"],
                 a["name"],
@@ -557,11 +561,15 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
             output.append({"type": "result", "text": text, "data": data, "at": now_iso()})
 
         started_at = row["started_at"] or now_iso()
-        duration_row = await conn.fetchrow(
-            "SELECT (EXTRACT(EPOCH FROM (NOW() - $1::timestamptz)) * 1000)::int AS ms",
-            str(started_at),
-        )
-        duration_ms = int(duration_row["ms"]) if duration_row and duration_row["ms"] is not None else None
+        try:
+            started_at_dt = datetime.fromisoformat(str(started_at))
+            duration_row = await conn.fetchrow(
+                "SELECT (EXTRACT(EPOCH FROM (NOW() - $1)) * 1000)::int AS ms",
+                started_at_dt,
+            )
+            duration_ms = int(duration_row["ms"]) if duration_row and duration_row["ms"] is not None else None
+        except Exception:
+            duration_ms = None
 
         await conn.execute(
             """

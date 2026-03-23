@@ -533,17 +533,17 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
 
     scan_args: dict[str, Any] = {"url": url} if url else {}
     crawl_args_plan: dict[str, Any] = (
-        {"url": url, "instructions": message, "maxPages": 1, "maxDepth": 1, "deep": False}
-        if url else {"instructions": message, "maxPages": 1, "maxDepth": 1, "deep": False}
+        {"url": url, "maxPages": 5, "maxDepth": 2}
+        if url else {}
     )
     crawl_args_execute: dict[str, Any] = (
-        {"url": url, "instructions": message} if url else {"instructions": message}
+        {"url": url, "maxPages": 30, "maxDepth": 3} if url else {}
     )
 
     if url:
         scan_res, crawl_res = await asyncio.gather(
             _run_skill_for_plan("business-scan", scan_args, message),
-            _run_skill_for_plan("scrape-agentbrowser", crawl_args_plan, message),
+            _run_skill_for_plan("scrape-bs4", crawl_args_plan, message),
         )
     else:
         scan_res = crawl_res = None
@@ -557,7 +557,7 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
         message,
         f"Business URL: {url}" if url else "",
         f"business-scan (text):\n{scan_text}" if scan_text else "",
-        f"scrape-agentbrowser (page excerpts):\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
+        f"scrape-bs4 (page excerpts):\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
     ]))
     scout_args: dict[str, Any] = {"businessUrl": url, "regionHint": "", "language": ""} if url else {}
     scout_res = await _run_skill_for_plan("platform-scout", scout_args, scout_input) if url else None
@@ -644,7 +644,7 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
             "",
             "### Checklist",
             "- [ ] Run `business-scan` on target URL/context",
-            "- [ ] Run `scrape-agentbrowser` for evidence collection",
+            "- [ ] Run `scrape-bs4` for evidence collection",
             "- [ ] Run `platform-scout` to derive discovery queries",
             "- [ ] Run `web-search` with scout queries",
             "- [ ] Run `platform-taxonomy` and `classify-links`",
@@ -659,7 +659,7 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
     plan_json = {
         "steps": [
             {"stepId": "scan", "skillId": "business-scan", "args": scan_args, "purpose": "Extract landing page business facts"},
-            {"stepId": "crawl", "skillId": "scrape-agentbrowser", "args": crawl_args_execute, "purpose": "Collect multi-page on-site evidence"},
+            {"stepId": "crawl", "skillId": "scrape-bs4", "args": crawl_args_execute, "purpose": "Collect multi-page on-site evidence"},
             {"stepId": "scout", "skillId": "platform-scout", "args": scout_args, "dependsOn": ["scan", "crawl"], "purpose": "Generate region-aware review + competitor queries"},
             {"stepId": "search", "skillId": "web-search", "args": web_search_args, "dependsOn": ["scout"], "purpose": "Find review/listing URLs + competitor URLs"},
             {"stepId": "taxonomy", "skillId": "platform-taxonomy", "args": {}, "dependsOn": ["crawl", "search"], "purpose": "Build ecosystem map + domain rules"},
