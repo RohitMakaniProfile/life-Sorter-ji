@@ -54,6 +54,14 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://localhost:3000",
         "http://localhost:3001",
+        "https://ikshan.in",
+        "https://www.ikshan.in",
+        "https://dev.ikshan.in",
+        "https://admin.ikshan.in",
+        "https://ikshan-fe-dev.web.app",
+        "https://ikshan-fe-prod.web.app",
+        "https://ikshan-fe-dev.firebaseapp.com",
+        "https://ikshan-fe-prod.firebaseapp.com",
     ]
 
     # ── OpenAI ─────────────────────────────────────────────────
