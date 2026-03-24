@@ -45,6 +45,31 @@ jobs:
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
           fi
 
+<<<<<<< HEAD
+=======
+      # Temporary testing defaults. Move sensitive values to GitHub Secrets after verification.
+      - name: Set phase2 runtime env defaults
+        run: |
+          echo "OPENAI_MODEL=gpt-4.1" >> $GITHUB_ENV
+          echo "CLAUDE_MODEL=claude-opus-4-6" >> $GITHUB_ENV
+          echo "GEMINI_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
+          echo "GEMINI_SCOUT_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
+          echo "SKILL_DEBUG_LOGS=true" >> $GITHUB_ENV
+          echo "STORAGE_BUCKET=/app/storage-bucket" >> $GITHUB_ENV
+          echo "SKILLS_ROOT=/app/skills" >> $GITHUB_ENV
+          echo "PYTHON_BIN=python3" >> $GITHUB_ENV
+
+          # Read LLM/search keys from GitHub secrets.
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> $GITHUB_ENV
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
+          echo "SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+
+          # Backward-compatible aliases used by current skill runners.
+          echo "GOOGLE_SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+          echo "SERP_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+
+>>>>>>> 9628af0 (env secrets created for workflow)
       - name: Build & Push Docker Image
         run: |
           gcloud builds submit ./backend \
