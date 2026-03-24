@@ -581,7 +581,7 @@ async def run_skill(
     )
 
     assert proc.stdin is not None
-    proc.stdin.write(json.dumps(payload).encode("utf-8"))
+    proc.stdin.write(_json_dumps(payload).encode("utf-8"))
     await proc.stdin.drain()
     proc.stdin.close()
 
