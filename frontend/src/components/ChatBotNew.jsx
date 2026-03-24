@@ -3,6 +3,7 @@ import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, Mess
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNew.css';
+import { getApiBaseRequired } from '../config/apiBase';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 import ContextPoolPanel from './ContextPoolPanel';
 
@@ -1457,7 +1458,7 @@ const ChatBotNew = ({ onNavigate }) => {
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({}); // {Q1: 'A) option', Q2: 'B) option'}
 
-  const API_BASE = import.meta.env.VITE_API_URL || '';
+  const API_BASE = getApiBaseRequired();
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Lock, Eye, EyeOff, ArrowLeft, Terminal } from 'lucide-react';
 import './SandboxLogin.css';
+import { getApiBaseRequired } from '../config/apiBase';
 
 const SandboxLogin = ({ onLogin, onBack }) => {
   const [id, setId] = useState('');
@@ -9,7 +10,7 @@ const SandboxLogin = ({ onLogin, onBack }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const API_BASE = import.meta.env.VITE_API_URL || '';
+  const API_BASE = getApiBaseRequired();
 
   const handleSubmit = async (e) => {
     e.preventDefault();

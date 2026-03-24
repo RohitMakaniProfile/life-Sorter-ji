@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, ChevronDown, ChevronRight, Activity, Brain, Send as SendIcon, Layers, Clock, Zap, Database, Eye, EyeOff } from 'lucide-react';
 import './ContextPoolPanel.css';
+import { getApiBaseRequired } from '../config/apiBase';
 
 const STAGE_LABELS = {
   outcome: 'Q1: Outcome',
@@ -299,7 +300,7 @@ export default function ContextPoolPanel({ sessionId, isOpen, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const pollRef = useRef(null);
-  const API_BASE = import.meta.env.VITE_API_URL || '';
+  const API_BASE = getApiBaseRequired();
 
   const fetchContextPool = useCallback(async () => {
     if (!sessionId) return;

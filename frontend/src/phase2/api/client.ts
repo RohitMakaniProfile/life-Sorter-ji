@@ -1,3 +1,5 @@
+import { getApiBaseRequired } from '../../config/apiBase';
+
 export type AgentId = string;
 
 export type PipelineStage =
@@ -34,13 +36,7 @@ export const STAGE_LABELS: Record<string, string> = {
 };
 
 function getApiBase(): string {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const isLocalhost =
-    origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
-  if (isLocalhost) {
-    return import.meta.env.VITE_API_URL ?? '';
-  }
-  return '';
+  return getApiBaseRequired();
 }
 
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {

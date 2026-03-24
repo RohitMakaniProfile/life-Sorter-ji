@@ -3,6 +3,7 @@ import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, Mess
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNewMobile.css';
+import { getApiBaseRequired } from '../config/apiBase';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 
 // ── Markdown normaliser — ensures consistent heading levels across LLM output ──
@@ -603,7 +604,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({});
 
-  const API_BASE = import.meta.env.VITE_API_URL || '';
+  const API_BASE = getApiBaseRequired();
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;
