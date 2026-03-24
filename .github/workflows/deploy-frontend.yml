@@ -1,0 +1,56 @@
+name: Deploy Frontend to Firebase Hosting
+
+on:
+  push:
+    branches:
+      - development
+      - production
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set deploy target and API URL
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "FIREBASE_TARGET=development" >> $GITHUB_ENV
+            echo "VITE_API_URL=https://ikshan-be-dev-1086070564650.asia-south1.run.app/" >> $GITHUB_ENV
+          else
+            echo "FIREBASE_TARGET=production" >> $GITHUB_ENV
+            echo "VITE_API_URL=https://ikshan-be-prod-1086070564650.asia-south1.run.app/" >> $GITHUB_ENV
+          fi
+
+      - name: Build frontend
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+
+      - name: Deploy to Firebase Hosting
+        run: npx firebase-tools deploy --only "hosting:$FIREBASE_TARGET" --project "${{ secrets.FIREBASE_PROJECT_ID }}" --non-interactive
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
