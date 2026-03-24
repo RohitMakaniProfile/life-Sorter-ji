@@ -51,11 +51,11 @@ from .stores import (
 
 router = APIRouter()
 
-def _log(event: str, **fields: Any) -> None:
+def _log(label: str, **fields: Any) -> None:
     try:
-        print(f"[phase2.router] {event} | {json.dumps(fields, default=str, ensure_ascii=False)}")
+        print(f"[phase2.router] {label} | {json.dumps(fields, default=str, ensure_ascii=False)}")
     except Exception:
-        print(f"[phase2.router] {event} | <log-serialize-error>")
+        print(f"[phase2.router] {label} | <log-serialize-error>")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
