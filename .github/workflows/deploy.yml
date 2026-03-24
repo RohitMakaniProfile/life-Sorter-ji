@@ -45,9 +45,6 @@ jobs:
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
           fi
 
-<<<<<<< HEAD
-=======
-      # Temporary testing defaults. Move sensitive values to GitHub Secrets after verification.
       - name: Set phase2 runtime env defaults
         run: |
           echo "OPENAI_MODEL=gpt-4.1" >> $GITHUB_ENV
@@ -69,7 +66,6 @@ jobs:
           echo "GOOGLE_SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
           echo "SERP_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
 
->>>>>>> 9628af0 (env secrets created for workflow)
       - name: Build & Push Docker Image
         run: |
           gcloud builds submit ./backend \
