@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # ── Frontend ───────────────────────────────────────────────
     FRONTEND_URL: str = "https://ikshan.in"
 
+    # ── 2Factor.in OTP ─────────────────────────────────────────
+    TWO_FACTOR_API_KEY: str = ""
+
     # ── Google Sheets ──────────────────────────────────────────
     GOOGLE_SHEETS_WEBHOOK_URL: str = ""
 
