@@ -47,6 +47,22 @@ def now_dt() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            try:
+                # Support common ISO format variants (including trailing Z).
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                pass
+    return now_dt()
+
+
 def _to_obj(value: Any, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -329,7 +345,7 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
                 int(next_index),
                 message["role"],
                 message["content"],
-                message["createdAt"],
+                _as_datetime(message.get("createdAt")),
                 message.get("outputFile"),
                 json.dumps(message),
             )
@@ -342,7 +358,8 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
 
 async def append_message(conversation_id: str, role: str, content: str, **extra: Any) -> str:
     message_id = str(extra.get("messageId") or uuid4())
-    created_at = str(extra.get("createdAt") or now_iso())
+    created_at_dt = _as_datetime(extra.get("createdAt"))
+    created_at = created_at_dt.isoformat()
     message = {
         "role": "assistant" if role == "assistant" else "user",
         "content": content,

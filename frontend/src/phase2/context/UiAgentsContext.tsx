@@ -24,7 +24,8 @@ async function loadAgentsFromApi(): Promise<UiAgent[]> {
   try {
     const { agents } = await getAgents();
     return Array.isArray(agents) ? agents : [];
-  } catch {
+  } catch (error) {
+    console.error('Failed to load agents:', error);
     return [];
   }
 }
@@ -56,7 +57,8 @@ export function UiAgentsProvider({ children }: { children: ReactNode }) {
       try {
         const list = await fetchSkills();
         setSkills(list);
-      } catch {
+      } catch (error) {
+        console.error('Failed to load skills:', error);
         setSkills([]);
       }
     })();
