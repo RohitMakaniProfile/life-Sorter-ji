@@ -79,5 +79,10 @@ jobs:
             --image asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
             --region asia-south1 \
             --platform managed \
+            --timeout=3600 \
+            --memory=4Gi \
+            --cpu=2 \
+            --concurrency=1 \
+            --min-instances=1
             --set-env-vars '^##^ENVIRONMENT='$APP_ENV'##DATABASE_URL='$DB_URL'##OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}'##CLAUDE_API_KEY='${{ secrets.CLAUDE_API_KEY }}'##GEMINI_API_KEY='${{ secrets.GEMINI_API_KEY }}'##SERPER_API_KEY='${{ secrets.SERPER_API_KEY }}'##GOOGLE_SERPER_API_KEY='${{ secrets.SERPER_API_KEY }}'##SERP_API_KEY='${{ secrets.SERPER_API_KEY }}'##OPENAI_MODEL='$OPENAI_MODEL'##CLAUDE_MODEL='$CLAUDE_MODEL'##GEMINI_MODELS='$GEMINI_MODELS'##GEMINI_SCOUT_MODELS='$GEMINI_SCOUT_MODELS'##SKILL_DEBUG_LOGS='$SKILL_DEBUG_LOGS'##STORAGE_BUCKET='$STORAGE_BUCKET'##SKILLS_ROOT='$SKILLS_ROOT'##PYTHON_BIN='$PYTHON_BIN'##CORS_ORIGINS=["http://localhost:5173","http://localhost:3000","http://localhost:3001","https://ikshan.in","https://www.ikshan.in","https://dev.ikshan.in","https://admin.ikshan.in","https://ikshan-fe-dev.web.app","https://ikshan-fe-prod.web.app","https://ikshan-fe-dev.firebaseapp.com","https://ikshan-fe-prod.firebaseapp.com"]' \
             --allow-unauthenticated
