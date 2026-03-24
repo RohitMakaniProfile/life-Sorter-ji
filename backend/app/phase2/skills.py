@@ -43,6 +43,43 @@ def _json_dumps(value: Any) -> str:
         raise
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _parse_progress_meta(raw_line: str) -> dict[str, Any]:
+    """
+    Parse a PROGRESS line robustly:
+    - strips ANSI escapes that can appear in container logs
+    - extracts the JSON object segment even if line has prefixes/suffixes
+    - falls back to info/raw event when JSON is not present
+    """
+    cleaned = _ANSI_RE.sub("", str(raw_line or "")).strip()
+    if not cleaned:
+        return {"event": "info", "raw": ""}
+
+    # Fast path: pure JSON line.
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # Extract likely JSON object region from noisy line.
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = cleaned[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    return {"event": "info", "raw": cleaned}
+
+
 @dataclass
 class SkillManifest:
     id: str
@@ -596,12 +633,7 @@ async def run_skill(
             continue
         if t.startswith("PROGRESS:"):
             raw_json = t[len("PROGRESS:"):].strip()
-            try:
-                meta = json.loads(raw_json)
-            except Exception:
-                meta = {"event": "info", "raw": raw_json}
-            if not isinstance(meta, dict):
-                meta = {"event": "info", "raw": raw_json}
+            meta = _parse_progress_meta(raw_json)
             meta["streamKind"] = _progress_stream_kind(meta)
             event_name = str(meta.get("event", "info"))
             message_text = str(meta.get("url") or meta.get("message") or event_name)
