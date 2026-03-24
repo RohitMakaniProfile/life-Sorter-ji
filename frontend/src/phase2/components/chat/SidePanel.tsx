@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PipelineState, TokenUsage } from '../../types';
 import { getSkillCalls, getTokenUsage, type SkillCallFull } from '../../api/client';
+import TokenUsagePanel from './TokenUsagePanel';
 
 type LiveSkillCard = {
   skillId: string;
@@ -375,66 +376,12 @@ export default function SidePanel({
           )}
         </div>
 
-        {/* Token usage */}
-        <div>
-          <h3 className="text-sm font-semibold mb-2">Token usage</h3>
-          {messageId ? (
-            usageLoading ? (
-              <p className="text-xs text-slate-500">Loading token usage…</p>
-            ) : tokenUsage ? (
-              <div className="border rounded-lg overflow-hidden">
-                <div className="px-3 py-2 text-xs font-semibold flex items-center justify-between bg-slate-50">
-                  <span>Total</span>
-                  <span className="text-[11px] text-slate-600">
-                    {tokenUsage.totalInputTokens.toLocaleString()} in / {tokenUsage.totalOutputTokens.toLocaleString()} out
-                  </span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[11px] border-collapse">
-                    <thead className="bg-white">
-                      <tr>
-                        <th className="text-left px-2 py-1 border">Stage</th>
-                        <th className="text-left px-2 py-1 border">Provider</th>
-                        <th className="text-left px-2 py-1 border">Model</th>
-                        <th className="text-right px-2 py-1 border">In</th>
-                        <th className="text-right px-2 py-1 border">Out</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(tokenUsage.entries ?? []).map((r, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="px-2 py-1 border">{r.stage}</td>
-                          <td className="px-2 py-1 border">{r.provider}</td>
-                          <td className="px-2 py-1 border">{r.model}</td>
-                          <td className="px-2 py-1 border text-right">{r.inputTokens.toLocaleString()}</td>
-                          <td className="px-2 py-1 border text-right">{r.outputTokens.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500">No token usage recorded.</p>
-            )
-          ) : (
-            liveTokenEstimate ? (
-              <div className="border rounded-lg overflow-hidden">
-                <div className="px-3 py-2 text-xs font-semibold flex items-center justify-between bg-slate-50">
-                  <span>Live estimate</span>
-                  <span className="text-[11px] text-slate-600">
-                    ~{liveTokenEstimate.outputTokensEstimated.toLocaleString()} out
-                  </span>
-                </div>
-                <div className="px-3 py-2 text-[11px] text-slate-600">
-                  Output chars streamed: {liveTokenEstimate.outputChars.toLocaleString()}
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500">Token usage appears after the run completes.</p>
-            )
-          )}
-        </div>
+        <TokenUsagePanel
+          messageId={messageId}
+          tokenUsage={tokenUsage}
+          usageLoading={usageLoading}
+          liveTokenEstimate={liveTokenEstimate}
+        />
       </div>
     </div>
   );

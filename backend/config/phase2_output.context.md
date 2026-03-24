@@ -99,3 +99,14 @@ For every insight, include:
 - **Observation** (from data)
 - **Why it matters**
 - **Actionable recommendation**
+- **Recommended tools (exactly 2, mandatory)**
+  - Add exactly 2 tools that can help implement or validate the recommendation.
+  - Each tool must be a markdown hyperlink in this format: `[Tool Name](https://example.com)`
+  - Use real, accessible URLs (no placeholders, no plain text links).
+  - Keep tool choices practical and relevant to the specific insight.
+
+## Tool Link Rules (Strict)
+
+- Every one of the 30 insights must include exactly 2 tool hyperlinks.
+- Total expected tool links in final output: **60 hyperlinks**.
+- Do not skip this even if confidence is low; choose the best-fit tools from the recommendation context.
