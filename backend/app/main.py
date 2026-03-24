@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
     from app.services.persona_doc_service import preload_all_docs
     preload_all_docs()
 
+    # Pre-load RCA decision tree for instant question serving
+    from app.services.rca_tree_service import load_tree
+    load_tree()
+
     # Auto-ingest RAG tools if API key is available
     if settings.openai_api_key_active:
         try:

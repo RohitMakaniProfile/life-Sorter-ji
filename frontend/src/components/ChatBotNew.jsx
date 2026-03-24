@@ -21,80 +21,240 @@ const formatSectionMarkdown = (text) => {
 };
 
 // ── Collapsible playbook section (stable component — must live outside render) ──
-const formatPlaybookSteps = (text) => {
-  let r = text;
-  // Step numbers: "1. The "Step Name"" or "## 1. Step" → ## **STEP N — Name**
-  r = r.replace(
-    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?\s*$/gm,
-    (_, _h, num, name) => `## **STEP ${num} — ${name.trim()}**`
+const formatPlaybookSteps = (text) => text; // raw text passed to PlaybookStepsRenderer
+
+// ── Parse playbook text into structured steps ──
+const parsePlaybookSteps = (text) => {
+  const steps = [];
+  let checklist = '';
+
+  // Extract Week 1 checklist block
+  const checklistMatch = text.match(/(?:#{0,4}\s*)?(?:\*\*)?\s*WEEK\s*1\s*EXECUTION\s*CHECKLIST(?:\*\*)?\s*\n([\s\S]*?)(?=\n(?:#{1,4}|\d+\.)|\Z)/i);
+  if (checklistMatch) checklist = checklistMatch[1].trim();
+
+  // Normalize step headings to a parseable marker
+  const normalized = text
+    .replace(/^(?:#{0,3}\s*)?(?:\*\*)?STEP\s+(\d{1,2})\s*[—\-–:]\s*(.*?)(?:\*\*)?\s*$/gm, '___STEP_$1___$2')
+    .replace(/^(?:#{0,3}\s*)?(?:\*\*)?(\d{1,2})\.\s*(?:\*\*\s*)?(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?(?:\*\*)?\s*$/gm, '___STEP_$1___$2');
+
+  const blocks = normalized.split(/^___STEP_(\d+)___(.*)$/m);
+
+  for (let i = 1; i < blocks.length; i += 3) {
+    const num = parseInt(blocks[i]);
+    const title = blocks[i + 1]?.replace(/\*\*/g, '').trim() || '';
+    const body = (blocks[i + 2] || '').trim();
+
+    // Parse subsections within the step body
+    const SUB_PATTERNS = [
+      { key: 'todo',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:📌\s*)?WHAT TO DO(?:\*\*)?\s*\n/i,          icon: '📌', label: 'What To Do',       color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe' },
+      { key: 'tool',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:🤖\s*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*\n/i, icon: '🤖', label: 'Tool + AI Shortcut', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+      { key: 'example', regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:💡\s*)?REAL EXAMPLE(?:\*\*)?\s*\n/i,         icon: '💡', label: 'Real Example',      color: '#b45309', bg: '#fffbeb', border: '#fde68a' },
+      { key: 'edge',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:⚡\s*)?THE EDGE(?:\*\*)?\s*\n/i,             icon: '⚡', label: 'The Edge',         color: '#065f46', bg: '#f0fdf4', border: '#bbf7d0' },
+    ];
+
+    // Split body into subsections
+    let remaining = body;
+    const subsections = [];
+    const positions = [];
+
+    for (const sub of SUB_PATTERNS) {
+      const m = remaining.search(sub.regex);
+      if (m !== -1) positions.push({ pos: m, sub });
+    }
+    positions.sort((a, b) => a.pos - b.pos);
+
+    if (positions.length === 0) {
+      subsections.push({ icon: '', label: '', content: body, color: '#374151', bg: 'transparent', border: 'transparent' });
+    } else {
+      // Text before first subsection
+      const preText = remaining.slice(0, positions[0].pos).trim();
+      if (preText) subsections.push({ icon: '', label: '', content: preText, color: '#374151', bg: 'transparent', border: 'transparent' });
+
+      for (let j = 0; j < positions.length; j++) {
+        const { sub } = positions[j];
+        const start = positions[j].pos;
+        const end = j + 1 < positions.length ? positions[j + 1].pos : remaining.length;
+        const raw = remaining.slice(start, end);
+        const content = raw.replace(sub.regex, '').trim();
+        subsections.push({ ...sub, content });
+      }
+    }
+
+    steps.push({ num, title, subsections });
+  }
+
+  return { steps, checklist };
+};
+
+// ── Renders structured playbook steps ──
+const PlaybookStepsRenderer = ({ content }) => {
+  const { steps, checklist } = parsePlaybookSteps(content);
+
+  if (!steps.length) {
+    return (
+      <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(content)}</ReactMarkdown>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+      {steps.map((step, si) => (
+        <div key={si} style={{
+          background: '#fff',
+          border: '1px solid #e5e7eb',
+          borderRadius: '16px',
+          overflow: 'hidden',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
+        }}>
+          {/* Step header */}
+          <div style={{
+            padding: '1rem 1.25rem',
+            background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
+            borderBottom: '1px solid #e9d5ff',
+            display: 'flex', alignItems: 'center', gap: '0.9rem',
+          }}>
+            <div style={{
+              width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
+              background: '#7c3aed', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '0.85rem', fontWeight: 800,
+            }}>{step.num}</div>
+            <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e1b4b', letterSpacing: '-0.02em', lineHeight: 1.3 }}>
+              {step.title}
+            </div>
+          </div>
+
+          {/* Subsections */}
+          <div style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+            {step.subsections.map((sub, subi) => (
+              <div key={subi} style={{
+                borderRadius: '10px',
+                background: sub.bg === 'transparent' ? '#fafafa' : sub.bg,
+                border: `1px solid ${sub.border === 'transparent' ? '#f0f0f0' : sub.border}`,
+                padding: '0.8rem 1rem',
+              }}>
+                {sub.label && (
+                  <div style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                    fontSize: '0.7rem', fontWeight: 800, color: sub.color,
+                    letterSpacing: '0.05em', textTransform: 'uppercase',
+                    marginBottom: '0.5rem',
+                  }}>
+                    <span>{sub.icon}</span> {sub.label}
+                  </div>
+                )}
+                <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Week 1 Checklist */}
+      {checklist && (
+        <div style={{
+          background: '#fffbeb', border: '1px solid #fde68a',
+          borderRadius: '16px', padding: '1.1rem 1.25rem',
+          boxShadow: '0 2px 8px rgba(245,158,11,0.08)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <span style={{ fontSize: '1.1rem' }}>📅</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#92400e', letterSpacing: '-0.01em' }}>Week 1 Execution Checklist</span>
+          </div>
+          <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{checklist}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+    </div>
   );
-  // Sub-labels: WHAT TO DO, TOOL + AI SHORTCUT, REAL EXAMPLE, THE EDGE → #### headings
-  const subs = [
-    [/^(?:#{0,4}\s*)?(?:\*\*)?WHAT TO DO(?:\*\*)?\s*$/gm, '#### 📌 WHAT TO DO'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*$/gm, '#### 🤖 TOOL + AI SHORTCUT'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?REAL EXAMPLE(?:\*\*)?\s*$/gm, '#### 💡 REAL EXAMPLE'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?THE EDGE(?:\*\*)?\s*$/gm, '#### ⚡ THE EDGE'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?WEEK\s*1\s*EXECUTION\s*CHECKLIST(?:\*\*)?\s*$/gm, '### 📅 WEEK 1 EXECUTION CHECKLIST'],
-  ];
-  for (const [pat, rep] of subs) r = r.replace(pat, rep);
-  return r;
 };
 
 const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isPlaybookSteps }) => {
   const [expanded, setExpanded] = useState(false);
-  const displayContent = isPlaybookSteps ? formatPlaybookSteps(content) : formatSectionMarkdown(content);
-  const previewLines = displayContent.split('\n').slice(0, 6).join('\n');
+  const [height, setHeight] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const contentRef = useRef(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), 60);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!contentRef.current) return;
+    setHeight(expanded ? contentRef.current.scrollHeight : 0);
+  }, [expanded]);
+
   return (
-    <div className="playbook-section" style={{
-      background: bg,
-      border: `1px solid ${borderColor}`,
-      borderRadius: '14px',
-      padding: '1.25rem',
+    <div style={{
+      opacity: visible ? 1 : 0,
+      transform: visible ? 'translateY(0)' : 'translateY(14px)',
+      transition: 'opacity 0.45s ease, transform 0.45s ease',
+      background: '#ffffff',
+      borderRadius: '20px',
       marginBottom: '1rem',
+      overflow: 'hidden',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.07), 0 1px 6px rgba(0,0,0,0.04)',
+      border: `1px solid ${borderColor}`,
     }}>
-      <div style={{ fontSize: '0.95rem', fontWeight: 700, color, marginBottom: '0.75rem' }}>
-        {icon} {title}
-      </div>
+      {/* Top gradient accent bar */}
+      <div style={{ height: '4px', background: `linear-gradient(90deg, ${color}, ${color}66)` }} />
+
+      {/* Clickable header */}
       <div
-        className={`playbook-markdown${isPlaybookSteps ? ' playbook-steps' : ''}`}
+        onClick={() => setExpanded(e => !e)}
         style={{
-          fontSize: '0.88rem',
-          color: '#1e293b',
-          lineHeight: 1.7,
-          maxHeight: expanded ? 'none' : '120px',
-          overflow: 'hidden',
-          position: 'relative',
+          padding: '1.25rem 1.5rem',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          cursor: 'pointer', background: bg, userSelect: 'none',
         }}
       >
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{expanded ? displayContent : previewLines}</ReactMarkdown>
-        {!expanded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem' }}>
           <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: '50px',
-            background: `linear-gradient(transparent, ${bg.includes('#f0f9ff') ? '#e8f4fc' : bg.includes('#faf5ff') ? '#f3edff' : bg.includes('#ecfdf5') ? '#e6f9f0' : '#fff5e6'})`,
-          }}/>
-        )}
+            width: '44px', height: '44px', borderRadius: '12px',
+            background: color + '1a',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '1.35rem', flexShrink: 0,
+            boxShadow: `0 2px 8px ${color}22`,
+          }}>{icon}</div>
+          <div>
+            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#111827', letterSpacing: '-0.02em', lineHeight: 1.2 }}>{title}</div>
+            <div style={{ fontSize: '0.72rem', color: '#9ca3af', marginTop: '0.2rem', fontWeight: 500 }}>
+              {expanded ? 'Click to collapse' : 'Click to expand'}
+            </div>
+          </div>
+        </div>
+        <div style={{
+          width: '32px', height: '32px', borderRadius: '50%',
+          background: color + '15', border: `1.5px solid ${borderColor}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color, fontSize: '0.7rem', flexShrink: 0,
+          transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+          transition: 'transform 0.35s ease',
+        }}>▼</div>
       </div>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          marginTop: '0.5rem',
-          padding: '0.4rem 1rem',
-          fontSize: '0.82rem',
-          fontWeight: 600,
-          color,
-          background: 'rgba(255,255,255,0.7)',
-          border: `1px solid ${borderColor}`,
-          borderRadius: '8px',
-          cursor: 'pointer',
-          transition: 'all 0.2s',
-        }}
-      >
-        {expanded ? '▲ Show less' : '▼ Read more'}
-      </button>
+
+      {/* Animated content */}
+      <div style={{
+        maxHeight: `${height}px`,
+        overflow: 'hidden',
+        transition: 'max-height 0.42s cubic-bezier(0.4, 0, 0.2, 1)',
+      }}>
+        <div ref={contentRef} style={{ borderTop: `1px solid ${borderColor}`, padding: '1.25rem 1.5rem' }}>
+          {isPlaybookSteps ? (
+            <PlaybookStepsRenderer content={content} />
+          ) : (
+            <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(content)}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -3068,8 +3228,9 @@ const ChatBotNew = ({ onNavigate }) => {
 
       const startData = await startRes.json();
 
-      if (startData.stage === 'gap_questions' && startData.gap_questions) {
-        // Agent 2 has gap questions — show them
+      const parsedGaps = startData.gap_questions_parsed || [];
+      if (startData.stage === 'gap_questions' && parsedGaps.length > 0) {
+        // Agent A has parseable gap questions — show interactive panel
         setPlaybookStage('gap-questions');
         setPlaybookGapQuestions(startData.gap_questions);
         setPlaybookGapSelections({});
@@ -3082,7 +3243,7 @@ const ChatBotNew = ({ onNavigate }) => {
           timestamp: new Date(),
           isPlaybookGapQuestions: true,
           gapQuestionsText: startData.gap_questions,
-          gapQuestionsParsed: startData.gap_questions_parsed || [],
+          gapQuestionsParsed: parsedGaps,
           agent1Output: startData.agent1_output,
           agent2Output: startData.agent2_output,
         };
@@ -5323,18 +5484,38 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
                     {/* ── AI Playbook Result ── */}
                     {message.isPlaybook && message.playbookData && (
-                      <div className="playbook-container" style={{ marginTop: '0.75rem' }}>
-                        {message.playbookData.icpCard && (
-                          <PlaybookCollapsible
-                            title="Ideal Customer Profile" icon="👤"
-                            color="#0284c7" bg="linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)" borderColor="rgba(14, 165, 233, 0.25)"
-                            content={message.playbookData.icpCard}
-                          />
-                        )}
+                      <div className="playbook-container" style={{ marginTop: '1rem' }}>
+                        {/* Playbook Header Banner — clean light design */}
+                        <div style={{
+                          background: '#fff',
+                          borderRadius: '20px', padding: '1.4rem 1.75rem', marginBottom: '1rem',
+                          border: '1px solid #e5e7eb',
+                          boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                              <Sparkles size={14} color="#7c3aed" />
+                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>AI Growth Playbook</span>
+                            </div>
+                            <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#111827', letterSpacing: '-0.025em', lineHeight: 1.2 }}>
+                              Your Personalised Strategy
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+                              {[['📋','Playbook','#7c3aed','#f3e8ff'],['🌐','Audit','#d97706','#fef3c7']].map(([ico,lbl,col,bg]) => (
+                                <span key={lbl} style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', background: bg, color: col, fontSize:'0.72rem', fontWeight:700, padding:'0.25rem 0.6rem', borderRadius:'20px' }}>
+                                  {ico} {lbl}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '2.8rem', lineHeight: 1, flexShrink: 0 }}>🚀</div>
+                        </div>
+
                         {message.playbookData.playbook && (
                           <PlaybookCollapsible
                             title="10-Step Growth Playbook" icon="📋"
-                            color="#7c3aed" bg="linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)" borderColor="rgba(139, 92, 246, 0.25)"
+                            color="#7c3aed" bg="linear-gradient(135deg, #faf5ff 0%, #f3eeff 100%)" borderColor="rgba(139, 92, 246, 0.2)"
                             content={message.playbookData.playbook}
                             isPlaybookSteps
                           />
@@ -5342,7 +5523,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                         {message.playbookData.websiteAudit && (
                           <PlaybookCollapsible
                             title="Website Audit & Recommendations" icon="🌐"
-                            color="#d97706" bg="linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)" borderColor="rgba(245, 158, 11, 0.25)"
+                            color="#d97706" bg="linear-gradient(135deg, #fff7ed 0%, #fef3e2 100%)" borderColor="rgba(245, 158, 11, 0.2)"
                             content={message.playbookData.websiteAudit}
                           />
                         )}

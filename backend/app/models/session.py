@@ -93,8 +93,10 @@ class SessionContext(BaseModel):
     rca_task_execution_summary: str = ""           # What doing this task looks like day-to-day
     rca_context_expanded: bool = False             # True if deferred context was pulled in
     rca_history: list[dict[str, str]] = []         # [{"question": ..., "answer": ...}, ...]
+    rca_running_summary: str = ""                  # Compressed summary of all RCA Q&As so far (updated after each answer)
     rca_complete: bool = False                     # True when Claude signals "complete"
     rca_summary: str = ""                          # Claude's summary when done
+    rca_handoff: str = ""                          # Structured handoff document for playbook agents (replaces raw rca_history)
     rca_fallback_active: bool = False              # True if Claude failed and static Qs are used
 
     # Early recommendations (after Q3, before full RCA)

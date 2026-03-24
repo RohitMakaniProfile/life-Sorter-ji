@@ -29,6 +29,7 @@ from app.services import session_store, agent_service
 from app.services.crawl_service import detect_url_type, run_background_crawl
 from app.services.persona_doc_service import get_available_personas, get_doc_for_domain, get_diagnostic_sections
 from app.services.claude_rca_service import generate_next_rca_question, generate_precision_questions, generate_task_alignment_filter
+from app.services.rca_tree_service import get_first_question, get_task_filter, get_next_from_tree, load_tree
 from app.models.session import (
     SessionStage,
     GenerateDynamicQuestionsRequest,
@@ -256,11 +257,20 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
             error=str(e),
         )
 
-    # ── First Claude RCA question ──────────────────────────────
-    claude_result_holder = [None]
+    # ── First RCA question: try pre-generated tree first, then LLM fallback ──
+    tree_q1 = get_first_question(
+        outcome=session.outcome or "",
+        domain=session.domain or "",
+        task=session.task or "",
+    )
 
-    async def _get_first_rca():
-        claude_result_holder[0] = await generate_next_rca_question(
+    if tree_q1:
+        # Instant hit from pre-generated tree — 0ms instead of 15-40s
+        claude_result = {"status": "question", **tree_q1}
+        logger.info("RCA Q1 served from tree (0ms)", session_id=session.session_id)
+    else:
+        # Fallback to live LLM call
+        claude_result = await generate_next_rca_question(
             outcome=session.outcome or "",
             outcome_label=session.outcome_label or "",
             domain=session.domain or "",
@@ -271,14 +281,9 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
             gbp_data=session.gbp_data or None,
         )
 
-    await _get_first_rca()
-
-
-    claude_result = claude_result_holder[0]
-
-    # Log Claude RCA call to context pool
-    if claude_result and claude_result.get("_meta"):
-        session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
+        # Log Claude RCA call to context pool
+        if claude_result and claude_result.get("_meta"):
+            session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
 
     if claude_result and claude_result.get("status") == "question":
         # Claude gave us the first adaptive question
@@ -411,20 +416,62 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
     session.dynamic_questions = []
     session_store.update_session(session)
 
-    # ── Step 3: Task Alignment Filter (Claude Opus) ────────────
-    # Filter the full persona context down to task-relevant items
-    # categorized as METHOD / SPEED / QUALITY
-    filter_result = await generate_task_alignment_filter(
+    # ── Step 3: Task Filter + First Question — try tree first, then LLM ──
+
+    # Try pre-generated tree for both
+    tree_filter = get_task_filter(
+        outcome=session.outcome or "",
+        domain=session.domain or "",
         task=session.task or "",
-        diagnostic_context=diagnostic,
+    )
+    tree_q1 = get_first_question(
+        outcome=session.outcome or "",
+        domain=session.domain or "",
+        task=session.task or "",
     )
 
+    if tree_filter and tree_q1:
+        # Both from tree — instant (0ms)
+        filter_result = tree_filter
+        claude_result = {"status": "question", **tree_q1}
+        logger.info("start-diagnostic: both served from tree (0ms)", session_id=session.session_id)
+    else:
+        # Fallback to parallel LLM calls
+        async def _run_filter():
+            """Run task alignment filter — non-blocking, best-effort."""
+            try:
+                return await generate_task_alignment_filter(
+                    task=session.task or "",
+                    diagnostic_context=diagnostic,
+                )
+            except Exception as exc:
+                logger.warning("Task filter error (non-blocking)", error=str(exc))
+                return None
+
+        async def _run_first_question():
+            """Generate first RCA question — critical path."""
+            return await generate_next_rca_question(
+                outcome=session.outcome or "",
+                outcome_label=session.outcome_label or "",
+                domain=session.domain or "",
+                task=session.task or "",
+                diagnostic_context=diagnostic,
+                rca_history=[],
+                business_profile=business_profile,
+                crawl_summary=crawl_summary,
+                gbp_data=session.gbp_data or None,
+            )
+
+        filter_result, claude_result = await asyncio.gather(
+            _run_filter(),
+            _run_first_question(),
+        )
+
+    # Store filter result if it succeeded (will be used in subsequent questions)
     if filter_result:
-        # Log filter call to context pool
         if filter_result.get("_meta"):
             session_store.add_llm_call_log(session.session_id, **filter_result["_meta"])
 
-        # Store filtered + deferred context
         session_store.set_filtered_context(
             session.session_id,
             filtered_items=filter_result.get("filtered_items", {}),
@@ -445,27 +492,9 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         )
     else:
         logger.warning(
-            "start-diagnostic: task filter failed, using full context",
+            "start-diagnostic: task filter failed/skipped, using full context",
             session_id=session.session_id,
         )
-
-    # Refresh session to pick up filtered context
-    session = session_store.get_session(body.session_id)
-
-    # ── Generate first RCA question with filtered context ──────
-    claude_result = await generate_next_rca_question(
-        outcome=session.outcome or "",
-        outcome_label=session.outcome_label or "",
-        domain=session.domain or "",
-        task=session.task or "",
-        diagnostic_context=diagnostic,
-        rca_history=[],
-        business_profile=business_profile,
-        crawl_summary=crawl_summary,
-        gbp_data=session.gbp_data or None,
-        filtered_context=session.rca_filtered_context or None,
-        task_execution_summary=session.rca_task_execution_summary or None,
-    )
 
     # Log to context pool
     if claude_result and claude_result.get("_meta"):
@@ -632,26 +661,49 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
             session_store.expand_rca_context(body.session_id)
             session = session_store.get_session(body.session_id)
 
-        # Ask Claude for the next question
-        claude_result = await generate_next_rca_question(
+        # Try pre-generated tree first, then LLM fallback
+        tree_result = get_next_from_tree(
             outcome=session.outcome or "",
-            outcome_label=session.outcome_label or "",
             domain=session.domain or "",
             task=session.task or "",
-            diagnostic_context=session.rca_diagnostic_context,
             rca_history=session.rca_history,
-            business_profile=session.business_profile or None,
-            crawl_summary=session.crawl_summary or None,
-            gbp_data=session.gbp_data or None,
-            filtered_context=session.rca_filtered_context or None,
-            task_execution_summary=session.rca_task_execution_summary or None,
         )
+
+        if tree_result:
+            # Instant hit from tree — 0ms instead of 15s
+            claude_result = tree_result
+            logger.info(
+                "RCA answer served from tree (0ms)",
+                session_id=session.session_id,
+                q_index=len(session.rca_history),
+            )
+        else:
+            # Fallback to live LLM call
+            claude_result = await generate_next_rca_question(
+                outcome=session.outcome or "",
+                outcome_label=session.outcome_label or "",
+                domain=session.domain or "",
+                task=session.task or "",
+                diagnostic_context=session.rca_diagnostic_context,
+                rca_history=session.rca_history,
+                business_profile=session.business_profile or None,
+                crawl_summary=session.crawl_summary or None,
+                gbp_data=session.gbp_data or None,
+                filtered_context=session.rca_filtered_context or None,
+                task_execution_summary=session.rca_task_execution_summary or None,
+                rca_running_summary=session.rca_running_summary or None,
+            )
 
         # Log to context pool
         if claude_result and claude_result.get("_meta"):
             session_store.add_llm_call_log(body.session_id, **claude_result["_meta"])
 
         if claude_result and claude_result.get("status") == "question":
+            # Store the running summary (compressed context for next turn)
+            cumulative = claude_result.get("cumulative_insight", "")
+            if cumulative:
+                session_store.set_rca_running_summary(body.session_id, cumulative)
+
             next_q = DynamicQuestion(
                 question=claude_result["question"],
                 options=claude_result.get("options", []),
@@ -683,7 +735,13 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
         elif claude_result and claude_result.get("status") == "complete":
             # Claude says we have enough — move to recommendation
             summary = claude_result.get("summary", "")
-            session_store.set_rca_complete(body.session_id, summary)
+            raw_handoff = claude_result.get("handoff", "")
+            # handoff may come as a list of bullet points — join into string
+            if isinstance(raw_handoff, list):
+                handoff = "\n".join(f"• {item}" for item in raw_handoff)
+            else:
+                handoff = raw_handoff or ""
+            session_store.set_rca_complete(body.session_id, summary, handoff=handoff)
 
             logger.info(
                 "Claude RCA: diagnostic complete",
