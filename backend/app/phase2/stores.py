@@ -43,6 +43,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def now_dt() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _to_obj(value: Any, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -60,7 +64,7 @@ def _to_obj(value: Any, fallback: Any) -> Any:
 async def ensure_default_agents() -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        now = now_iso()
+        now = now_dt()
         for a in DEFAULT_AGENTS:
             await conn.execute(
                 """
@@ -122,7 +126,7 @@ async def get_agent(agent_id: str) -> dict[str, Any] | None:
 
 
 async def create_agent(payload: dict[str, Any]) -> dict[str, Any]:
-    now = now_iso()
+    now = now_dt()
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
@@ -185,7 +189,7 @@ async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] |
         return await get_agent(agent_id)
 
     fields.append(f"updated_at = ${len(values) + 1}")
-    values.append(now_iso())
+    values.append(now_dt())
     values.append(agent_id)
 
     query = f"UPDATE agents SET {', '.join(fields)} WHERE id = ${len(values)} RETURNING *"
@@ -232,7 +236,7 @@ async def get_or_create_conversation(conversation_id: str | None, agent_id: str 
         selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
 
     cid = str(uuid4())
-    now = now_iso()
+    now = now_dt()
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -332,7 +336,7 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
             await conn.execute(
                 "UPDATE conversations SET updated_at = $2 WHERE id = $1",
                 conversation_id,
-                now_iso(),
+                now_dt(),
             )
 
 
@@ -419,7 +423,7 @@ async def update_message_content(
             output_file,
             json.dumps(payload),
         )
-        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_iso())
+        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
     return True
 
 
@@ -447,7 +451,7 @@ async def update_message_meta(conversation_id: str, message_id: str, kind: str |
             row["message_index"],
             json.dumps(payload),
         )
-        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_iso())
+        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
     return True
 
 
@@ -459,7 +463,7 @@ async def save_stage_outputs(conversation_id: str, stage_outputs: dict[str, str]
             conversation_id,
             json.dumps(stage_outputs or {}),
             output_file,
-            now_iso(),
+            now_dt(),
         )
 
 
@@ -512,7 +516,7 @@ async def create_skill_call(
     input_payload: dict[str, Any],
 ) -> str:
     pool = get_pool()
-    started_at = now_iso()
+    started_at = now_dt()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -600,7 +604,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         if text is not None or data is not None:
             output.append({"type": "result", "summary": text, "text": text, "data": data, "at": now_iso()})
 
-        started_at = row["started_at"] or now_iso()
+        started_at = row["started_at"] or now_dt()
         try:
             started_at_dt = datetime.fromisoformat(str(started_at))
             duration_row = await conn.fetchrow(
@@ -625,7 +629,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
             int(skill_call_id),
             state,
             error,
-            now_iso(),
+            now_dt(),
             duration_ms,
             json.dumps(output),
         )
@@ -700,7 +704,7 @@ async def create_plan_run(
     plan_json: dict[str, Any],
 ) -> dict[str, Any]:
     pid = str(uuid4())
-    now = now_iso()
+    now = now_dt()
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -767,7 +771,7 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
         values.append(json.dumps(patch["planJson"]))
 
     fields.append(f"updated_at = ${len(values) + 1}")
-    values.append(now_iso())
+    values.append(now_dt())
     values.append(plan_id)
 
     q = f"UPDATE plan_runs SET {', '.join(fields)} WHERE id = ${len(values)}"
