@@ -6,10 +6,10 @@
     "project-702b32a7-68ad-42b3-a47": {
       "hosting": {
         "development": [
-          "life-sorter-dev"
+          "ikshan-fe-dev"
         ],
         "production": [
-          "life-sorter-prod"
+          "ikshan-fe-prod"
         ]
       }
     }
