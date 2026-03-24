@@ -22,7 +22,48 @@ def _getenv(name: str, default: str) -> str:
     value = value.strip()
     return value if value else default
 
-DATABASE_URL = _getenv("DATABASE_URL", "postgresql://localhost:5432/ikshan")
+
+def _resolve_database_url() -> str:
+    """
+    Resolve DB URL with explicit switching support.
+
+    Priority:
+    1) DATABASE_URL (direct override)
+    2) DATABASE_TARGET + env-specific URLs
+    3) fallback local default
+
+    DATABASE_TARGET values:
+      - local | dev | prod | auto
+    """
+    direct = os.getenv("DATABASE_URL", "").strip()
+    if direct:
+        return direct
+
+    target = os.getenv("DATABASE_TARGET", "auto").strip().lower()
+    env_name = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+    url_local = os.getenv("DATABASE_URL_LOCAL", "").strip()
+    url_dev = os.getenv("DATABASE_URL_DEV", "").strip()
+    url_prod = os.getenv("DATABASE_URL_PROD", "").strip()
+
+    if target == "local" and url_local:
+        return url_local
+    if target == "dev" and url_dev:
+        return url_dev
+    if target == "prod" and url_prod:
+        return url_prod
+
+    if target == "auto":
+        if env_name == "production" and url_prod:
+            return url_prod
+        if env_name in ("development", "staging") and url_dev:
+            return url_dev
+        if url_local:
+            return url_local
+
+    return "postgresql://localhost:5432/ikshan"
+
+DATABASE_URL = _resolve_database_url()
 PYTHON_BIN = _getenv("PYTHON_BIN", "python3")
 STORAGE_BUCKET = _getenv("STORAGE_BUCKET", str(_BACKEND_DIR / "storage-bucket"))
 SKILLS_ROOT = Path(_getenv("SKILLS_ROOT", str(_BACKEND_DIR / "skills")))
