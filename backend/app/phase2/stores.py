@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+import traceback
 
 from asyncpg import UniqueViolationError
 
@@ -84,7 +85,21 @@ def _json_default(value: Any) -> Any:
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value, default=_json_default)
+    try:
+        return json.dumps(value, default=_json_default)
+    except Exception as exc:
+        try:
+            print(
+                "[phase2.stores] json-dumps-failed",
+                {
+                    "error": str(exc),
+                    "value_type": type(value).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+        except Exception:
+            pass
+        raise
 
 
 async def ensure_default_agents() -> None:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time as _time
+import traceback
 from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,13 @@ from .stores import (
 )
 
 router = APIRouter()
+
+def _log(event: str, **fields: Any) -> None:
+    try:
+        print(f"[phase2.router] {event} | {json.dumps(fields, default=str, ensure_ascii=False)}")
+    except Exception:
+        print(f"[phase2.router] {event} | <log-serialize-error>")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -280,7 +288,16 @@ def _json_default(value: Any) -> Any:
 
 
 def _sse(data: dict[str, Any]) -> bytes:
-    return f"data: {json.dumps(data, ensure_ascii=False, default=_json_default)}\n\n".encode("utf-8")
+    try:
+        return f"data: {json.dumps(data, ensure_ascii=False, default=_json_default)}\n\n".encode("utf-8")
+    except Exception as exc:
+        _log(
+            "sse-serialize-failed",
+            error=str(exc),
+            data_type=type(data).__name__,
+            data_keys=list(data.keys()) if isinstance(data, dict) else None,
+        )
+        raise
 
 
 async def _emit_plan_progress(
@@ -306,9 +323,11 @@ async def _create_plan_draft(
     emit_progress=None,
 ) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
+    _log("plan-draft-start", message_preview=message[:200], has_emit_progress=emit_progress is not None)
     resolved = await _resolve_agent_and_skill(body)
     conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
     contexts = resolved.get("contexts", {})
+    _log("plan-draft-conversation-resolved", conversation_id=conv.get("id"), agent_id=resolved.get("agentId"))
 
     cancel_plan_id = str(body.get("cancelPlanId") or "").strip()
     if cancel_plan_id:
@@ -335,8 +354,10 @@ async def _create_plan_draft(
 
     async def _run_skill_for_plan(sid: str, args: dict[str, Any], input_msg: str) -> Any:
         if not get_skill(sid):
+            _log("plan-skill-missing", skill_id=sid)
             return None
         run_id = f"plan-{plan_message_id}-{sid}-{int(_time.time() * 1000)}"
+        _log("plan-skill-start", skill_id=sid, run_id=run_id, args=args)
         skill_call_id = await create_skill_call(conv["id"], plan_message_id, sid, run_id, {"args": args})
         page_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         page_worker_task: asyncio.Task | None = None
@@ -373,6 +394,8 @@ async def _create_plan_draft(
 
         async def _on_prog(event: dict[str, Any]) -> None:
             meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+            if str(meta.get("event") or "").strip():
+                _log("plan-skill-progress", skill_id=sid, run_id=run_id, event=meta.get("event"), meta_keys=list(meta.keys()))
             if (
                 _should_stream_page_nl(sid)
                 and str(meta.get("event") or "").strip().lower() == "page_data"
@@ -388,6 +411,14 @@ async def _create_plan_draft(
                 })
 
         result = await run_skill(sid, input_msg, history=conv.get("messages") or [], args=args, on_progress=_on_prog)
+        _log(
+            "plan-skill-finished",
+            skill_id=sid,
+            run_id=run_id,
+            status=result.status,
+            error=result.error,
+            has_data=result.data is not None,
+        )
         if page_worker_task is not None:
             await page_queue.put(None)
             await page_worker_task
@@ -421,6 +452,7 @@ async def _create_plan_draft(
     )
 
     if url:
+        _log("plan-url-detected", url=url)
         await _emit_plan_progress(emit_progress, "Reading business information from website", event="business-scan-start")
         scan_res, crawl_res = await asyncio.gather(
             _run_skill_for_plan("business-scan", scan_args, message),
@@ -525,6 +557,7 @@ async def _create_plan_draft(
     ]))
 
     await _emit_plan_progress(emit_progress, "Creating plan draft", event="plan-markdown-generation")
+    _log("plan-markdown-generation-start", conversation_id=conv.get("id"), plan_message_id=plan_message_id)
     try:
         ai = AiHelper(temperature=0.2)
         ai_result = await ai.chat(
@@ -581,6 +614,7 @@ async def _create_plan_draft(
     }
 
     plan_run = await create_plan_run(conv["id"], user_message_id, plan_message_id, plan_markdown, plan_json)
+    _log("plan-draft-created", plan_id=plan_run.get("id"), conversation_id=conv.get("id"))
     await update_message_content(conv["id"], plan_message_id, plan_markdown)
     await update_message_meta(conv["id"], plan_message_id, "plan", plan_run["id"])
 
@@ -967,8 +1001,10 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
 
         async def worker() -> None:
             try:
+                _log("plan-stream-worker-start")
                 await emit({"stage": "thinking", "label": "Building plan", "stageIndex": 0})
                 result = await _create_plan_draft(body=body, emit_progress=emit_progress)
+                _log("plan-stream-worker-done", plan_id=result.get("planId"), conversation_id=result.get("conversationId"))
                 await emit({
                     "done": True,
                     "conversationId": result.get("conversationId"),
@@ -979,6 +1015,7 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
                     "skillId": result.get("skillId"),
                 })
             except Exception as exc:
+                _log("plan-stream-worker-error", error=str(exc), traceback=traceback.format_exc())
                 await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
             finally:
                 done.set()

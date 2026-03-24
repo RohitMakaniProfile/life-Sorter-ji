@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -12,6 +13,34 @@ from .ai import AiHelper
 from .config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def _json_default(value: Any) -> Any:
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _json_dumps(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=_json_default)
+    except Exception as exc:
+        try:
+            print(
+                "[phase2.skills] json-dumps-failed",
+                {
+                    "error": str(exc),
+                    "value_type": type(value).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+        except Exception:
+            pass
+        raise
 
 
 @dataclass
@@ -215,7 +244,7 @@ async def _summarize_single(
     on_progress: ProgressCb | None = None,
 ) -> str:
     try:
-        raw_json = json.dumps(data, ensure_ascii=False)
+        raw_json = _json_dumps(data)
     except Exception:
         return fallback_text
     raw_json = raw_json[:120_000]
