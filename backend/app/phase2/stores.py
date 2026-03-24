@@ -77,6 +77,16 @@ def _to_obj(value: Any, fallback: Any) -> Any:
     return fallback
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, default=_json_default)
+
+
 async def ensure_default_agents() -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -347,7 +357,7 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
                 message["content"],
                 _as_datetime(message.get("createdAt")),
                 message.get("outputFile"),
-                json.dumps(message),
+                _json_dumps(message),
             )
             await conn.execute(
                 "UPDATE conversations SET updated_at = $2 WHERE id = $1",
@@ -438,7 +448,7 @@ async def update_message_content(
             row["message_index"],
             content,
             output_file,
-            json.dumps(payload),
+            _json_dumps(payload),
         )
         await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
     return True
@@ -466,7 +476,7 @@ async def update_message_meta(conversation_id: str, message_id: str, kind: str |
             "UPDATE messages SET message = $3::jsonb WHERE conversation_id = $1 AND message_index = $2",
             conversation_id,
             row["message_index"],
-            json.dumps(payload),
+            _json_dumps(payload),
         )
         await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
     return True
@@ -478,7 +488,7 @@ async def save_stage_outputs(conversation_id: str, stage_outputs: dict[str, str]
         await conn.execute(
             "UPDATE conversations SET last_stage_outputs = $2::jsonb, last_output_file = $3, updated_at = $4 WHERE id = $1",
             conversation_id,
-            json.dumps(stage_outputs or {}),
+            _json_dumps(stage_outputs or {}),
             output_file,
             now_dt(),
         )
@@ -547,8 +557,8 @@ async def create_skill_call(
             message_id,
             skill_id,
             run_id,
-            json.dumps(input_payload or {}),
-            json.dumps([]),
+            _json_dumps(input_payload or {}),
+            _json_dumps([]),
             started_at,
         )
     return str(row["id"])
@@ -569,7 +579,7 @@ async def push_skill_output(skill_call_id: str, entry: dict[str, Any]) -> None:
         await conn.execute(
             "UPDATE skill_calls SET output = $2::jsonb, updated_at = NOW() WHERE id = $1::bigint",
             int(skill_call_id),
-            json.dumps(output),
+            _json_dumps(output),
         )
 
 
@@ -648,7 +658,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
             error,
             now_dt(),
             duration_ms,
-            json.dumps(output),
+            _json_dumps(output),
         )
 
 
@@ -737,7 +747,7 @@ async def create_plan_run(
             user_message_id,
             plan_message_id,
             plan_markdown,
-            json.dumps(plan_json),
+            _json_dumps(plan_json),
             now,
             now,
         )
@@ -785,7 +795,7 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
         values.append(patch["planMarkdown"])
     if "planJson" in patch:
         fields.append(f"plan_json = ${len(values) + 1}::jsonb")
-        values.append(json.dumps(patch["planJson"]))
+        values.append(_json_dumps(patch["planJson"]))
 
     fields.append(f"updated_at = ${len(values) + 1}")
     values.append(now_dt())
