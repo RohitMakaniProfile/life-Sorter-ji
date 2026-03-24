@@ -273,8 +273,14 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def _sse(data: dict[str, Any]) -> bytes:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+    return f"data: {json.dumps(data, ensure_ascii=False, default=_json_default)}\n\n".encode("utf-8")
 
 
 async def _emit_plan_progress(
