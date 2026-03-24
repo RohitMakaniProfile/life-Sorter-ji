@@ -133,6 +133,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ────────────────────────────────────────────────
     from app.routers import (
+        auth,
         chat,
         companies,
         speak,
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     ChatRequest.model_rebuild()
     ChatResponse.model_rebuild()
 
+    app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
     app.include_router(speak.router, prefix="/api/v1", tags=["Text-to-Speech"])
