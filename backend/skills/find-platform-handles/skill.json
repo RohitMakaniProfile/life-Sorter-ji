@@ -1,0 +1,27 @@
+{
+  "id": "find-platform-handles",
+  "name": "Platform Handle Finder",
+  "emoji": "🔎",
+  "description": "Entry-point resolver for platform analysis and deep reports. Given a business name and/or website, discover the most likely Instagram, YouTube, and Play Store handles/pages via Google search, with confidence scores per platform. Use this FIRST whenever an agent needs platform-specific sentiment or a multi-channel deep analysis, so downstream sentiment skills receive clean, high-confidence handles.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["instagram", "youtube", "playstore", "handles", "social", "discovery"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "platforms": {
+        "type": "string",
+        "description": "Desired platforms as a comma-separated list of ids: instagram,youtube,playstore (optional). If omitted, the skill will infer platforms from the user message.",
+        "optional": true
+      }
+    }
+  },
+  "stages": ["thinking", "crawling", "done"],
+  "stageLabels": {
+    "thinking": "Choosing platforms & query",
+    "crawling": "Searching Google for platform pages",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

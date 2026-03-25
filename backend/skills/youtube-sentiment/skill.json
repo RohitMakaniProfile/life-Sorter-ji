@@ -1,0 +1,28 @@
+{
+  "id": "youtube-sentiment",
+  "name": "YouTube Sentiment",
+  "emoji": "📺",
+  "description": "Deep YouTube sentiment module for long-form video feedback. Given a channel or video URL (often discovered via find-platform-handles) or a brand query, fetch relevant videos and comments, score sentiment, and summarize narratives around the business. Use this whenever YouTube is an important channel or when building a multi-channel deep analysis that must include video sentiment.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["youtube", "video", "comments", "sentiment", "channel"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "channelUrl": { "type": "string", "description": "YouTube channel URL", "optional": true },
+      "videoUrl": { "type": "string", "description": "Specific video URL", "optional": true },
+      "query": { "type": "string", "description": "Search query or brand name", "optional": true },
+      "maxVideos": { "type": "number", "description": "Max videos to scrape (default 5)", "optional": true }
+    }
+  },
+  "stages": ["thinking", "collecting", "sentiment-scoring", "sentiment-report"],
+  "stageLabels": {
+    "thinking": "Planning YouTube sentiment scan",
+    "collecting": "Collecting YouTube videos & comments",
+    "sentiment-scoring": "Scoring sentiment",
+    "sentiment-report": "Summarizing findings",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

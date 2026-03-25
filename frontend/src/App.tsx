@@ -6,7 +6,7 @@ import SandboxLogin from './components/SandboxLogin';
 import SandboxPanel from './components/SandboxPanel';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ThemeProvider } from './context/ThemeContext';
-import './App.css';
+import './AppLegacy.css';
 
 function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);

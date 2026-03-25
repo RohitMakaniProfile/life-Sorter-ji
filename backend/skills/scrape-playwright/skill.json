@@ -1,0 +1,27 @@
+{
+  "id": "scrape-playwright",
+  "name": "Playwright Website Scraper",
+  "emoji": "🧭",
+  "description": "Headless Playwright-based website crawler for JS-heavy or SPA sites. Starting from a root URL, discovers and renders pages client-side to capture full HTML, text, and key metadata. Use this for deep content and structure analysis when the site relies heavily on client-side rendering, and as a complement to scrape-agentbrowser and scrape-bs4 in comprehensive audits.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["playwright", "headless", "client-side", "rendered", "crawl"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "Root URL to crawl" },
+      "maxPages": { "type": "number", "description": "Maximum number of pages (optional); deep mode uses 9999", "optional": true },
+      "maxDepth": { "type": "number", "description": "Max link depth from seed (optional)", "optional": true },
+      "deep": { "type": "boolean", "description": "If true, discover all pages first then scrape each (no limit)", "optional": true },
+      "parallel": { "type": "boolean", "description": "If true (with deep), run discovery and scraper threads in parallel; scraper skips URLs containing 'blog'", "optional": true }
+    }
+  },
+  "stages": ["thinking", "crawling", "done"],
+  "stageLabels": {
+    "thinking": "Planning Playwright crawl",
+    "crawling": "Crawling website with Playwright",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

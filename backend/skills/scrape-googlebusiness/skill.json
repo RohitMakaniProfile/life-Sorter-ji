@@ -1,0 +1,25 @@
+{
+  "id": "scrape-googlebusiness",
+  "name": "Google Business Scraper",
+  "emoji": "📍",
+  "description": "Local presence and store-reputation module. Given a business name and optional location hint, discover Google Business / Maps listings, scrape profiles and reviews, and summarize visibility, footfall signals, and sentiment. Use this whenever the user cares about offline/local performance or requests a deep analysis that must include Maps / local business context.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["google business", "maps", "reviews", "local", "listing"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "businessName": { "type": "string", "description": "Business name" },
+      "locationHint": { "type": "string", "description": "City/country or address to disambiguate (optional)" }
+    }
+  },
+  "stages": ["thinking", "collecting", "analyzing", "done"],
+  "stageLabels": {
+    "thinking": "Planning Google Business scan",
+    "collecting": "Collecting listings & reviews",
+    "analyzing": "Summarizing presence & sentiment",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

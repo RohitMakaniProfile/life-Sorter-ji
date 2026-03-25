@@ -1,0 +1,25 @@
+{
+  "id": "scrape-bs4",
+  "name": "BeautifulSoup Scraper",
+  "emoji": "🕷️",
+  "description": "Fast HTML crawler for static or lightly dynamic websites using requests + BeautifulSoup. Starting from a root URL, discovers pages via sitemap.xml and internal links (BFS) and returns structured page content. Use this when the site is mostly server-rendered, for quick deep analysis, sitemap-style discovery, or as a complementary view alongside agent-browser / scrape-playwright in comprehensive audits.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["beautifulsoup", "bs4", "static", "html", "crawl", "sitemap", "discovery"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "Root URL to crawl" },
+      "maxDepth": { "type": "number", "description": "Maximum link depth from seed URL (optional)", "optional": true },
+      "maxPages": { "type": "number", "description": "Maximum number of pages to crawl (optional)", "optional": true }
+    }
+  },
+  "stages": ["thinking", "crawling", "done"],
+  "stageLabels": {
+    "thinking": "Planning BS4 crawl",
+    "crawling": "Scraping pages with requests + BS4",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

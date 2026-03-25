@@ -31,6 +31,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import './MarketIntelligenceView.css';
+import { getApiBaseRequired } from '../config/apiBase';
 
 /**
  * Market Intelligence Full View Component
@@ -134,7 +135,7 @@ const MarketIntelligenceView = () => {
         || `Business website: ${extractDomain(websiteUrl)}`;
 
       // Call the backend API instead of importing Node.js modules
-      const apiUrl = import.meta.env.VITE_API_URL || '';
+      const apiUrl = getApiBaseRequired();
       const response = await fetch(`${apiUrl}/api/market-intelligence`, {
         method: 'POST',
         headers: {

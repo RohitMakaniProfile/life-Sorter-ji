@@ -1,0 +1,18 @@
+{
+  "projects": {
+    "default": "project-702b32a7-68ad-42b3-a47"
+  },
+  "targets": {
+    "project-702b32a7-68ad-42b3-a47": {
+      "hosting": {
+        "development": [
+          "ikshan-fe-dev"
+        ],
+        "production": [
+          "ikshan-fe-prod"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

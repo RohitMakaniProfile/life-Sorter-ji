@@ -6,6 +6,7 @@ import {
   Database, Code2, Hash, Activity, X, LogOut
 } from 'lucide-react';
 import './SandboxPanel.css';
+import { getApiBaseRequired } from '../config/apiBase';
 
 // ── Outcome/Domain/Task data (copied structure for sandbox, no imports from ChatBotNew) ──
 const OUTCOMES = [
@@ -25,7 +26,7 @@ const DOMAIN_MAP = {
   'finance': ['Finance Legal & Admin', 'Financial Health & Risk', 'Owner_ Founder Improvements'],
 };
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_BASE = getApiBaseRequired();
 
 // ══════════════════════════════════════════════════════════════
 // LOG LEVEL BADGES

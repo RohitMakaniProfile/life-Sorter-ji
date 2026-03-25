@@ -1,0 +1,25 @@
+{
+  "id": "quora-search",
+  "name": "Quora Business Search",
+  "emoji": "❓",
+  "description": "Problem-solution and narrative discovery module using Quora. Given a brand, product, or domain query, search Quora (via Google) for relevant questions and threads, then summarize how users talk about pains, desires, alternatives, and objections. Use this whenever a deep analysis needs real user language, objections, and comparisons beyond the official website and owned channels.",
+  "entry": "runner.py",
+  "language": "python",
+  "keywords": ["quora", "questions", "search", "google", "discussions"],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "Search query including brand or domain" },
+      "language": { "type": "string", "description": "Preferred language filter (optional)" }
+    }
+  },
+  "stages": ["thinking", "collecting", "analyzing", "done"],
+  "stageLabels": {
+    "thinking": "Planning Quora search",
+    "collecting": "Collecting Quora threads",
+    "analyzing": "Summarizing themes",
+    "done": "Done",
+    "error": "Error"
+  }
+}
+

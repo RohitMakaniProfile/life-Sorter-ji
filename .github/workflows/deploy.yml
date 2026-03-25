@@ -1,0 +1,88 @@
+name: Deploy Backend to Cloud Run
+
+on:
+  push:
+    branches:
+      - development
+      - production
+    paths:
+      - 'backend/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIP }}
+          service_account: ${{ secrets.GCP_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set variables
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "SERVICE=ikshan-be-dev" >> $GITHUB_ENV
+            echo "REPO=ikshan-be-dev" >> $GITHUB_ENV
+            echo "APP_ENV=development" >> $GITHUB_ENV
+            echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_DEV }}" >> $GITHUB_ENV
+          else
+            echo "SERVICE=ikshan-be-prod" >> $GITHUB_ENV
+            echo "REPO=ikshan-be-prod" >> $GITHUB_ENV
+            echo "APP_ENV=production" >> $GITHUB_ENV
+            echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
+          fi
+
+      - name: Set phase2 runtime env defaults
+        run: |
+          echo "OPENAI_MODEL=gpt-4.1" >> $GITHUB_ENV
+          echo "CLAUDE_MODEL=claude-opus-4-6" >> $GITHUB_ENV
+          echo "GEMINI_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
+          echo "GEMINI_SCOUT_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
+          echo "SKILL_DEBUG_LOGS=true" >> $GITHUB_ENV
+          echo "STORAGE_BUCKET=/app/storage-bucket" >> $GITHUB_ENV
+          echo "SKILLS_ROOT=/app/skills" >> $GITHUB_ENV
+          echo "PYTHON_BIN=python3" >> $GITHUB_ENV
+
+          # Read LLM/search keys from GitHub secrets.
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> $GITHUB_ENV
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
+          echo "SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+
+          # Backward-compatible aliases used by current skill runners.
+          echo "GOOGLE_SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+          echo "SERP_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
+
+      - name: Build & Push Docker Image
+        run: |
+          gcloud builds submit ./backend \
+            --region asia-south1 \
+            --tag asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
+            --quiet
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE \
+            --image asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
+            --region asia-south1 \
+            --platform managed \
+            --timeout=3600 \
+            --memory=4Gi \
+            --cpu=2 \
+            --concurrency=1 \
+            --min-instances=1 \
+            --set-env-vars '^##^ENVIRONMENT='$APP_ENV'##DATABASE_URL='$DB_URL'##OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}'##CLAUDE_API_KEY='${{ secrets.CLAUDE_API_KEY }}'##GEMINI_API_KEY='${{ secrets.GEMINI_API_KEY }}'##SERPER_API_KEY='${{ secrets.SERPER_API_KEY }}'##GOOGLE_SERPER_API_KEY='${{ secrets.SERPER_API_KEY }}'##SERP_API_KEY='${{ secrets.SERPER_API_KEY }}'##OPENAI_MODEL='$OPENAI_MODEL'##CLAUDE_MODEL='$CLAUDE_MODEL'##GEMINI_MODELS='$GEMINI_MODELS'##GEMINI_SCOUT_MODELS='$GEMINI_SCOUT_MODELS'##SKILL_DEBUG_LOGS='$SKILL_DEBUG_LOGS'##STORAGE_BUCKET='$STORAGE_BUCKET'##SKILLS_ROOT='$SKILLS_ROOT'##PYTHON_BIN='$PYTHON_BIN'##CORS_ORIGINS=["http://localhost:5173","http://localhost:3000","http://localhost:3001","https://ikshan.in","https://www.ikshan.in","https://dev.ikshan.in","https://admin.ikshan.in","https://ikshan-fe-dev.web.app","https://ikshan-fe-prod.web.app","https://ikshan-fe-dev.firebaseapp.com","https://ikshan-fe-prod.firebaseapp.com"]' \
+            --allow-unauthenticated

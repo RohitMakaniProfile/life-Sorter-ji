@@ -1,0 +1,28 @@
+{
+  "id": "web-search",
+  "name": "Web Search",
+  "emoji": "🔎",
+  "description": "Generic web search for arbitrary queries. Use to discover presence across platforms (reviews, marketplaces, social links), competitors, funding/news, and region-specific platforms for any business worldwide. Returns top results with title/url/snippet.",
+  "entry": "runner.py",
+  "language": "python",
+  "stages": ["thinking", "running", "done"],
+  "stageLabels": {
+    "thinking": "Thinking",
+    "running": "Searching",
+    "done": "Done",
+    "error": "Error"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "Search query (e.g. 'Brand reviews', 'Brand competitors', 'Brand funding')." },
+      "queries": { "type": "string", "description": "Multiple search queries separated by newlines. If provided, runs all and returns combined results.", "optional": true },
+      "maxResults": { "type": "integer", "description": "Max results to return (default: 10).", "optional": true, "default": 10 },
+      "maxResultsPerQuery": { "type": "integer", "description": "Max results per query when using queries (default: 6).", "optional": true, "default": 6 },
+      "maxTotalResults": { "type": "integer", "description": "Max combined unique URLs to return across all queries (default: 40).", "optional": true, "default": 40 },
+      "region": { "type": "string", "description": "Optional region hint (e.g. 'in', 'us', 'uk'). Used only as a hint in heuristics.", "optional": true }
+    }
+  },
+  "keywords": ["search", "web", "discover", "competitors", "funding", "reviews"]
+}
+

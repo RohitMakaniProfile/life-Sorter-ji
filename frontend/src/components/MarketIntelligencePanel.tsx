@@ -27,6 +27,7 @@ import {
   Award
 } from 'lucide-react';
 import './MarketIntelligencePanel.css';
+import { getApiBaseRequired } from '../config/apiBase';
 
 /**
  * Market Intelligence Panel Component
@@ -107,7 +108,7 @@ const MarketIntelligencePanel = () => {
       }, 3000);
 
       // Call the backend API instead of importing Node.js modules
-      const apiUrl = import.meta.env.VITE_API_URL || '';
+      const apiUrl = getApiBaseRequired();
       const response = await fetch(`${apiUrl}/api/market-intelligence`, {
         method: 'POST',
         headers: {

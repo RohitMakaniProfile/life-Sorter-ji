@@ -1,0 +1,23 @@
+{
+  "id": "business-scan",
+  "name": "Business Scan",
+  "emoji": "🧪",
+  "description": "Quickly scan a business landing page (single URL) to extract business name, category hints (hotel/restaurant/SaaS/ecom/etc.), country/region signals, and outbound presence links (social/app stores/marketplaces). Use as the first step for generic business analysis.",
+  "entry": "runner.py",
+  "language": "python",
+  "stages": ["thinking", "running", "done"],
+  "stageLabels": {
+    "thinking": "Thinking",
+    "running": "Scanning",
+    "done": "Done",
+    "error": "Error"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "Business website URL (landing page)." }
+    }
+  },
+  "keywords": ["landing", "category", "presence", "scan", "business"]
+}
+

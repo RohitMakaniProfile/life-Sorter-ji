@@ -3,6 +3,7 @@ import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, Mess
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNew.css';
+import { getApiBaseRequired } from '../config/apiBase';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 import ContextPoolPanel from './ContextPoolPanel';
 
@@ -1583,6 +1584,15 @@ const ChatBotNew = ({ onNavigate }) => {
   const [userEmail, setUserEmail] = useState(null);
   const [flowStage, setFlowStage] = useState('outcome');
 
+  // ── OTP Auth State ─────────────────────────────────────────
+  const [otpPhone, setOtpPhone] = useState('');
+  const [otpSessionId, setOtpSessionId] = useState(null);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpStep, setOtpStep] = useState('phone'); // 'phone' | 'verify'
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [otpError, setOtpError] = useState('');
+  const [otpVerified, setOtpVerified] = useState(false);
+
   // ── AI Agent Session State ─────────────────────────────────
   const [sessionId, setSessionId] = useState(null);
   const sessionIdRef = useRef(null); // ref mirrors state — avoids React batching delays
@@ -1617,7 +1627,7 @@ const ChatBotNew = ({ onNavigate }) => {
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({}); // {Q1: 'A) option', Q2: 'B) option'}
 
-  const API_BASE = import.meta.env.VITE_API_URL || '';
+  const API_BASE = getApiBaseRequired();
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;
@@ -2068,6 +2078,87 @@ const ChatBotNew = ({ onNavigate }) => {
       timestamp: new Date()
     };
     setMessages(prev => [...prev, botMessage]);
+  };
+
+  // ── OTP Handlers ───────────────────────────────────────────
+  const handleSendOtp = async () => {
+    const phone = otpPhone.trim().replace(/[\s\-]/g, '');
+    if (!/^(91)?\d{10}$/.test(phone)) {
+      setOtpError('Enter a valid 10-digit Indian mobile number');
+      return;
+    }
+    setOtpLoading(true);
+    setOtpError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionIdRef.current, phone_number: phone }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setOtpSessionId(data.otp_session_id);
+        setOtpStep('verify');
+      } else {
+        setOtpError(data.message || 'Failed to send OTP');
+      }
+    } catch {
+      setOtpError('Network error — please try again');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    const code = otpCode.trim();
+    if (!/^\d{4,8}$/.test(code)) {
+      setOtpError('Enter the 4-6 digit OTP sent to your phone');
+      return;
+    }
+    setOtpLoading(true);
+    setOtpError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code }),
+      });
+      const data = await res.json();
+      if (data.verified) {
+        setOtpVerified(true);
+        setShowAuthModal(false);
+        setOtpStep('phone');
+        setOtpCode('');
+        setOtpError('');
+
+        // Proceed to playbook if auth-gated
+        if (pendingAuthActionRef.current === 'recommendations') {
+          pendingAuthActionRef.current = null;
+          const welcomeMsg = {
+            id: getNextMessageId(),
+            text: `Phone verified! ✅ Generating your **AI Growth Playbook**...`,
+            sender: 'bot',
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, welcomeMsg]);
+          pendingReportDataRef.current = null;
+          startPlaybook();
+        }
+      } else {
+        setOtpError(data.message || 'Incorrect OTP — please try again');
+      }
+    } catch {
+      setOtpError('Network error — please try again');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setOtpStep('phone');
+    setOtpCode('');
+    setOtpError('');
+    setOtpSessionId(null);
   };
 
   const handleStartNewIdea = () => {
@@ -6004,14 +6095,87 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         </div>
       )}
 
-      {/* Auth Modal Reused if exists */}
+      {/* Auth Modal — Google + OTP */}
       {showAuthModal && (
-        <div className="identity-overlay" onClick={() => setShowAuthModal(false)}>
-          <div className="identity-form" onClick={(e) => e.stopPropagation()}>
-            <h2>Start Fresh</h2>
-            <p style={{ marginBottom: '2rem', color: '#6b7280' }}>Sign in to save your progress</p>
-            <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151' }}>
+        <div className="identity-overlay" onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}>
+          <div className="identity-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px', padding: '2rem' }}>
+            <h2 style={{ marginBottom: '0.5rem' }}>Verify to Continue</h2>
+            <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>Sign in with Google or verify your phone number</p>
+
+            {/* Google Sign-In */}
+            <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.75rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.95rem', marginBottom: '1.25rem' }}>
               <span style={{ fontWeight: 600 }}>Continue with Google</span>
+            </button>
+
+            {/* Divider */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+              <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>OR</span>
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+            </div>
+
+            {/* OTP Flow */}
+            {otpStep === 'phone' ? (
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Mobile Number</label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.5rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.9rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
+                  <input
+                    type="tel"
+                    value={otpPhone}
+                    onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+                    placeholder="10-digit mobile number"
+                    maxLength={10}
+                    style={{ flex: 1, padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.95rem', outline: 'none' }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
+                  />
+                </div>
+                {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
+                <button
+                  onClick={handleSendOtp}
+                  disabled={otpLoading || otpPhone.length < 10}
+                  style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
+                >
+                  {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Enter OTP sent to +91 {otpPhone.slice(-10)}</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                  placeholder="Enter 4-6 digit OTP"
+                  maxLength={6}
+                  style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '1.1rem', letterSpacing: '0.3rem', textAlign: 'center', outline: 'none' }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleVerifyOtp()}
+                  autoFocus
+                />
+                {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
+                <button
+                  onClick={handleVerifyOtp}
+                  disabled={otpLoading || otpCode.length < 4}
+                  style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpCode.length < 4 ? '#d1d5db' : '#16a34a', color: 'white', border: 'none', cursor: otpLoading || otpCode.length < 4 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
+                >
+                  {otpLoading ? 'Verifying...' : 'Verify OTP'}
+                </button>
+                <button
+                  onClick={handleResendOtp}
+                  style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.85rem' }}
+                >
+                  ← Change number / Resend OTP
+                </button>
+              </div>
+            )}
+
+            {/* Skip option */}
+            <button
+              onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}
+              style={{ width: '100%', marginTop: '1rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.8rem' }}
+            >
+              Skip for now
             </button>
           </div>
         </div>
