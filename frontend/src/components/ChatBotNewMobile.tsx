@@ -19,8 +19,8 @@ const formatSectionMarkdown = (text) => {
 const formatPlaybookSteps = (text) => {
   let r = text;
   r = r.replace(
-    /^(#{0,3}\s*)?(\d{1,2})\.\s*(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?\s*$/gm,
-    (_, _h, num, name) => `## **STEP ${num} — ${name.trim()}**`
+    /^(?:#{0,3}\s*)?(?:\*\*)?(\d{1,2})\.\s*(?:\*\*\s*)?(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?(?:\*\*)?\s*$/gm,
+    (_, num, name) => `## **STEP ${num} — ${name.trim()}**`
   );
   const subs = [
     [/^(?:#{0,4}\s*)?(?:\*\*)?WHAT TO DO(?:\*\*)?\s*$/gm, '#### 📌 WHAT TO DO'],
@@ -2202,7 +2202,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
       const startData = await startRes.json();
 
-      if (startData.stage === 'gap_questions' && startData.gap_questions) {
+      const parsedGaps = startData.gap_questions_parsed || [];
+      if (startData.stage === 'gap_questions' && parsedGaps.length > 0) {
         setPlaybookStage('gap-questions');
         setPlaybookGapQuestions(startData.gap_questions);
         setPlaybookGapSelections({});
@@ -2215,7 +2216,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
           timestamp: new Date(),
           isPlaybookGapQuestions: true,
           gapQuestionsText: startData.gap_questions,
-          gapQuestionsParsed: startData.gap_questions_parsed || [],
+          gapQuestionsParsed: parsedGaps,
           agent1Output: startData.agent1_output,
           agent2Output: startData.agent2_output,
         };

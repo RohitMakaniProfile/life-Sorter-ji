@@ -630,7 +630,18 @@ async def run_background_crawl(session_id: str, website_url: str):
         elif url_type == "social_profile":
             crawl_raw = await crawl_social_profile(website_url)
         else:
-            crawl_raw = await crawl_website(website_url, session_id=session_id)
+            # Use Playwright (JS-rendered) with httpx fallback
+            try:
+                from app.services.playwright_crawl_service import crawl_website_playwright
+                logger.info("Using Playwright crawler (JS-rendered)", url=website_url)
+                crawl_raw = await crawl_website_playwright(website_url, session_id=session_id)
+            except Exception as pw_err:
+                logger.warning(
+                    "Playwright crawl failed, falling back to httpx",
+                    url=website_url,
+                    error=str(pw_err),
+                )
+                crawl_raw = await crawl_website(website_url, session_id=session_id)
 
         # Generate compressed summary (with _meta for context pool)
         if url_type == "gbp":
