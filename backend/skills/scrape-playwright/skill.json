@@ -2,10 +2,10 @@
   "id": "scrape-playwright",
   "name": "Playwright Website Scraper",
   "emoji": "🧭",
-  "description": "Headless Playwright-based website crawler for JS-heavy or SPA sites. Starting from a root URL, discovers and renders pages client-side to capture full HTML, text, and key metadata. Use this for deep content and structure analysis when the site relies heavily on client-side rendering, and as a complement to scrape-agentbrowser and scrape-bs4 in comprehensive audits.",
+  "description": "Headless Playwright-based website crawler for JS-heavy or SPA sites. Starting from a root URL, discovers and renders pages client-side to capture full HTML, text, and key metadata. Each scraped page includes tech_stack: DOM heuristics plus Retire.js jsrepository.json rules (downloaded once into scripts/.cache) matched against script response URLs and bodies. Use this for deep content and structure analysis when the site relies heavily on client-side rendering, and as a complement to scrape-agentbrowser and scrape-bs4 in comprehensive audits.",
   "entry": "runner.py",
   "language": "python",
-  "keywords": ["playwright", "headless", "client-side", "rendered", "crawl"],
+  "keywords": ["playwright", "headless", "client-side", "rendered", "crawl", "tech-stack", "framework"],
   "inputSchema": {
     "type": "object",
     "properties": {

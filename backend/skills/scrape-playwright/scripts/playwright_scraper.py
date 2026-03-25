@@ -10,12 +10,15 @@ Additional fields per page:
   - "network_requests": [str]  # XHR/fetch URLs captured (API endpoints)
   - "local_storage_keys": [str]
   - "cookies_names": [str]
+  - "tech_stack": { "detected", "signals", "method", "retire" }
+    DOM heuristics plus optional Retire.js jsrepository.json matches on script responses (downloaded + cached).
 """
 
 import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -130,6 +133,333 @@ _ELEMENTS_EVAL_JS = """
   return out;
 }
 """
+
+
+_TECH_STACK_EVAL_JS = r"""
+() => {
+  const signals = {};
+  const add = (name, reason) => {
+    if (!signals[name]) signals[name] = [];
+    if (signals[name].indexOf(reason) === -1) signals[name].push(reason);
+  };
+
+  const html = (document.documentElement && document.documentElement.outerHTML) || "";
+  const headHtml = (document.head && document.head.innerHTML) || "";
+  const scriptSrcs = Array.from(document.scripts || []).map((s) => s.src || "").join(" ");
+  const scriptInline = Array.from(document.scripts || [])
+    .map((s) => (s.textContent || "").slice(0, 4000))
+    .join(" ");
+  const linkHrefs = Array.from(document.querySelectorAll('link[rel="stylesheet"],link[rel="preload"]'))
+    .map((l) => l.href || "")
+    .join(" ");
+  const preloadHints = Array.from(
+    document.querySelectorAll('link[rel="modulepreload"],link[rel="preload"]'),
+  )
+    .map((l) => l.href || "")
+    .join(" ");
+  const combinedAssets = scriptSrcs + " " + linkHrefs + " " + preloadHints;
+
+  try {
+    const gen = document.querySelector('meta[name="generator"]');
+    if (gen) {
+      const gc = ((gen.getAttribute("content") || "") + "").toLowerCase();
+      if (gc.includes("next.js") || gc.includes("nextjs")) add("nextjs", "meta_generator");
+      if (gc.includes("gatsby")) add("gatsby", "meta_generator");
+      if (gc.includes("nuxt")) add("nuxt", "meta_generator");
+      if (gc.includes("astro")) add("astro", "meta_generator");
+      if (gc.includes("wordpress")) add("wordpress", "meta_generator");
+      if (gc.includes("webflow")) add("webflow", "meta_generator");
+      if (gc.includes("framer")) add("framer", "meta_generator");
+    }
+  } catch (e) {}
+
+  try {
+    for (const s of Array.from(document.scripts || [])) {
+      const u = ((s.src || "") + "").toLowerCase();
+      if (!u) continue;
+      if (u.includes("/_next/") || u.includes("_next/static")) add("nextjs", "script_src");
+      if (u.includes("chunks/webpack-") || u.includes("/webpack-")) add("nextjs", "webpack_chunk_path");
+      if (u.includes("main-app-") || u.includes("main-app.")) add("nextjs", "next_main_app_chunk");
+      if (u.includes("framerusercontent.com") || u.includes(".framer.")) add("framer", "script_host");
+      if (u.includes("webflow")) add("webflow", "script_path");
+    }
+  } catch (e) {}
+
+  try {
+    if (document.getElementById("__next") || html.includes('id="__next"')) {
+      add("nextjs", "next_root_div");
+    }
+    if (html.includes("__next_f")) {
+      add("nextjs", "next_app_router_flight");
+    }
+    if (typeof window !== "undefined" && window.__next_f && Array.isArray(window.__next_f)) {
+      add("nextjs", "next_f_global");
+    }
+  } catch (e) {}
+
+  try {
+    if (document.getElementById("__NEXT_DATA__") || typeof window.__NEXT_DATA__ !== "undefined") {
+      add("nextjs", "__NEXT_DATA__");
+    }
+    if (scriptSrcs.includes("/_next/") || scriptSrcs.includes("_next/static") || html.includes("/_next/static")) {
+      add("nextjs", "next_static_path");
+    }
+  } catch (e) {}
+
+  try {
+    if (
+      !!document.querySelector("[class*='nextjs']") ||
+      !!document.querySelector("[data-nextjs-screen]")
+    ) {
+      add("nextjs", "next_data_attr");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.__NUXT__ !== "undefined" || document.getElementById("__NUXT__")) {
+      add("nuxt", "nuxt_global");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.__remixContext !== "undefined") {
+      add("remix", "remix_context");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.__GATSBY !== "undefined" || html.includes("___gatsby") || html.includes("gatsby-browser")) {
+      add("gatsby", "gatsby_marker");
+    }
+  } catch (e) {}
+
+  try {
+    const ng = document.querySelector("[ng-version]") || document.documentElement.getAttribute("ng-version");
+    if (ng) {
+      add("angular", "ng_version_attr");
+    }
+    if (html.includes("ng-version=") || html.includes('ng-app="') || html.includes("ng-app=")) {
+      add("angular", "angular_dom");
+    }
+  } catch (e) {}
+
+  try {
+    if (
+      document.querySelector("astro-island, [data-astro-cid], [data-astro-transition], [data-astro-reload]") ||
+      html.includes("data-astro-") ||
+      combinedAssets.includes("astro")
+    ) {
+      add("astro", "astro_marker");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.__VUE__ !== "undefined") {
+      add("vue", "vue_global");
+    }
+    if (html.includes("data-v-") && (html.includes("__VUE") || scriptInline.includes("vue"))) {
+      add("vue", "vue_dom_or_bundle");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ !== "undefined") {
+      add("react", "react_devtools_hook");
+    }
+    if (document.querySelector("[data-reactroot], [data-react-helmet]")) {
+      add("react", "react_dom_attr");
+    }
+    if (scriptInline.includes("react-dom") || scriptInline.includes("ReactDOM")) {
+      add("react", "inline_react");
+    }
+    if (combinedAssets.includes("react") && (combinedAssets.includes("chunk") || combinedAssets.includes("static"))) {
+      add("react", "script_name_hint");
+    }
+  } catch (e) {}
+
+  try {
+    if (scriptSrcs.includes("/@vite/") || scriptSrcs.includes("@vite/client") || html.includes("@vite/client")) {
+      add("vite", "vite_client");
+    }
+  } catch (e) {}
+
+  try {
+    if (html.includes("svelte-") || scriptSrcs.includes("svelte") || scriptInline.includes("svelte")) {
+      add("svelte", "svelte_marker");
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.webpackChunk !== "undefined" || typeof window.__webpack_require__ !== "undefined") {
+      add("webpack", "webpack_global");
+    }
+  } catch (e) {}
+
+  try {
+    if (
+      scriptSrcs.includes("tailwindcss") ||
+      scriptSrcs.includes("cdn.tailwindcss.com") ||
+      linkHrefs.includes("tailwind") ||
+      html.includes("tailwindcss")
+    ) {
+      add("tailwindcss", "tailwind_asset");
+    }
+  } catch (e) {}
+
+  try {
+    if (signals.nextjs && !signals.react) {
+      add("react", "typical_nextjs_bundle");
+    }
+  } catch (e) {}
+
+  const detected = Object.keys(signals).sort();
+  return { detected, signals, method: "dom_and_global_heuristic" };
+}
+"""
+
+
+def detect_tech_stack_from_page(page) -> dict:
+    """Best-effort framework/CSS-tool hints from the live page (sync Playwright page)."""
+    try:
+        data = page.evaluate(_TECH_STACK_EVAL_JS)
+        if isinstance(data, dict):
+            return {
+                "detected": list(data.get("detected") or []),
+                "signals": data.get("signals") if isinstance(data.get("signals"), dict) else {},
+                "method": str(data.get("method") or "dom_and_global_heuristic"),
+            }
+    except Exception:
+        pass
+    return {"detected": [], "signals": {}, "method": "dom_and_global_heuristic"}
+
+
+async def detect_tech_stack_from_page_async(page) -> dict:
+    """Best-effort framework hints (async Playwright page)."""
+    try:
+        data = await page.evaluate(_TECH_STACK_EVAL_JS)
+        if isinstance(data, dict):
+            return {
+                "detected": list(data.get("detected") or []),
+                "signals": data.get("signals") if isinstance(data.get("signals"), dict) else {},
+                "method": str(data.get("method") or "dom_and_global_heuristic"),
+            }
+    except Exception:
+        pass
+    return {"detected": [], "signals": {}, "method": "dom_and_global_heuristic"}
+
+
+def _response_looks_like_script(resp) -> bool:
+    try:
+        req = resp.request
+        url = ((getattr(resp, "url", None) or "") or "").split("?")[0].lower()
+        headers = getattr(resp, "headers", None) or {}
+        ct = (headers.get("content-type") or "").lower()
+        if getattr(req, "resource_type", None) == "script":
+            return True
+        if "javascript" in ct or "ecmascript" in ct:
+            return True
+        if url.endswith(".js"):
+            return True
+        if "/_next/static/" in url or "/chunks/" in url:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _collect_script_sample_sync(resp) -> dict | None:
+    try:
+        if not _response_looks_like_script(resp):
+            return None
+        url = resp.url
+        cl = (getattr(resp, "headers", None) or {}).get("content-length")
+        body: str | None = None
+        if cl:
+            try:
+                if int(cl) > 900_000:
+                    return {"url": url, "body": None}
+            except ValueError:
+                pass
+            try:
+                body = resp.text()
+            except Exception:
+                body = None
+            if body and len(body) > 450_000:
+                body = body[:450_000]
+        return {"url": url, "body": body}
+    except Exception:
+        return None
+
+
+def _attach_script_collector_sync(page, bucket: list) -> None:
+    def on_response(resp):
+        s = _collect_script_sample_sync(resp)
+        if s:
+            bucket.append(s)
+
+    page.on("response", on_response)
+
+
+def _attach_script_collector_async(page, bucket: list) -> None:
+    loop = asyncio.get_running_loop()
+
+    async def capture(resp):
+        try:
+            if not _response_looks_like_script(resp):
+                return
+            url = resp.url
+            cl = (getattr(resp, "headers", None) or {}).get("content-length")
+            body: str | None = None
+            if cl:
+                try:
+                    if int(cl) > 900_000:
+                        bucket.append({"url": url, "body": None})
+                        return
+                except ValueError:
+                    pass
+                try:
+                    body = await resp.text()
+                except Exception:
+                    body = None
+                if body and len(body) > 450_000:
+                    body = body[:450_000]
+                bucket.append({"url": url, "body": body})
+            else:
+                bucket.append({"url": url, "body": None})
+        except Exception:
+            pass
+
+    def on_response(resp):
+        loop.create_task(capture(resp))
+
+    page.on("response", on_response)
+
+
+def merge_retire_into_tech_stack(tech_stack: dict, script_samples: list) -> dict:
+    """Enrich tech_stack with Retire.js rule hits from captured script URLs/bodies."""
+    out = dict(tech_stack)
+    try:
+        from retire_matcher import DEFAULT_RETIRE_URL, match_script_samples, retire_libraries_from_hits
+
+        hits = match_script_samples(script_samples)
+        libs = retire_libraries_from_hits(hits)
+        src = os.getenv("RETIRE_JSREPO_URL", "").strip() or DEFAULT_RETIRE_URL
+        out["retire"] = {
+            "ruleset": "RetireJS/jsrepository.json",
+            "source_url": src[:240],
+            "libraries": libs,
+            "hits": hits[:25],
+        }
+        dom = set(out.get("detected") or [])
+        out["detected"] = sorted(dom | set(libs))
+    except Exception as e:
+        out["retire"] = {
+            "ruleset": "RetireJS/jsrepository.json",
+            "error": str(e)[:240],
+            "libraries": [],
+            "hits": [],
+        }
+    return out
 
 
 def extract_content_elements_from_page(page, html: str, max_items: int = 500) -> list[dict]:
@@ -267,12 +597,15 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
                          robots_parser, respect_robots: bool) -> dict | None:
     """Scrape one page fully. Returns page_record or None on failure."""
     network_requests = []
+    script_samples: list[dict] = []
+
     def on_request(req):
         if req.resource_type in ("xhr", "fetch"):
             network_requests.append(req.url)
 
     page = context.new_page()
     page.on("request", on_request)
+    _attach_script_collector_sync(page, script_samples)
     try:
         try:
             resp = page.goto(url_norm, wait_until="networkidle", timeout=30000)
@@ -316,6 +649,9 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
         body_text = extract_text_from_html(html)
         elements = extract_content_elements_from_page(page, html)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
+        tech_stack = merge_retire_into_tech_stack(
+            detect_tech_stack_from_page(page), script_samples
+        )
 
         return {
             "url": url_norm,
@@ -336,6 +672,7 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
             "local_storage_keys": local_storage_keys[:20],
             "cookie_names": cookie_names[:20],
             "links_external": [],
+            "tech_stack": tech_stack,
         }
     except Exception:
         return None
@@ -418,6 +755,7 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
                                      robots_parser, respect_robots: bool) -> dict | None:
     """Async: scrape one page fully. Returns page_record or None on failure."""
     network_requests = []
+    script_samples: list[dict] = []
 
     def on_request(req):
         if req.resource_type in ("xhr", "fetch"):
@@ -425,6 +763,7 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
 
     page = await context.new_page()
     page.on("request", on_request)
+    _attach_script_collector_async(page, script_samples)
     try:
         try:
             resp = await page.goto(url_norm, wait_until="networkidle", timeout=30000)
@@ -484,6 +823,9 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
         if not elements:
             elements = extract_content_elements(html)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
+        tech_stack = merge_retire_into_tech_stack(
+            await detect_tech_stack_from_page_async(page), script_samples
+        )
 
         return {
             "url": url_norm,
@@ -504,10 +846,12 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
             "local_storage_keys": local_storage_keys[:20],
             "cookie_names": cookie_names[:20],
             "links_external": [],
+            "tech_stack": tech_stack,
         }
     except Exception:
         return None
     finally:
+        await asyncio.sleep(0.4)
         await page.close()
         await asyncio.sleep(0.3)
 
@@ -822,12 +1166,15 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
 
             # Capture network requests
             network_requests = []
+            _script_samples: list[dict] = []
+
             def on_request(req):
                 if req.resource_type in ("xhr", "fetch"):
                     network_requests.append(req.url)
 
             page = context.new_page()
             page.on("request", on_request)
+            _attach_script_collector_sync(page, _script_samples)
 
             try:
                 # Try to wait for network to go idle, but do not treat a timeout
@@ -901,6 +1248,9 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                 body_text = extract_text_from_html(html)
                 elements = extract_content_elements_from_page(page, html)
                 content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
+                tech_stack = merge_retire_into_tech_stack(
+                    detect_tech_stack_from_page(page), _script_samples
+                )
 
                 page_record = {
                     "url": url_norm,
@@ -922,6 +1272,7 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                     "network_requests": list(dict.fromkeys(network_requests))[:30],
                     "local_storage_keys": local_storage_keys[:20],
                     "cookie_names": cookie_names[:20],
+                    "tech_stack": tech_stack,
                 }
                 # If we hit a networkidle timeout, annotate it on the record so
                 # callers can see it was a soft timeout, not a hard failure.
