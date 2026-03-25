@@ -81,9 +81,10 @@ def get_first_question(outcome: str, domain: str, task: str) -> dict | None:
     entry = _TREE.get(key)
 
     if entry and entry.get("q1"):
-        logger.info("RCA tree hit: Q1", task=task[:50])
+        logger.info("RCA tree hit: Q1", task=task[:50], key=key)
         return entry["q1"]
 
+    logger.warning("RCA tree MISS: Q1", key=key, tree_keys_sample=list(_TREE.keys())[:3])
     return None
 
 
