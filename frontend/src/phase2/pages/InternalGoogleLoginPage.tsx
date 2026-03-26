@@ -38,6 +38,15 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
   const API_BASE = useMemo(() => getApiBaseRequired(), []);
 
   useEffect(() => {
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const msg = String((event?.reason as any)?.message || event?.reason || '');
+      // Some browsers surface a noisy GSI/FedCM rejection without useful UX impact.
+      if (msg.includes('identity-credentials-get') || msg.includes('failedWithIframeGetPermission')) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+
     const existing = window.localStorage.getItem(STORAGE_KEY);
     if (existing && !forceLogin) {
       // eslint-disable-next-line no-console
@@ -61,7 +70,10 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
         setReady(false);
       }
     }, 100);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
   }, [navigate, next]);
 
   const start = async () => {
@@ -114,7 +126,22 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
         },
       });
 
-      window.google.accounts.id.prompt();
+      window.google.accounts.id.prompt((notification: any) => {
+        try {
+          const skipped =
+            Boolean(notification?.isSkippedMoment?.()) ||
+            Boolean(notification?.isNotDisplayed?.()) ||
+            Boolean(notification?.isDismissedMoment?.());
+          if (skipped) {
+            // eslint-disable-next-line no-console
+            console.warn('[phase2 login] google prompt skipped/not displayed', {
+              reason: notification?.getNotDisplayedReason?.() || notification?.getSkippedReason?.() || '',
+            });
+          }
+        } catch {
+          // ignore prompt callback issues
+        }
+      });
     } catch (e: any) {
       setError(e?.message || 'Login failed');
       setLoading(false);
