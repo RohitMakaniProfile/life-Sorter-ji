@@ -257,26 +257,11 @@ async def list_agents(
     await ensure_default_agents()
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            rows = await conn.fetch("SELECT * FROM agents ORDER BY updated_at DESC")
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM agents
-                WHERE
-                    is_locked = true
-                    OR visibility = 'public'
-                    OR created_by_user_id = $1::uuid
-                    OR created_by_user_id IS NULL
-                ORDER BY updated_at DESC
-                """,
-                user_id,
-            )
+        rows = await conn.fetch("SELECT * FROM agents ORDER BY updated_at DESC")
 
     out: list[dict[str, Any]] = []
     for r in rows:
         is_locked = bool(r["is_locked"] or False)
-        can_view_secrets = bool(is_admin or not is_locked)
         out.append(
             {
                 "id": r["id"],
@@ -291,10 +276,6 @@ async def list_agents(
                 "finalOutputFormattingContext": r["final_output_formatting_context"] or "",
             }
         )
-        if not can_view_secrets:
-            out[-1]["allowedSkillIds"] = []
-            out[-1]["skillSelectorContext"] = ""
-            out[-1]["finalOutputFormattingContext"] = ""
     return out
 
 
@@ -307,29 +288,11 @@ async def get_agent(
 ) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            r = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
-        else:
-            r = await conn.fetchrow(
-                """
-                SELECT * FROM agents
-                WHERE id = $1
-                  AND (
-                    is_locked = true
-                    OR visibility = 'public'
-                    OR created_by_user_id = $2::uuid
-                    OR created_by_user_id IS NULL
-                  )
-                """,
-                agent_id,
-                user_id,
-            )
+        r = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
     if not r:
         return None
 
     is_locked = bool(r["is_locked"] or False)
-    can_view_secrets = bool(is_admin or for_execution or not is_locked)
-
     agent = {
         "id": r["id"],
         "name": r["name"],
@@ -342,10 +305,6 @@ async def get_agent(
         "skillSelectorContext": r["skill_selector_context"] or "",
         "finalOutputFormattingContext": r["final_output_formatting_context"] or "",
     }
-    if not can_view_secrets:
-        agent["allowedSkillIds"] = []
-        agent["skillSelectorContext"] = ""
-        agent["finalOutputFormattingContext"] = ""
     return agent
 
 
@@ -356,6 +315,8 @@ async def create_agent(
     is_admin: bool,
     is_super_admin: bool,
 ) -> dict[str, Any]:
+    if not (is_admin or is_super_admin):
+        raise ValueError("Only admins can create agents")
     now = now_dt()
     pool = get_pool()
     try:
@@ -429,21 +390,14 @@ async def update_agent(
     # 1) Super-admin locked system group: super-admin writes only, internal admins read only.
     # 2) Admin-shared system group (not locked): super-admin + internal admin writes, outside users read.
     # 3) User-created agents: only creator writes; outside users read only if agent is public.
-    if is_super_admin:
-        pass
+    if is_system_agent:
+        # Predefined/system agents are editable only by super-admin.
+        if not is_super_admin:
+            return None
     else:
-        if not is_system_agent:
-            # user-created: only owner can write
-            if str(owner_user_id) != user_id:
-                return None
-        else:
-            # system groups
-            if is_locked:
-                # case 1: locked => super-admin only writes
-                return None
-            # case 2: unlocked => only internal admin (non-super) can write
-            if not is_admin:
-                return None
+        # Non-system agents are editable by any admin/super-admin.
+        if not (is_admin or is_super_admin):
+            return None
 
     fields: list[str] = []
     values: list[Any] = []
@@ -514,20 +468,12 @@ async def delete_agent(
         is_locked = bool(r["is_locked"] or False)
         is_system_agent = owner_user_id is None
 
-        if is_super_admin:
-            pass
+        if is_system_agent:
+            if not is_super_admin:
+                return False
         else:
-            if not is_system_agent:
-                # user-created: only owner can delete
-                if str(owner_user_id) != user_id:
-                    return False
-            else:
-                # system groups
-                if is_locked:
-                    # locked system group: super-admin only
-                    return False
-                if not is_admin:
-                    return False
+            if not (is_admin or is_super_admin):
+                return False
         result = await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
         return result.endswith("1")
 
@@ -538,9 +484,10 @@ async def get_or_create_conversation(
     *,
     user_id: str,
     is_admin: bool,
+    is_super_admin: bool = False,
 ) -> dict[str, Any] | None:
     existing = (
-        await get_conversation(conversation_id, user_id=user_id, is_admin=is_admin)
+        await get_conversation(conversation_id, user_id=user_id, is_super_admin=False)
         if conversation_id
         else None
     )
@@ -609,20 +556,17 @@ async def get_conversation(
     conversation_id: str | None,
     *,
     user_id: str | None = None,
-    is_admin: bool = False,
+    is_super_admin: bool = False,
 ) -> dict[str, Any] | None:
     if not conversation_id:
         return None
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            conv = await conn.fetchrow("SELECT * FROM conversations WHERE id = $1", conversation_id)
-        else:
-            conv = await conn.fetchrow(
-                "SELECT * FROM conversations WHERE id = $1 AND user_id = $2",
-                conversation_id,
-                user_id,
-            )
+        conv = await conn.fetchrow(
+            "SELECT * FROM conversations WHERE id = $1 AND user_id = $2",
+            conversation_id,
+            user_id,
+        )
         if not conv:
             return None
         messages = await conn.fetch(
@@ -815,16 +759,13 @@ async def get_stage_outputs(conversation_id: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in obj.items() if isinstance(v, str)}
 
 
-async def list_conversations(*, user_id: str, is_admin: bool) -> list[dict[str, Any]]:
+async def list_conversations(*, user_id: str, is_super_admin: bool = False) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            rows = await conn.fetch("SELECT * FROM conversations ORDER BY updated_at DESC")
-        else:
-            rows = await conn.fetch(
-                "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
-                user_id,
-            )
+        rows = await conn.fetch(
+            "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
+            user_id,
+        )
     out: list[dict[str, Any]] = []
     for r in rows:
         count = 0
@@ -843,17 +784,14 @@ async def list_conversations(*, user_id: str, is_admin: bool) -> list[dict[str, 
     return out
 
 
-async def delete_conversation(conversation_id: str, *, user_id: str, is_admin: bool) -> bool:
+async def delete_conversation(conversation_id: str, *, user_id: str, is_super_admin: bool = False) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            result = await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
-        else:
-            result = await conn.execute(
-                "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
-                conversation_id,
-                user_id,
-            )
+        result = await conn.execute(
+            "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
+            conversation_id,
+            user_id,
+        )
     return result.endswith("1")
 
 
@@ -992,22 +930,16 @@ async def get_skill_calls_by_message_id_full(
 ) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            rows = await conn.fetch(
-                "SELECT * FROM skill_calls WHERE message_id = $1 ORDER BY created_at ASC",
-                message_id,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT sc.* FROM skill_calls sc
-                JOIN conversations c ON c.id = sc.conversation_id
-                WHERE sc.message_id = $1 AND c.user_id = $2
-                ORDER BY sc.created_at ASC
-                """,
-                message_id,
-                user_id,
-            )
+        rows = await conn.fetch(
+            """
+            SELECT sc.* FROM skill_calls sc
+            JOIN conversations c ON c.id = sc.conversation_id
+            WHERE sc.message_id = $1 AND c.user_id = $2
+            ORDER BY sc.created_at ASC
+            """,
+            message_id,
+            user_id,
+        )
     out: list[dict[str, Any]] = []
     for r in rows:
         output = _to_obj(r["output"], [])
@@ -1117,18 +1049,15 @@ async def get_plan_run(
 ) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            row = await conn.fetchrow("SELECT * FROM plan_runs WHERE id = $1", plan_id)
-        else:
-            row = await conn.fetchrow(
-                """
-                SELECT pr.* FROM plan_runs pr
-                JOIN conversations c ON c.id = pr.conversation_id
-                WHERE pr.id = $1 AND c.user_id = $2
-                """,
-                plan_id,
-                user_id,
-            )
+        row = await conn.fetchrow(
+            """
+            SELECT pr.* FROM plan_runs pr
+            JOIN conversations c ON c.id = pr.conversation_id
+            WHERE pr.id = $1 AND c.user_id = $2
+            """,
+            plan_id,
+            user_id,
+        )
     if not row:
         return None
     return {
@@ -1167,20 +1096,17 @@ async def update_plan_run(
     values.append(now_dt())
     values.append(plan_id)
 
-    if is_admin:
-        q = f"UPDATE plan_runs SET {', '.join(fields)} WHERE id = ${len(values)}"
-    else:
-        plan_param_idx = len(values)
-        user_param_idx = len(values) + 1
-        q = f"""
-        UPDATE plan_runs SET {', '.join(fields)}
-        WHERE id = ${plan_param_idx}
-          AND EXISTS (
-            SELECT 1 FROM conversations c
-            WHERE c.id = plan_runs.conversation_id AND c.user_id = ${user_param_idx}
-          )
-        """
-        values.append(user_id)
+    plan_param_idx = len(values)
+    user_param_idx = len(values) + 1
+    q = f"""
+    UPDATE plan_runs SET {', '.join(fields)}
+    WHERE id = ${plan_param_idx}
+      AND EXISTS (
+        SELECT 1 FROM conversations c
+        WHERE c.id = plan_runs.conversation_id AND c.user_id = ${user_param_idx}
+      )
+    """
+    values.append(user_id)
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(q, *values)
@@ -1240,26 +1166,20 @@ async def get_token_usage(
 ) -> dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if is_admin:
-            rows = await conn.fetch(
-                "SELECT model, input_tokens, output_tokens, created_at FROM token_usage WHERE message_id = $1 ORDER BY created_at ASC",
-                message_id,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.created_at
-                FROM token_usage tu
-                JOIN messages m
-                  ON (m.message->>'messageId') = tu.message_id
-                JOIN conversations c
-                  ON c.id = m.conversation_id
-                WHERE tu.message_id = $1 AND c.user_id = $2
-                ORDER BY tu.created_at ASC
-                """,
-                message_id,
-                user_id,
-            )
+        rows = await conn.fetch(
+            """
+            SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.created_at
+            FROM token_usage tu
+            JOIN messages m
+              ON (m.message->>'messageId') = tu.message_id
+            JOIN conversations c
+              ON c.id = m.conversation_id
+            WHERE tu.message_id = $1 AND c.user_id = $2
+            ORDER BY tu.created_at ASC
+            """,
+            message_id,
+            user_id,
+        )
     entries = [
         (
             lambda decoded: {
@@ -1294,32 +1214,20 @@ async def list_insight_feedback(
     pool = get_pool()
     async with pool.acquire() as conn:
         try:
-            if is_admin:
-                rows = await conn.fetch(
-                    """
-                    SELECT insight_index, rating, updated_at
-                    FROM insight_feedback
-                    WHERE message_id = $1 AND user_id = $2
-                    ORDER BY insight_index ASC
-                    """,
-                    message_id,
-                    user_id,
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT f.insight_index, f.rating, f.updated_at
-                    FROM insight_feedback f
-                    JOIN messages m
-                      ON (m.message->>'messageId') = f.message_id
-                    JOIN conversations c
-                      ON c.id = m.conversation_id
-                    WHERE f.message_id = $1 AND f.user_id = $2 AND c.user_id = $2
-                    ORDER BY f.insight_index ASC
-                    """,
-                    message_id,
-                    user_id,
-                )
+            rows = await conn.fetch(
+                """
+                SELECT f.insight_index, f.rating, f.updated_at
+                FROM insight_feedback f
+                JOIN messages m
+                  ON (m.message->>'messageId') = f.message_id
+                JOIN conversations c
+                  ON c.id = m.conversation_id
+                WHERE f.message_id = $1 AND f.user_id = $2 AND c.user_id = $2
+                ORDER BY f.insight_index ASC
+                """,
+                message_id,
+                user_id,
+            )
         except UndefinedTableError:
             await _ensure_insight_feedback_table(conn)
             return await list_insight_feedback(message_id, user_id=user_id, is_admin=is_admin)
@@ -1363,7 +1271,7 @@ async def set_insight_feedback(
         )
         if not row:
             raise ValueError("message not found")
-        if not is_admin and str(row["owner_user_id"]) != str(user_id):
+        if str(row["owner_user_id"]) != str(user_id):
             raise ValueError("message not accessible")
         conversation_id = str(row["conversation_id"])
 

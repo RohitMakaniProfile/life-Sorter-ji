@@ -450,9 +450,19 @@ CREATE TABLE IF NOT EXISTS agents (
     allowed_skill_ids               TEXT[] NOT NULL DEFAULT '{}',
     skill_selector_context          TEXT NOT NULL DEFAULT '',
     final_output_formatting_context TEXT NOT NULL DEFAULT '',
+    created_by_user_id              UUID REFERENCES users(id) ON DELETE SET NULL,
+    visibility                      TEXT NOT NULL DEFAULT 'private', -- public | private
+    is_locked                        BOOLEAN NOT NULL DEFAULT FALSE, -- predefined/system agent protection
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE agents
+    ADD COLUMN IF NOT EXISTS created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE agents
+    ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'private';
+ALTER TABLE agents
+    ADD COLUMN IF NOT EXISTS is_locked BOOLEAN NOT NULL DEFAULT FALSE;
 
 DROP TRIGGER IF EXISTS trg_agents_updated_at ON agents;
 CREATE TRIGGER trg_agents_updated_at
@@ -517,6 +527,7 @@ ON CONFLICT (id) DO NOTHING;
 CREATE TABLE IF NOT EXISTS conversations (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL REFERENCES agents (id) ON DELETE SET NULL,
+    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title               TEXT,
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
     last_output_file    TEXT,
@@ -524,8 +535,14 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+
 CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
     ON conversations (agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id
+    ON conversations (user_id);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
     ON conversations (updated_at DESC);
@@ -552,7 +569,6 @@ CREATE TABLE IF NOT EXISTS messages (
     role            TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
     content         TEXT        NOT NULL DEFAULT '',
     output_file     TEXT,
-    -- Full message payload including messageId, skillsCount, kind, planId
     message         JSONB       NOT NULL DEFAULT '{}'::JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -665,6 +681,30 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
 
 COMMENT ON TABLE token_usage IS
     'LLM token usage per assistant message, one row per model call.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- insight_feedback
+-- Per-user thumbs up/down feedback for each insight in a final report message.
+-- (Used to improve agent quality over time.)
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS insight_feedback (
+    id              BIGSERIAL PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    message_id      TEXT NOT NULL,
+    insight_index   INTEGER NOT NULL,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    rating          SMALLINT NOT NULL, -- 1 = up, -1 = down
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, message_id, insight_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_insight_feedback_message_id
+    ON insight_feedback (message_id);
+
+CREATE INDEX IF NOT EXISTS idx_insight_feedback_conversation_id
+    ON insight_feedback (conversation_id);
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════

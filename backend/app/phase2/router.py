@@ -447,6 +447,7 @@ async def _create_plan_draft(
         resolved["agentId"],
         user_id=current_user.user_id,
         is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
     )
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -883,6 +884,8 @@ async def p2_agents_list(current_user: Any = Depends(_require_phase2_user)) -> d
 @router.post("/api/agents")
 async def p2_agents_create(req: Request, current_user: Any = Depends(_require_phase2_user)) -> JSONResponse:
     body = await req.json()
+    if not (current_user.is_admin or current_user.is_super_admin):
+        raise HTTPException(status_code=403, detail="Only admins can create agents")
     agent_id = str(body.get("id") or "").strip()
     name = str(body.get("name") or "").strip()
     if not agent_id:
@@ -976,6 +979,7 @@ async def p2_chat_message(req: Request, current_user: Any = Depends(_require_pha
         resolved["agentId"],
         user_id=current_user.user_id,
         is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
     )
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1036,6 +1040,7 @@ async def p2_chat_stream(req: Request, current_user: Any = Depends(_require_phas
         resolved["agentId"],
         user_id=current_user.user_id,
         is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
     )
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1237,6 +1242,7 @@ async def p2_approve_plan_stream(req: Request, current_user: Any = Depends(_requ
         resolved["agentId"],
         user_id=current_user.user_id,
         is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
     )
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1634,6 +1640,7 @@ async def p2_chat_messages(conversationId: str | None = None, current_user: Any 
         conversationId,
         user_id=current_user.user_id,
         is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
     )
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1714,7 +1721,7 @@ async def p2_chat_conversations(current_user: Any = Depends(_require_phase2_user
     return {
         "conversations": await list_conversations(
             user_id=current_user.user_id,
-            is_admin=current_user.is_admin,
+            is_super_admin=current_user.is_super_admin,
         )
     }
 
@@ -1728,6 +1735,6 @@ async def p2_chat_delete_conversation(
         "ok": await delete_conversation(
             conversation_id,
             user_id=current_user.user_id,
-            is_admin=current_user.is_admin,
+            is_super_admin=current_user.is_super_admin,
         )
     }
