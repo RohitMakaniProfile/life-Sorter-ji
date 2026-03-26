@@ -1,6 +1,11 @@
 -- ═══════════════════════════════════════════════════════════════
 -- MIGRATION 001 — Create user_sessions table
 -- ═══════════════════════════════════════════════════════════════
+-- LEGACY / SUPABASE-ONLY:
+-- This file predates `cloud_sql_full_setup.sql`, which is now the canonical
+-- full schema for local Postgres / Cloud SQL.
+-- Do not run both files against the same database.
+--
 -- Stores the complete flow for every user session:
 --   Auth (Google / OTP) → Q1-Q3 → RCA diagnostic → recommendations
 --

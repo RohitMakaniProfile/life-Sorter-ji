@@ -1550,6 +1550,72 @@ async def get_crawl_status(request: Request, session_id: str):
     )
 
 
+# ── Website Snapshot — rich crawl data for display while playbook generates ──
+
+
+class WebsiteSnapshotResponse(BaseModel):
+    session_id: str
+    available: bool = False
+    homepage_title: str = ""
+    homepage_description: str = ""
+    homepage_h1s: list[str] = []
+    pages_found: int = 0
+    page_types: list[str] = []           # ["about", "pricing", "blog", ...]
+    tech_stack: list[str] = []           # ["React", "Stripe", "Google Analytics", ...]
+    cta_patterns: list[str] = []         # ["Book a Demo", "Sign Up Free", ...]
+    social_links: list[str] = []         # ["instagram.com/...", ...]
+    seo_health: dict = {}                # {"has_meta": true, "has_viewport": true, "has_sitemap": false}
+    js_rendered: bool = False
+    nav_links: list[str] = []            # Top nav items
+    crawl_summary_points: list[str] = [] # 5-bullet summary from LLM
+
+
+@router.get("/session/{session_id}/website-snapshot", response_model=WebsiteSnapshotResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_website_snapshot(request: Request, session_id: str):
+    """
+    Return structured website insights from crawl_raw.
+    No LLM call — instant response. Frontend shows this while playbook generates.
+
+    Available as soon as crawl_status == "complete".
+    """
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.crawl_status != "complete" or not session.crawl_raw:
+        return WebsiteSnapshotResponse(session_id=session_id, available=False)
+
+    raw = session.crawl_raw
+    homepage = raw.get("homepage", {})
+
+    # Extract page types from crawled pages
+    pages_crawled = raw.get("pages_crawled", [])
+    page_types = list({p.get("type", "other") for p in pages_crawled if p.get("type") and p.get("type") != "other"})
+
+    # Get summary points if available
+    summary_points = []
+    if session.crawl_summary and isinstance(session.crawl_summary, dict):
+        summary_points = session.crawl_summary.get("points", [])
+
+    return WebsiteSnapshotResponse(
+        session_id=session_id,
+        available=True,
+        homepage_title=homepage.get("title", ""),
+        homepage_description=homepage.get("meta_desc", ""),
+        homepage_h1s=homepage.get("h1s", []),
+        pages_found=len(pages_crawled),
+        page_types=sorted(page_types),
+        tech_stack=raw.get("tech_signals", []),
+        cta_patterns=raw.get("cta_patterns", []),
+        social_links=raw.get("social_links", []),
+        seo_health=raw.get("seo_basics", {}),
+        js_rendered=raw.get("js_rendered", False),
+        nav_links=homepage.get("nav_links", [])[:15],
+        crawl_summary_points=summary_points,
+    )
+
+
 @router.post("/session/skip-url")
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def skip_business_url(request: Request, body: dict = Body(...)):

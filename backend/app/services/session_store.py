@@ -43,7 +43,7 @@ def create_session() -> SessionContext:
 
     _sessions[session_id] = session
     logger.info("Session created", session_id=session_id)
-    _persist_to_supabase(session)
+    _persist_session(session)
     return session
 
 
@@ -53,15 +53,15 @@ def get_session(session_id: str) -> Optional[SessionContext]:
 
 
 def update_session(session: SessionContext) -> SessionContext:
-    """Update a session in the store and persist to Supabase."""
+    """Update a session in the store and persist to PostgreSQL."""
     session.updated_at = datetime.utcnow()
     _sessions[session.session_id] = session
-    _persist_to_supabase(session)
+    _persist_session(session)
     return session
 
 
-def _persist_to_supabase(session: SessionContext) -> None:
-    """Fire-and-forget upsert to Supabase. Non-blocking."""
+def _persist_session(session: SessionContext) -> None:
+    """Fire-and-forget upsert to PostgreSQL. Non-blocking."""
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(user_session_service.upsert_session(session))

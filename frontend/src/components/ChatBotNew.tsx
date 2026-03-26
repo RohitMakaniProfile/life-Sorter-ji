@@ -1626,6 +1626,7 @@ const ChatBotNew = ({ onNavigate }) => {
   const [playbookGapQuestions, setPlaybookGapQuestions] = useState('');
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({}); // {Q1: 'A) option', Q2: 'B) option'}
+  const [websiteSnapshot, setWebsiteSnapshot] = useState(null); // crawl insights shown during playbook gen
 
   const API_BASE = getApiBaseRequired();
 
@@ -3353,6 +3354,25 @@ const ChatBotNew = ({ onNavigate }) => {
         return updated;
       });
 
+      // Fetch website snapshot (non-blocking) to show while playbook generates
+      fetch(`${API_BASE}/api/v1/agent/session/${sid}/website-snapshot`)
+        .then(r => r.json())
+        .then(snap => {
+          if (snap.available) {
+            setWebsiteSnapshot(snap);
+            const snapMsg = {
+              id: getNextMessageId(),
+              text: '',
+              sender: 'bot',
+              timestamp: new Date(),
+              isWebsiteSnapshot: true,
+              snapshotData: snap,
+            };
+            setMessages(prev => [...prev, snapMsg]);
+          }
+        })
+        .catch(() => {}); // silently skip if snapshot not available
+
       // Step 2: Call /playbook/generate
       const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
         method: 'POST',
@@ -3916,7 +3936,7 @@ const ChatBotNew = ({ onNavigate }) => {
 
   const saveToSheet = async (userMessage, botResponse, domain = '', subdomain = '') => {
     try {
-      await fetch('/api/save-idea', {
+      await fetch(`${API_BASE}/api/save-idea`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5668,6 +5688,91 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             This analysis was generated from a live crawl of your website. It captures your business positioning, target audience signals, technology stack, content strengths, and key opportunities. These insights are factored into your personalized tool recommendations.
                           </div>
                         </details>
+                      </div>
+                    )}
+
+                    {/* Website Snapshot — shown while playbook generates */}
+                    {message.isWebsiteSnapshot && message.snapshotData && (
+                      <div style={{
+                        marginTop: '0.75rem',
+                        padding: '1.25rem',
+                        borderRadius: '14px',
+                        border: '1px solid rgba(124, 58, 237, 0.2)',
+                        background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
+                        boxShadow: '0 2px 12px rgba(124, 58, 237, 0.08)',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                          <span style={{ fontSize: '1.2rem' }}>🔍</span>
+                          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#5b21b6' }}>Website Scan Results</span>
+                          <span style={{ fontSize: '0.75rem', color: '#7c3aed', background: 'rgba(124,58,237,0.1)', padding: '2px 8px', borderRadius: '12px', marginLeft: 'auto' }}>
+                            {message.snapshotData.pages_found} pages crawled
+                          </span>
+                        </div>
+
+                        {/* Homepage */}
+                        {message.snapshotData.homepage_title && (
+                          <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.8rem', background: 'rgba(255,255,255,0.7)', borderRadius: '10px', border: '1px solid rgba(124,58,237,0.1)' }}>
+                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#1e1b4b' }}>{message.snapshotData.homepage_title}</div>
+                            {message.snapshotData.homepage_description && (
+                              <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.2rem' }}>{message.snapshotData.homepage_description}</div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Tech Stack */}
+                        {message.snapshotData.tech_stack && message.snapshotData.tech_stack.length > 0 && (
+                          <div style={{ marginBottom: '0.6rem' }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7c3aed', marginBottom: '0.3rem' }}>Tech Stack Detected</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                              {message.snapshotData.tech_stack.map((tech, i) => (
+                                <span key={i} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '6px', background: 'rgba(124,58,237,0.08)', color: '#5b21b6', border: '1px solid rgba(124,58,237,0.15)' }}>{tech}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Page Types + CTAs side by side */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.6rem' }}>
+                          {message.snapshotData.page_types && message.snapshotData.page_types.length > 0 && (
+                            <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.6)', borderRadius: '8px' }}>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6d28d9', marginBottom: '0.2rem' }}>Pages Found</div>
+                              <div style={{ fontSize: '0.72rem', color: '#4b5563' }}>{message.snapshotData.page_types.join(', ')}</div>
+                            </div>
+                          )}
+                          {message.snapshotData.cta_patterns && message.snapshotData.cta_patterns.length > 0 && (
+                            <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.6)', borderRadius: '8px' }}>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6d28d9', marginBottom: '0.2rem' }}>CTAs Detected</div>
+                              <div style={{ fontSize: '0.72rem', color: '#4b5563' }}>{message.snapshotData.cta_patterns.slice(0, 5).join(' · ')}</div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* SEO Health */}
+                        {message.snapshotData.seo_health && (
+                          <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.72rem', color: '#6b7280' }}>
+                            <span>{message.snapshotData.seo_health.has_meta ? '✅' : '❌'} Meta tags</span>
+                            <span>{message.snapshotData.seo_health.has_viewport ? '✅' : '❌'} Viewport</span>
+                            <span>{message.snapshotData.seo_health.has_sitemap ? '✅' : '❌'} Sitemap</span>
+                            {message.snapshotData.js_rendered && <span style={{ color: '#7c3aed' }}>⚡ JS-rendered</span>}
+                          </div>
+                        )}
+
+                        {/* Summary Points */}
+                        {message.snapshotData.crawl_summary_points && message.snapshotData.crawl_summary_points.length > 0 && (
+                          <details style={{ marginTop: '0.75rem' }}>
+                            <summary style={{ fontSize: '0.78rem', color: '#7c3aed', cursor: 'pointer', fontWeight: 500 }}>
+                              AI Summary
+                            </summary>
+                            <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                              {message.snapshotData.crawl_summary_points.map((pt, i) => (
+                                <div key={i} style={{ fontSize: '0.78rem', color: '#4b5563', display: 'flex', gap: '0.4rem' }}>
+                                  <span style={{ color: '#7c3aed', flexShrink: 0 }}>•</span>
+                                  <span>{pt}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
                       </div>
                     )}
 

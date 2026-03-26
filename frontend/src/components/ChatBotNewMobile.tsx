@@ -2937,7 +2937,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
   const saveToSheet = async (userMessage, botResponse, domain = '', subdomain = '') => {
     try {
-      await fetch('/api/save-idea', {
+      await fetch(`${API_BASE}/api/save-idea`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

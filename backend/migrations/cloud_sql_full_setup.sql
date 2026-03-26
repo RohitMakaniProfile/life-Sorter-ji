@@ -1,13 +1,15 @@
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- FULL DATABASE SETUP — life-Sorter-ji (Cloud SQL / PostgreSQL)
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- Canonical schema for local Postgres / Cloud SQL.
 -- Run order: this single file creates everything from scratch.
 -- Safe to re-run: all statements use IF NOT EXISTS / OR REPLACE.
+-- NOTE: `001_create_user_sessions.sql` is a legacy Supabase-only migration.
+--       Do not run both files against the same database.
 --
 -- Tables:
---   Phase 1 (Supabase → Cloud SQL):
+--   Phase 1 (current app runtime):
 --     user_sessions, payments, "Persona: founder/owner"
---     users, plans, subscriptions, usage_quotas, user_consents, audit_logs
 --
 --   Phase 2 (Research Agent — asyncpg):
 --     agents, agent_config_versions, conversations, messages, skill_calls, plan_runs, token_usage
@@ -17,6 +19,8 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- SHARED UTILITIES
 -- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -208,231 +212,24 @@ COMMENT ON TABLE "Persona: founder/owner" IS
     'Founder/owner persona KB rows used for strategy diagnostics and recommendations.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- users
--- Canonical user account/profile table.
+-- NOTE:
+-- The current product is session-centric. `user_sessions` already stores the
+-- authenticated identity snapshot (Google/OTP fields) used by the app today.
+-- A separate `users` table was added later as part of a future accounts/billing
+-- design, but that model is not used by the current codebase and duplicates the
+-- concept of "user" for now.
+--
+-- To keep the local Postgres schema aligned with the running app, the unused
+-- accounts/billing tables are intentionally omitted from this canonical setup:
+--   users, plans, subscriptions, usage_quotas, user_consents, audit_logs
+--
+-- If/when the app is refactored to a true account-centric model, those tables
+-- should be introduced in a dedicated migration with matching application code.
+--
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS users (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email                   TEXT UNIQUE,
-    phone                   TEXT UNIQUE,
-    full_name               TEXT NOT NULL DEFAULT '',
-    avatar_url              TEXT NOT NULL DEFAULT '',
-    status                  TEXT NOT NULL DEFAULT 'active'
-                                CHECK (status IN ('active', 'suspended', 'deleted')),
-    auth_provider           TEXT NOT NULL DEFAULT 'unknown',
-    email_verified_at       TIMESTAMPTZ,
-    phone_verified_at       TIMESTAMPTZ,
-    last_login_at           TIMESTAMPTZ,
-    timezone                TEXT NOT NULL DEFAULT 'UTC',
-    locale                  TEXT NOT NULL DEFAULT 'en',
-    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at              TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_status
-    ON users (status);
-
-CREATE INDEX IF NOT EXISTS idx_users_created_at
-    ON users (created_at DESC);
-
-DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
-CREATE TRIGGER trg_users_updated_at
-    BEFORE UPDATE ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE users IS
-    'Canonical user profile/accounts table for auth identity and preferences.';
-
--- Optional linkage from flow sessions to users
-ALTER TABLE user_sessions
-    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id
-    ON user_sessions (user_id);
-
+-- agent_config_versions
+-- Versioned snapshots of agent configs/prompts for rollback/audit.
 -- ─────────────────────────────────────────────────────────────────────────────
--- plans
--- Purchasable/visible plans shown in UI.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS plans (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    code                    TEXT UNIQUE NOT NULL,   -- e.g. starter_monthly
-    name                    TEXT NOT NULL,
-    description             TEXT NOT NULL DEFAULT '',
-    currency                TEXT NOT NULL DEFAULT 'INR',
-    price_amount            NUMERIC(10,2) NOT NULL DEFAULT 0,
-    billing_interval        TEXT NOT NULL DEFAULT 'month'
-                                CHECK (billing_interval IN ('day', 'week', 'month', 'quarter', 'year', 'one_time')),
-    is_visible              BOOLEAN NOT NULL DEFAULT TRUE,
-    is_active               BOOLEAN NOT NULL DEFAULT TRUE,
-    sort_order              INTEGER NOT NULL DEFAULT 0,
-    features                JSONB NOT NULL DEFAULT '[]'::jsonb,
-    quota_defaults          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_plans_visible_active
-    ON plans (is_visible, is_active, sort_order);
-
-DROP TRIGGER IF EXISTS trg_plans_updated_at ON plans;
-CREATE TRIGGER trg_plans_updated_at
-    BEFORE UPDATE ON plans
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE plans IS
-    'Catalog of subscription plans displayed in UI for purchase.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- subscriptions
--- User subscription lifecycle and billing state.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_id                 UUID NOT NULL REFERENCES plans(id) ON DELETE RESTRICT,
-    status                  TEXT NOT NULL DEFAULT 'active'
-                                CHECK (status IN ('trialing', 'active', 'past_due', 'canceled', 'expired')),
-    started_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    current_period_start    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    current_period_end      TIMESTAMPTZ,
-    cancel_at_period_end    BOOLEAN NOT NULL DEFAULT FALSE,
-    canceled_at             TIMESTAMPTZ,
-    external_subscription_id TEXT,
-    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
-    ON subscriptions (user_id, status);
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_period_end
-    ON subscriptions (current_period_end);
-
-DROP TRIGGER IF EXISTS trg_subscriptions_updated_at ON subscriptions;
-CREATE TRIGGER trg_subscriptions_updated_at
-    BEFORE UPDATE ON subscriptions
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE subscriptions IS
-    'User subscription records linked to plans and external billing references.';
-
--- Optional linkage from payments to subscriptions/plans/users
-ALTER TABLE payments
-    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
-
-ALTER TABLE payments
-    ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES plans(id) ON DELETE SET NULL;
-
-ALTER TABLE payments
-    ADD COLUMN IF NOT EXISTS subscription_id UUID REFERENCES subscriptions(id) ON DELETE SET NULL;
-
-CREATE INDEX IF NOT EXISTS idx_payments_user_id
-    ON payments (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_payments_subscription_id
-    ON payments (subscription_id);
-
--- ─────────────────────────────────────────────────────────────────────────────
--- usage_quotas
--- Metered usage counters by period and metric.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS usage_quotas (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    subscription_id         UUID REFERENCES subscriptions(id) ON DELETE SET NULL,
-    metric                  TEXT NOT NULL,          -- e.g. agent_runs, tokens, reports
-    quota_limit             BIGINT NOT NULL DEFAULT 0,
-    used_value              BIGINT NOT NULL DEFAULT 0,
-    period_start            TIMESTAMPTZ NOT NULL,
-    period_end              TIMESTAMPTZ NOT NULL,
-    reset_policy            TEXT NOT NULL DEFAULT 'periodic'
-                                CHECK (reset_policy IN ('periodic', 'never', 'manual')),
-    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, metric, period_start, period_end)
-);
-
-CREATE INDEX IF NOT EXISTS idx_usage_quotas_user_metric
-    ON usage_quotas (user_id, metric, period_end);
-
-DROP TRIGGER IF EXISTS trg_usage_quotas_updated_at ON usage_quotas;
-CREATE TRIGGER trg_usage_quotas_updated_at
-    BEFORE UPDATE ON usage_quotas
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE usage_quotas IS
-    'Per-user usage limits and counters for billing/entitlement enforcement.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- user_consents
--- Consent tracking for legal/privacy and marketing preferences.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS user_consents (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    consent_type            TEXT NOT NULL,          -- e.g. terms, privacy, marketing_email
-    consent_version         TEXT NOT NULL DEFAULT '',
-    granted                 BOOLEAN NOT NULL,
-    granted_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    revoked_at              TIMESTAMPTZ,
-    source                  TEXT NOT NULL DEFAULT 'web',
-    ip_address              TEXT,
-    user_agent              TEXT,
-    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, consent_type, consent_version, granted_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_consents_user_type
-    ON user_consents (user_id, consent_type, granted_at DESC);
-
-COMMENT ON TABLE user_consents IS
-    'Immutable consent event log for compliance and preference tracking.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- audit_logs
--- Append-only audit/event log for security/compliance.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS audit_logs (
-    id                      BIGSERIAL PRIMARY KEY,
-    actor_user_id           UUID REFERENCES users(id) ON DELETE SET NULL,
-    actor_type              TEXT NOT NULL DEFAULT 'user'
-                                CHECK (actor_type IN ('user', 'system', 'service')),
-    action                  TEXT NOT NULL,          -- e.g. user.login, payment.refund, agent.run
-    entity_type             TEXT NOT NULL DEFAULT '', -- e.g. user, payment, conversation
-    entity_id               TEXT NOT NULL DEFAULT '',
-    status                  TEXT NOT NULL DEFAULT 'success'
-                                CHECK (status IN ('success', 'failure')),
-    request_id              TEXT,
-    ip_address              TEXT,
-    user_agent              TEXT,
-    details                 JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created
-    ON audit_logs (actor_user_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_entity
-    ON audit_logs (entity_type, entity_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created
-    ON audit_logs (action, created_at DESC);
-
-COMMENT ON TABLE audit_logs IS
-    'Append-only audit trail for account, payment, and agent activity.';
-
-
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- PHASE 2 — Research Agent tables
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -473,7 +270,7 @@ CREATE TABLE IF NOT EXISTS agent_config_versions (
     version                 INTEGER NOT NULL,
     config_snapshot         JSONB NOT NULL DEFAULT '{}'::jsonb,
     notes                   TEXT NOT NULL DEFAULT '',
-    created_by_user_id      UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by_session_id   TEXT,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (agent_id, version)
 );
@@ -516,13 +313,36 @@ ON CONFLICT (id) DO NOTHING;
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS conversations (
     id                  TEXT PRIMARY KEY,
-    agent_id            TEXT NOT NULL REFERENCES agents (id) ON DELETE SET NULL,
+    agent_id            TEXT NOT NULL,
     title               TEXT,
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
     last_output_file    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'conversations_agent_id_fkey'
+          AND conrelid = 'conversations'::regclass
+    ) THEN
+        ALTER TABLE conversations
+            DROP CONSTRAINT conversations_agent_id_fkey;
+    END IF;
+
+    ALTER TABLE conversations
+        ADD CONSTRAINT conversations_agent_id_fkey
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE RESTRICT;
+EXCEPTION
+    WHEN undefined_table THEN
+        NULL;
+    WHEN duplicate_object THEN
+        NULL;
+END;
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
     ON conversations (agent_id);
