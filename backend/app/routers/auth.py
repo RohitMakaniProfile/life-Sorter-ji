@@ -17,18 +17,18 @@ from fastapi import APIRouter, HTTPException
 import structlog
 
 from app.services.otp_service import send_otp, verify_otp
-from app.services.user_session_service import update_session_auth
-from app.services.session_store import get_session
+from app.services.users_service import get_or_create_user_by_phone
+from app.phase2.auth_google import issue_phase2_jwt
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+_OTP_PHONE_BY_SESSION: dict[str, str] = {}
 
 
 # ── Request / Response Models ─────────────────────────────────
 
 class SendOTPRequest(BaseModel):
-    session_id: str
     phone_number: str
 
     @field_validator("phone_number")
@@ -48,7 +48,8 @@ class SendOTPResponse(BaseModel):
 
 
 class VerifyOTPRequest(BaseModel):
-    session_id: str
+    session_id: str | None = None
+    phone_number: str | None = None
     otp_session_id: str
     otp_code: str
 
@@ -65,10 +66,11 @@ class VerifyOTPResponse(BaseModel):
     success: bool
     verified: bool
     message: str
+    token: str = ""
+    user_id: str = ""
 
 
 class GoogleAuthRequest(BaseModel):
-    session_id: str
     google_id: str
     email: str
     name: str
@@ -86,11 +88,6 @@ class GoogleAuthResponse(BaseModel):
 async def send_otp_endpoint(req: SendOTPRequest):
     """Send an OTP to the user's phone number via 2Factor.in."""
 
-    # Ensure session exists
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
     result = await send_otp(req.phone_number)
 
     if not result["success"]:
@@ -99,6 +96,7 @@ async def send_otp_endpoint(req: SendOTPRequest):
             message=result["error"],
         )
 
+    _OTP_PHONE_BY_SESSION[result["session_id"]] = req.phone_number
     return SendOTPResponse(
         success=True,
         message="OTP sent successfully",
@@ -109,11 +107,6 @@ async def send_otp_endpoint(req: SendOTPRequest):
 @router.post("/verify-otp", response_model=VerifyOTPResponse)
 async def verify_otp_endpoint(req: VerifyOTPRequest):
     """Verify the OTP and update the session's auth status."""
-
-    # Ensure session exists
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
 
     result = await verify_otp(req.otp_session_id, req.otp_code)
 
@@ -131,41 +124,36 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             message="Incorrect OTP — please try again",
         )
 
-    # OTP matched → persist auth to Supabase
-    # Extract phone from the send-otp step (stored in session or passed again)
-    await update_session_auth(
-        session_id=req.session_id,
-        otp_verified=True,
-        auth_provider="otp",
+    phone = (req.phone_number or "").strip()
+    if not phone:
+        phone = _OTP_PHONE_BY_SESSION.get(req.otp_session_id, "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+
+    user_id = await get_or_create_user_by_phone(phone)
+    otp_email = f"otp:{phone}@ikshan.local"
+    token = issue_phase2_jwt(
+        user_id=user_id,
+        email=otp_email,
+        is_admin=False,
+        is_super_admin=False,
     )
 
-    logger.info("OTP verified for session", session_id=req.session_id)
+    logger.info("OTP verified and JWT issued", user_id=user_id)
 
     return VerifyOTPResponse(
         success=True,
         verified=True,
         message="Phone number verified successfully",
+        token=token,
+        user_id=user_id,
     )
 
 
 @router.post("/google", response_model=GoogleAuthResponse)
 async def google_auth_endpoint(req: GoogleAuthRequest):
-    """Save Google Sign-In data to the session."""
-
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    await update_session_auth(
-        session_id=req.session_id,
-        google_id=req.google_id,
-        google_email=req.email,
-        google_name=req.name,
-        google_avatar_url=req.avatar_url,
-        auth_provider="google",
-    )
-
-    logger.info("Google auth saved for session", session_id=req.session_id, email=req.email)
+    """Legacy endpoint retained for compatibility (session system removed)."""
+    logger.info("Legacy /auth/google called in sessionless mode", email=req.email)
 
     return GoogleAuthResponse(
         success=True,

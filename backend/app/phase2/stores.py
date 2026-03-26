@@ -11,7 +11,7 @@ import traceback
 from asyncpg import UniqueViolationError
 from asyncpg.exceptions import UndefinedTableError
 
-from .db import get_pool
+from app.db import get_pool
 
 
 DEFAULT_AGENT_ID = "research-orchestrator"

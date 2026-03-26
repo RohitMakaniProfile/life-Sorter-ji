@@ -14,6 +14,30 @@ function App() {
   const [sandboxToken, setSandboxToken] = useState(null);
 
   useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      try {
+        const token = window.localStorage.getItem('ikshan.phase2.jwt');
+        const url = typeof input === 'string' ? input : (input?.url || '');
+        const isApiCall = url.includes('/api/');
+        if (!token || !isApiCall) return originalFetch(input, init);
+
+        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+        if (!headers.has('Authorization')) {
+          headers.set('Authorization', `Bearer ${token}`);
+        }
+        return originalFetch(input, { ...init, headers });
+      } catch {
+        return originalFetch(input, init);
+      }
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
+  useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth <= 768);
     };

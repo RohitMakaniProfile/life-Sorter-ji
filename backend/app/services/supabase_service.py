@@ -1,9 +1,9 @@
 """
 ═══════════════════════════════════════════════════════════════
-SUPABASE SERVICE — Lead & Conversation Management
+POSTGRES SERVICE — Lead & Conversation Management
 ═══════════════════════════════════════════════════════════════
-Server-side Supabase operations (moved from frontend).
-Handles lead CRUD, lead scoring, and conversation storage.
+Replaces the old Supabase-backed implementation with PostgreSQL (asyncpg).
+Handles lead CRUD, lead scoring, and lead conversation storage.
 """
 
 from __future__ import annotations
@@ -11,17 +11,11 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import structlog
-from supabase import create_client, Client
+import json
 
-from app.config import get_settings
+from app.db import get_pool
 
 logger = structlog.get_logger()
-
-
-def _get_client() -> Client:
-    """Create a Supabase client."""
-    settings = get_settings()
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
 
 
 # ── Lead Scoring ───────────────────────────────────────────────
@@ -100,17 +94,31 @@ async def save_lead(lead_data: dict) -> dict:
         dict with 'success' bool and 'data' or 'error'.
     """
     try:
-        client = _get_client()
-
         # Calculate score server-side
         lead_data["lead_score"] = calculate_lead_score(lead_data)
         lead_data["status"] = lead_data.get("status", "new")
-
-        response = (
-            client.table("leads")
-            .insert(lead_data)
-            .execute()
-        )
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO leads (
+                    domain, website_url,
+                    individual_type, tech_competency_level, timeline_urgency,
+                    micro_solutions_tried, problem_description,
+                    lead_score, status
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                RETURNING *
+                """,
+                lead_data.get("domain"),
+                lead_data.get("website_url"),
+                lead_data.get("individual_type"),
+                lead_data.get("tech_competency_level"),
+                lead_data.get("timeline_urgency"),
+                lead_data.get("micro_solutions_tried"),
+                lead_data.get("problem_description"),
+                int(lead_data.get("lead_score") or 0),
+                lead_data.get("status") or "new",
+            )
 
         logger.info(
             "Lead saved",
@@ -118,7 +126,7 @@ async def save_lead(lead_data: dict) -> dict:
             individual_type=lead_data.get("individual_type"),
         )
 
-        return {"success": True, "data": response.data[0] if response.data else {}}
+        return {"success": True, "data": dict(row) if row else {}}
 
     except Exception as e:
         logger.error("Error saving lead", error=str(e))
@@ -137,8 +145,6 @@ async def update_lead(lead_id: str, updates: dict) -> dict:
         dict with 'success' bool and 'data' or 'error'.
     """
     try:
-        client = _get_client()
-
         # Recalculate score if qualification fields changed
         scoring_fields = {
             "individual_type", "tech_competency_level",
@@ -146,26 +152,43 @@ async def update_lead(lead_id: str, updates: dict) -> dict:
             "problem_description",
         }
         if scoring_fields & set(updates.keys()):
-            # Fetch the current lead and merge updates
-            current = (
-                client.table("leads")
-                .select("*")
-                .eq("id", lead_id)
-                .single()
-                .execute()
-            )
-            if current.data:
-                merged = {**current.data, **updates}
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                current = await conn.fetchrow("SELECT * FROM leads WHERE id = $1::uuid", lead_id)
+            if current:
+                merged = {**dict(current), **updates}
                 updates["lead_score"] = calculate_lead_score(merged)
 
-        response = (
-            client.table("leads")
-            .update(updates)
-            .eq("id", lead_id)
-            .execute()
-        )
+        set_parts = []
+        values = []
+        mapping = {
+            "domain": "domain",
+            "website_url": "website_url",
+            "individual_type": "individual_type",
+            "tech_competency_level": "tech_competency_level",
+            "timeline_urgency": "timeline_urgency",
+            "micro_solutions_tried": "micro_solutions_tried",
+            "problem_description": "problem_description",
+            "lead_score": "lead_score",
+            "status": "status",
+        }
+        for k, col in mapping.items():
+            if k in updates:
+                set_parts.append(f"{col} = ${len(values) + 1}")
+                values.append(updates[k])
+        if not set_parts:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM leads WHERE id = $1::uuid", lead_id)
+            return {"success": True, "data": dict(row) if row else {}}
 
-        return {"success": True, "data": response.data[0] if response.data else {}}
+        set_parts.append(f"updated_at = NOW()")
+        values.append(lead_id)
+        q = f"UPDATE leads SET {', '.join(set_parts)} WHERE id = ${len(values)}::uuid RETURNING *"
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(q, *values)
+        return {"success": True, "data": dict(row) if row else {}}
 
     except Exception as e:
         logger.error("Error updating lead", lead_id=lead_id, error=str(e))
@@ -186,29 +209,33 @@ async def get_leads(
         dict with 'success', 'data' (list), and 'count'.
     """
     try:
-        client = _get_client()
-
-        query = (
-            client.table("leads")
-            .select("*", count="exact")
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-        )
-
+        where = []
+        values = []
         if domain:
-            query = query.eq("domain", domain)
+            where.append(f"domain = ${len(values) + 1}")
+            values.append(domain)
         if status:
-            query = query.eq("status", status)
+            where.append(f"status = ${len(values) + 1}")
+            values.append(status)
         if individual_type:
-            query = query.eq("individual_type", individual_type)
+            where.append(f"individual_type = ${len(values) + 1}")
+            values.append(individual_type)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-        response = query.execute()
-
-        return {
-            "success": True,
-            "data": response.data or [],
-            "count": response.count or 0,
-        }
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            count = int(
+                await conn.fetchval(f"SELECT COUNT(*) FROM leads {where_sql}", *values)
+            )
+            q = f"""
+            SELECT *
+            FROM leads
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT ${len(values) + 1} OFFSET ${len(values) + 2}
+            """
+            rows = await conn.fetch(q, *values, int(limit), int(offset))
+        return {"success": True, "data": [dict(r) for r in rows], "count": count}
 
     except Exception as e:
         logger.error("Error fetching leads", error=str(e))
@@ -235,21 +262,22 @@ async def save_conversation(
         dict with 'success' bool and 'data' or 'error'.
     """
     try:
-        client = _get_client()
-
-        response = (
-            client.table("conversations")
-            .insert({
-                "lead_id": lead_id,
-                "messages": messages,
-                "recommendations": recommendations or [],
-            })
-            .execute()
-        )
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO lead_conversations (lead_id, messages, recommendations)
+                VALUES ($1::uuid, $2::jsonb, $3::jsonb)
+                RETURNING *
+                """,
+                lead_id,
+                json.dumps(messages or []),
+                json.dumps(recommendations or []),
+            )
 
         logger.info("Conversation saved", lead_id=lead_id, message_count=len(messages))
 
-        return {"success": True, "data": response.data[0] if response.data else {}}
+        return {"success": True, "data": dict(row) if row else {}}
 
     except Exception as e:
         logger.error("Error saving conversation", lead_id=lead_id, error=str(e))

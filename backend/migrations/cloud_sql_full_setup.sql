@@ -32,6 +32,74 @@ $$ LANGUAGE plpgsql;
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- leads
+-- Captures inbound leads from the website flow.
+-- This replaces the old Supabase `leads` table.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS leads (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    domain                   TEXT,
+    website_url              TEXT,
+
+    individual_type          TEXT,
+    tech_competency_level    INTEGER,
+    timeline_urgency         TEXT,
+    micro_solutions_tried    BOOLEAN,
+    problem_description      TEXT,
+
+    lead_score               INTEGER NOT NULL DEFAULT 0,
+    status                   TEXT NOT NULL DEFAULT 'new'
+);
+
+CREATE INDEX IF NOT EXISTS idx_leads_created_at
+    ON leads (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_leads_domain
+    ON leads (domain);
+
+CREATE INDEX IF NOT EXISTS idx_leads_status
+    ON leads (status);
+
+DROP TRIGGER IF EXISTS trg_leads_updated_at ON leads;
+CREATE TRIGGER trg_leads_updated_at
+    BEFORE UPDATE ON leads
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE leads IS
+    'Inbound leads captured from the guided flow. Formerly stored in Supabase.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- lead_conversations
+-- Stores a lead’s conversation transcript + recommendations JSON.
+-- Replaces old Supabase `conversations` table used by leads (NOT Phase2).
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lead_conversations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    lead_id          UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    messages         JSONB NOT NULL DEFAULT '[]'::jsonb,
+    recommendations  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_conversations_lead_id
+    ON lead_conversations (lead_id, created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_lead_conversations_updated_at ON lead_conversations;
+CREATE TRIGGER trg_lead_conversations_updated_at
+    BEFORE UPDATE ON lead_conversations
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE lead_conversations IS
+    'Lead flow transcripts + recommendations. Formerly stored in Supabase conversations.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- user_sessions
 -- Stores the complete guided-flow state for every anonymous / authenticated
 -- visitor: auth data, Q1-Q3 answers, RCA history, and final recommendations.

@@ -18,16 +18,15 @@ from .ai import AiHelper
 from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
 from .auth_google import (
-    decode_phase2_jwt,
     get_internal_google_admin_emails,
     get_internal_google_super_admin_emails,
-    Phase2AuthedUser,
     issue_phase2_jwt,
     is_allowed_internal_email,
     verify_google_or_firebase_token,
 )
 from .config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
-from .db import get_pool
+from app.db import get_pool
+from app.auth.current_user import AuthedUser, require_user
 from .skills import first_skill_id, get_skill, list_skills, run_skill
 from .stores import (
     append_skill_streamed_text,
@@ -98,50 +97,8 @@ def _load_default_phase2_contexts() -> dict[str, str]:
     }
 
 
-def _auth_bearer_token_from_request(req: Request) -> str | None:
-    raw = req.headers.get("Authorization") or ""
-    if not raw:
-        return None
-    parts = raw.split()
-    if len(parts) != 2:
-        return None
-    if parts[0].lower() != "bearer":
-        return None
-    return parts[1].strip() or None
-
-
-async def _require_phase2_user(req: Request) -> Any:
-    token = _auth_bearer_token_from_request(req)
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing Authorization Bearer token")
-    try:
-        decoded = decode_phase2_jwt(token)
-        email = decoded.email.lower()
-        is_super_admin = email in get_internal_google_super_admin_emails()
-        is_internal_admin = email in get_internal_google_admin_emails()
-        is_admin = is_super_admin or is_internal_admin
-
-        # IMPORTANT: Only Google login creates the Phase2 user row.
-        # If a token refers to a non-existent user, treat it as invalid so the frontend can logout.
-        pool = get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT id, email FROM users WHERE id = $1::uuid", decoded.user_id)
-            if not row:
-                raise HTTPException(status_code=401, detail="User not found for token; please login again")
-            db_email = str(row["email"] or "").strip().lower()
-            if db_email and db_email != email:
-                raise HTTPException(status_code=401, detail="Token/user mismatch; please login again")
-
-        return Phase2AuthedUser(
-            user_id=decoded.user_id,
-            email=decoded.email,
-            is_admin=is_admin,
-            is_super_admin=is_super_admin,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid auth token: {str(exc)}") from exc
+async def _require_phase2_user(req: Request) -> AuthedUser:
+    return await require_user(req)
 
 
 @router.post("/api/phase2/auth/google/exchange")
@@ -198,6 +155,12 @@ async def p2_google_exchange(req: Request) -> dict[str, Any]:
         is_super_admin=is_super_admin,
     )
     return {"token": token, "userId": user_id, "email": email, "isAdmin": is_admin, "isSuperAdmin": is_super_admin}
+
+
+# New canonical admin-login endpoint (alias; keep old path working).
+@router.post("/api/auth/admin/google/exchange")
+async def admin_google_exchange(req: Request) -> dict[str, Any]:
+    return await p2_google_exchange(req)
 
 
 def _get_crawl_pages_excerpt(crawl_data: Any) -> str:

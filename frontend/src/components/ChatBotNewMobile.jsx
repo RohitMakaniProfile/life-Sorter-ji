@@ -1030,10 +1030,18 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       const res = await fetch(`${API_BASE}/api/v1/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code }),
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          phone_number: otpPhone.trim().replace(/[\s\-]/g, ''),
+          otp_session_id: otpSessionId,
+          otp_code: code,
+        }),
       });
       const data = await res.json();
       if (data.verified) {
+        if (data.token) {
+          window.localStorage.setItem('ikshan.phase2.jwt', data.token);
+        }
         setOtpVerified(true);
         setShowAuthModal(false);
         setOtpStep('phone');

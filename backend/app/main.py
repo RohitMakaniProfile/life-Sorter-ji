@@ -15,10 +15,10 @@ from fastapi.responses import ORJSONResponse, JSONResponse
 from app.config import get_settings
 from app.middleware.rate_limit import setup_rate_limiter
 
-from app.phase2.db import connect_db as p2_connect_db
+from app.db import connect_db as app_connect_db
 from app.phase2.skills import load_skills as p2_load_skills
 from app.phase2.stores import ensure_default_agents as p2_ensure_agents
-from app.phase2.db import close_db as p2_close_db
+from app.db import close_db as app_close_db
 
 # ── Structured Logging ─────────────────────────────────────────
 structlog.configure(
@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
 
     # ── Phase 2: Research Agent startup ───────────────────────────────────────
     try:
-        await p2_connect_db()
+        await app_connect_db()
         p2_load_skills()
         await p2_ensure_agents()
         logger.info("✅ Phase 2 (Research Agent) started")
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
 
     # ── Phase 2 shutdown ───────────────────────────────────────────────────────
     try:
-        await p2_close_db()
+        await app_close_db()
     except Exception:
         pass
 

@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # ── Frontend ───────────────────────────────────────────────
     FRONTEND_URL: str = "https://ikshan.in"
 
+    # ── PostgreSQL (Cloud SQL) ─────────────────────────────────
+    # Used for Phase1 tables (user_sessions, payments, etc.) and can also be reused by Phase2.
+    DATABASE_URL: str = ""
+
     # ── 2Factor.in OTP ─────────────────────────────────────────
     TWO_FACTOR_API_KEY: str = ""
 
