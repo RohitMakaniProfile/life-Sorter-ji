@@ -543,6 +543,9 @@ export async function fetchSkills(): Promise<SkillMeta[]> {
 
 export async function getAgents(): Promise<{ agents: UiAgent[] }> {
   const res = await apiFetch('/api/agents');
+  // apiFetch already redirects on 401 (clears token + /phase2/login-internal).
+  // Avoid throwing noisy errors for the common "logged out" case.
+  if (res.status === 401) return { agents: [] };
   if (!res.ok) throw new Error('Failed to load agents');
   return res.json() as Promise<{ agents: UiAgent[] }>;
 }
