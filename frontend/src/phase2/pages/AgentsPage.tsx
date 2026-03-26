@@ -1,18 +1,34 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUiAgents } from '../context/UiAgentsContext';
+import { getPhase2IsAdmin, getPhase2IsSuperAdmin, getPhase2UserId } from '../api/client';
 
 export default function AgentsPage() {
   const navigate = useNavigate();
   const { agents, agentsLoading, skills, activeAgentId, setActiveAgentId, createAgent, updateAgent, deleteAgent } =
     useUiAgents();
+  const isSuperAdmin = getPhase2IsSuperAdmin();
+  const isAdmin = getPhase2IsAdmin();
+  const currentUserId = getPhase2UserId();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const canEditAgent = (agent: any): boolean => {
+    const createdBy = agent?.createdByUserId ?? null;
+    const isSystem = createdBy == null;
+    if (!isSystem) {
+      return !!currentUserId && String(createdBy) === String(currentUserId);
+    }
+    // system agents: preserve your earlier rules
+    if (agent?.isLocked) return !!isSuperAdmin;
+    return !!isSuperAdmin || !!isAdmin;
+  };
+
   const handleToggleSkill = (agentId: string, skillId: string) => {
     const agent = agents.find((a) => a.id === agentId);
     if (!agent) return;
+    if (!canEditAgent(agent)) return;
     const exists = agent.allowedSkillIds.includes(skillId);
     const nextIds = exists
       ? agent.allowedSkillIds.filter((id) => id !== skillId)
@@ -29,6 +45,7 @@ export default function AgentsPage() {
         name: 'New Agent',
         emoji: '🤖',
         description: 'Custom agent',
+        visibility: 'private',
         allowedSkillIds: [],
       });
       setEditingId(id);
@@ -92,6 +109,7 @@ export default function AgentsPage() {
           <div className="space-y-4">
             {agents.map((agent) => {
               const isActive = agent.id === activeAgentId;
+              const canEdit = canEditAgent(agent);
               return (
                 <button
                   key={agent.id}
@@ -133,27 +151,31 @@ export default function AgentsPage() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setEditingId(agent.id);
+                      if (!canEdit) return;
+                      setEditingId(agent.id);
                       }}
                       className={`px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors pointer-events-auto ${
                         isActive
                           ? 'border-white/40 text-white hover:bg-white/10'
                           : 'border-violet-200 text-violet-700 hover:bg-violet-50'
                       }`}
+                    disabled={!canEdit}
                     >
-                      Edit skills
+                    {!canEdit ? 'Read-only' : 'Edit skills'}
                     </button>
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate(`/agents/${encodeURIComponent(agent.id)}/contexts`);
+                      if (!canEdit) return;
+                      navigate(`/agents/${encodeURIComponent(agent.id)}/contexts`);
                       }}
                       className={`px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors pointer-events-auto ${
                         isActive
                           ? 'border-white/40 text-white hover:bg-white/10'
                           : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                       }`}
+                    disabled={!canEdit}
                     >
                       Contexts
                     </button>
@@ -166,6 +188,7 @@ export default function AgentsPage() {
                           : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
                       }`}
                       title="Delete agent"
+                    disabled={!canEdit}
                     >
                       ✕
                     </button>
@@ -199,8 +222,9 @@ export default function AgentsPage() {
       </div>
       {/* Edit modal (name/description + skills) */}
       {editingId && (() => {
-        const agent = agents.find((a) => a.id === editingId);
+    const agent = agents.find((a) => a.id === editingId);
         if (!agent) return null;
+    const canEdit = canEditAgent(agent);
         return (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
             <div className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[80vh] flex flex-col">
@@ -210,6 +234,7 @@ export default function AgentsPage() {
                     className="w-9 h-9 rounded-lg flex items-center justify-center text-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
                     type="button"
                     onClick={() => {
+                      if (!canEdit) return;
                       const next = window.prompt('Enter an emoji icon', agent.emoji || '🤖');
                       if (next && next.trim()) {
                         updateAgent({ ...agent, emoji: next.trim() });
@@ -223,15 +248,50 @@ export default function AgentsPage() {
                     <input
                       className="w-full text-sm font-semibold text-slate-800 bg-transparent border-none focus:outline-none focus:ring-0"
                       value={agent.name}
-                      onChange={(e) => updateAgent({ ...agent, name: e.target.value })}
+                      onChange={(e) => {
+                        if (!canEdit) return;
+                        updateAgent({ ...agent, name: e.target.value });
+                      }}
+                      readOnly={!canEdit}
                     />
                     <input
                       className="w-full text-[11px] text-slate-500 bg-transparent border-none focus:outline-none focus:ring-0"
                       value={agent.description}
-                      onChange={(e) => updateAgent({ ...agent, description: e.target.value })}
+                      onChange={(e) => {
+                        if (!canEdit) return;
+                        updateAgent({ ...agent, description: e.target.value });
+                      }}
+                      readOnly={!canEdit}
                       placeholder="Short description"
                     />
                   </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-600 select-none">
+                    <span className="text-slate-500">Private</span>
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() => {
+                        if (!canEdit) return;
+                        const next = (agent.visibility || 'private') === 'public' ? 'private' : 'public';
+                        updateAgent({ ...agent, visibility: next });
+                      }}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ${
+                        (agent.visibility || 'private') === 'public'
+                          ? 'bg-emerald-500 border-emerald-600'
+                          : 'bg-slate-200 border-slate-300'
+                      } ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                      aria-label="Toggle visibility"
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          (agent.visibility || 'private') === 'public' ? 'translate-x-4' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-slate-500">Public</span>
+                  </label>
                 </div>
                 <button
                   onClick={() => setEditingId(null)}
@@ -246,7 +306,11 @@ export default function AgentsPage() {
                   <p className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-2">
                     Allowed Skills
                   </p>
-                  {skills.length === 0 ? (
+                  {!canEdit ? (
+                    <p className="text-xs text-slate-500">
+                      This agent is locked: only super-admin can edit skills/contexts.
+                    </p>
+                  ) : skills.length === 0 ? (
                     <p className="text-xs text-slate-400">
                       No skills loaded yet. Ensure backend is running and `/api/chat/skills` is reachable.
                     </p>
@@ -263,11 +327,11 @@ export default function AgentsPage() {
                                 : 'border-slate-200 hover:border-violet-200 hover:bg-slate-50'
                             }`}
                           >
-                            <input
+                              <input
                               type="checkbox"
                               className="mt-0.5 h-3 w-3 text-violet-600 border-slate-300 rounded"
                               checked={checked}
-                              onChange={() => handleToggleSkill(agent.id, skill.id)}
+                                onChange={() => handleToggleSkill(agent.id, skill.id)}
                             />
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5">

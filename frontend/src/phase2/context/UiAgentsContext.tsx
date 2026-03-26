@@ -1,7 +1,17 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentId, SkillMeta, UiAgent } from '../api/client';
-import { fetchSkills, getAgents, createAgent as apiCreateAgent, updateAgent as apiUpdateAgent, deleteAgent as apiDeleteAgent } from '../api/client';
+import {
+  fetchSkills,
+  getAgents,
+  createAgent as apiCreateAgent,
+  updateAgent as apiUpdateAgent,
+  deleteAgent as apiDeleteAgent,
+  getPhase2IsAdmin,
+  getPhase2IsSuperAdmin,
+  getPhase2JwtPayload,
+  getPhase2JwtTokenPrefix,
+} from '../api/client';
 
 interface UiAgentsState {
   agents: UiAgent[];
@@ -51,6 +61,30 @@ export function UiAgentsProvider({ children }: { children: ReactNode }) {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    // Debug: verify role flags from the Phase2 JWT used for permission checks.
+    // eslint-disable-next-line no-console
+    console.log('[phase2 auth flags]', {
+      isAdmin: getPhase2IsAdmin(),
+      isSuperAdmin: getPhase2IsSuperAdmin(),
+      jwtPayload: getPhase2JwtPayload(),
+      tokenPrefix: getPhase2JwtTokenPrefix(),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!agents || agentsLoading) return;
+    if (!agents.length) return;
+    if (!agents.some((a) => a.id === activeAgentId)) {
+      const first = agents[0]?.id;
+      if (first) {
+        setActiveAgentIdState(first);
+      }
+    }
+  }, [agents, agentsLoading, activeAgentId]);
 
   useEffect(() => {
     void (async () => {

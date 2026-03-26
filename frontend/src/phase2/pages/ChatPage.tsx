@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ChatUI from '../components/chat/ChatUI';
 import type { RichMessage } from '../components/chat/ChatUI';
@@ -167,6 +167,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             kind: 'plan',
             planId: plan.planId,
             messageId: plan.planMessageId,
+            todoState: 'draft',
             pipeline: {
               currentStage: 'done',
               agentId: activeAgentId,
@@ -196,6 +197,14 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
 
   const handleApprovePlan = async (planId: string, planMarkdown: string) => {
     setLoading(true);
+    // Once execution starts, lock the Todo so it can't be edited anymore.
+    setMessages((prev) =>
+      prev.map((m: any) =>
+        m?.role === 'assistant' && m?.kind === 'plan' && m?.planId === planId
+          ? { ...m, todoState: 'started' }
+          : m
+      )
+    );
     setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
     try {
       const result = await approvePlanStream({

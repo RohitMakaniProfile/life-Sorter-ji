@@ -11,13 +11,23 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .ai import AiHelper
 from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
+from .auth_google import (
+    decode_phase2_jwt,
+    get_internal_google_admin_emails,
+    get_internal_google_super_admin_emails,
+    Phase2AuthedUser,
+    issue_phase2_jwt,
+    is_allowed_internal_email,
+    verify_google_or_firebase_token,
+)
 from .config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
+from .db import get_pool
 from .skills import first_skill_id, get_skill, list_skills, run_skill
 from .stores import (
     append_skill_streamed_text,
@@ -37,6 +47,7 @@ from .stores import (
     get_skill_calls_by_message_id_full,
     get_stage_outputs,
     get_token_usage,
+    list_insight_feedback,
     list_agents,
     save_token_usage,
     list_conversations,
@@ -47,6 +58,7 @@ from .stores import (
     update_message_content,
     update_message_meta,
     update_plan_run,
+    set_insight_feedback,
 )
 
 router = APIRouter()
@@ -84,6 +96,108 @@ def _load_default_phase2_contexts() -> dict[str, str]:
         "skillSelectorContext": processing_text,
         "finalOutputFormattingContext": output_text,
     }
+
+
+def _auth_bearer_token_from_request(req: Request) -> str | None:
+    raw = req.headers.get("Authorization") or ""
+    if not raw:
+        return None
+    parts = raw.split()
+    if len(parts) != 2:
+        return None
+    if parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
+
+
+async def _require_phase2_user(req: Request) -> Any:
+    token = _auth_bearer_token_from_request(req)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization Bearer token")
+    try:
+        decoded = decode_phase2_jwt(token)
+        email = decoded.email.lower()
+        is_super_admin = email in get_internal_google_super_admin_emails()
+        is_internal_admin = email in get_internal_google_admin_emails()
+        is_admin = is_super_admin or is_internal_admin
+
+        # IMPORTANT: Only Google login creates the Phase2 user row.
+        # If a token refers to a non-existent user, treat it as invalid so the frontend can logout.
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id, email FROM users WHERE id = $1::uuid", decoded.user_id)
+            if not row:
+                raise HTTPException(status_code=401, detail="User not found for token; please login again")
+            db_email = str(row["email"] or "").strip().lower()
+            if db_email and db_email != email:
+                raise HTTPException(status_code=401, detail="Token/user mismatch; please login again")
+
+        return Phase2AuthedUser(
+            user_id=decoded.user_id,
+            email=decoded.email,
+            is_admin=is_admin,
+            is_super_admin=is_super_admin,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid auth token: {str(exc)}") from exc
+
+
+@router.post("/api/phase2/auth/google/exchange")
+async def p2_google_exchange(req: Request) -> dict[str, Any]:
+    """
+    Exchanges a Firebase Google ID token (from the internal-only login page)
+    for an Ikshan Phase2 JWT to be used in subsequent API calls.
+    """
+    body = await req.json()
+    id_token = str(body.get("idToken") or "").strip()
+    if not id_token:
+        raise HTTPException(status_code=400, detail="idToken is required")
+
+    decoded = await verify_google_or_firebase_token(id_token)
+    email = str(decoded.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=403, detail="Email claim missing from token")
+
+    if not is_allowed_internal_email(email):
+        raise HTTPException(status_code=403, detail="Email not allowed for Phase2")
+
+    is_super_admin = email in get_internal_google_super_admin_emails()
+    is_internal_admin = email in get_internal_google_admin_emails()
+    is_admin = is_super_admin or is_internal_admin
+
+    full_name = str(decoded.get("name") or decoded.get("full_name") or "").strip()
+    avatar_url = str(decoded.get("picture") or decoded.get("avatar_url") or "").strip()
+    auth_provider = "google"
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM users WHERE email = $1", email)
+        if row:
+            user_id = str(row["id"])
+        else:
+            inserted = await conn.fetchrow(
+                """
+                INSERT INTO users (email, full_name, avatar_url, auth_provider, email_verified_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                RETURNING id
+                """,
+                email,
+                full_name,
+                avatar_url,
+                auth_provider,
+            )
+            assert inserted is not None
+            user_id = str(inserted["id"])
+
+    token = issue_phase2_jwt(
+        user_id=user_id,
+        email=email,
+        is_admin=is_admin,
+        is_super_admin=is_super_admin,
+    )
+    return {"token": token, "userId": user_id, "email": email, "isAdmin": is_admin, "isSuperAdmin": is_super_admin}
 
 
 def _get_crawl_pages_excerpt(crawl_data: Any) -> str:
@@ -242,7 +356,7 @@ def _allowed_file_path(path: str) -> bool:
     return False
 
 
-async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
+async def _resolve_agent_and_skill(payload: dict[str, Any], *, current_user: Any) -> dict[str, Any]:
     default_skill = first_skill_id() or "platform-scout"
     default_contexts = _load_default_phase2_contexts()
 
@@ -251,7 +365,12 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
     allowed_from_request = [str(s) for s in allowed_from_request if isinstance(s, str)]
 
     if agent_id:
-        agent = await get_agent(agent_id)
+        agent = await get_agent(
+            agent_id,
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+            for_execution=True,
+        )
         if agent:
             allowed = [s for s in agent.get("allowedSkillIds", []) if isinstance(s, str)]
             chosen = next((sid for sid in allowed if get_skill(sid)), default_skill)
@@ -259,17 +378,13 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
                 "agentId": agent_id,
                 "skillId": chosen,
                 "allowedSkillIds": allowed,
+                "isLocked": bool(agent.get("isLocked")),
                 "contexts": {
                     "skillSelectorContext": (agent.get("skillSelectorContext") or default_contexts.get("skillSelectorContext") or ""),
                     "finalOutputFormattingContext": (agent.get("finalOutputFormattingContext") or default_contexts.get("finalOutputFormattingContext") or ""),
                 },
             }
-        return {
-            "agentId": agent_id,
-            "skillId": default_skill,
-            "allowedSkillIds": allowed_from_request,
-            "contexts": default_contexts,
-        }
+        raise HTTPException(status_code=403, detail="Agent not accessible")
 
     first_allowed = next((sid for sid in allowed_from_request if get_skill(sid)), None)
     chosen = first_allowed or default_skill
@@ -277,6 +392,7 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
         "agentId": chosen,
         "skillId": chosen,
         "allowedSkillIds": allowed_from_request,
+        "isLocked": False,
         "contexts": default_contexts,
     }
 
@@ -320,20 +436,33 @@ async def _emit_plan_progress(
 async def _create_plan_draft(
     *,
     body: dict[str, Any],
+    current_user: Any,
     emit_progress=None,
 ) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
     _log("plan-draft-start", message_preview=message[:200], has_emit_progress=emit_progress is not None)
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    resolved = await _resolve_agent_and_skill(body, current_user=current_user)
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     contexts = resolved.get("contexts", {})
     _log("plan-draft-conversation-resolved", conversation_id=conv.get("id"), agent_id=resolved.get("agentId"))
 
     cancel_plan_id = str(body.get("cancelPlanId") or "").strip()
     if cancel_plan_id:
-        existing = await get_plan_run(cancel_plan_id)
+        existing = await get_plan_run(cancel_plan_id, user_id=current_user.user_id, is_admin=current_user.is_admin)
         if existing and existing.get("conversationId") == conv["id"] and existing.get("status") == "draft":
-            await update_plan_run(cancel_plan_id, {"status": "cancelled"})
+            await update_plan_run(
+                cancel_plan_id,
+                {"status": "cancelled"},
+                user_id=current_user.user_id,
+                is_admin=current_user.is_admin,
+            )
 
     user_message_id = await append_message(conv["id"], "user", message)
 
@@ -364,7 +493,8 @@ async def _create_plan_draft(
 
         if _should_stream_page_nl(sid):
             async def _page_worker() -> None:
-                ai = AiHelper(provider="openai", temperature=0.2)
+                # Prefer Claude when configured; avoid hard-failing on OpenAI quota.
+                ai = AiHelper(temperature=0.2)
                 while True:
                     meta = await page_queue.get()
                     if meta is None:
@@ -382,11 +512,11 @@ async def _create_plan_draft(
                             await append_skill_streamed_text(skill_call_id, chunk)
                         await save_token_usage(
                             plan_message_id,
-                            OPENAI_MODEL,
+                            (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL),
                             r.input_tokens,
                             r.output_tokens,
                             stage=f"page-nl.{sid}",
-                            provider="openai",
+                            provider=("anthropic" if CLAUDE_API_KEY else "openai"),
                         )
                     except Exception:
                         pass
@@ -620,15 +750,19 @@ async def _create_plan_draft(
     await update_message_meta(conv["id"], plan_message_id, "plan", plan_run["id"])
 
     await _emit_plan_progress(emit_progress, "Plan ready for your approval", event="plan-ready", kind="done")
+    is_locked = bool(resolved.get("isLocked"))
+    reveal_secrets = bool(current_user.is_admin) or not is_locked
+    allowed_skill_ids_out = resolved.get("allowedSkillIds", []) if reveal_secrets else []
+    contexts_out = contexts if reveal_secrets else {}
     return {
         "conversationId": conv["id"],
         "planId": plan_run["id"],
         "planMessageId": plan_message_id,
         "planMarkdown": plan_markdown,
         "agentId": resolved["agentId"],
-        "skillId": resolved["skillId"],
-        "allowedSkillIds": resolved.get("allowedSkillIds", []),
-        "contexts": contexts,
+        "skillId": (resolved["skillId"] if reveal_secrets else ""),
+        "allowedSkillIds": allowed_skill_ids_out,
+        "contexts": contexts_out,
     }
 
 
@@ -732,22 +866,22 @@ async def p2_health() -> dict[str, Any]:
 
 
 @router.get("/api/skills")
-async def p2_skills_root() -> dict[str, Any]:
+async def p2_skills_root(current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     return {"skills": list_skills()}
 
 
 @router.get("/api/chat/skills")
-async def p2_skills_chat() -> list[dict[str, Any]]:
+async def p2_skills_chat(current_user: Any = Depends(_require_phase2_user)) -> list[dict[str, Any]]:
     return list_skills()
 
 
 @router.get("/api/agents")
-async def p2_agents_list() -> dict[str, Any]:
-    return {"agents": await list_agents()}
+async def p2_agents_list(current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
+    return {"agents": await list_agents(user_id=current_user.user_id, is_admin=current_user.is_admin)}
 
 
 @router.post("/api/agents")
-async def p2_agents_create(req: Request) -> JSONResponse:
+async def p2_agents_create(req: Request, current_user: Any = Depends(_require_phase2_user)) -> JSONResponse:
     body = await req.json()
     agent_id = str(body.get("id") or "").strip()
     name = str(body.get("name") or "").strip()
@@ -765,7 +899,13 @@ async def p2_agents_create(req: Request) -> JSONResponse:
                 "allowedSkillIds": body.get("allowedSkillIds") if isinstance(body.get("allowedSkillIds"), list) else [],
                 "skillSelectorContext": body.get("skillSelectorContext") or "",
                 "finalOutputFormattingContext": body.get("finalOutputFormattingContext") or "",
+                "visibility": body.get("visibility") or "private",
+                "isLocked": body.get("isLocked") or False,
             }
+            ,
+            created_by_user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+            is_super_admin=current_user.is_super_admin,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -773,36 +913,47 @@ async def p2_agents_create(req: Request) -> JSONResponse:
 
 
 @router.get("/api/agents/{agent_id}")
-async def p2_agents_get(agent_id: str) -> dict[str, Any]:
-    agent = await get_agent(agent_id)
+async def p2_agents_get(agent_id: str, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
+    agent = await get_agent(agent_id, user_id=current_user.user_id, is_admin=current_user.is_admin, for_execution=False)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"agent": agent}
 
 
 @router.patch("/api/agents/{agent_id}")
-async def p2_agents_patch(agent_id: str, req: Request) -> dict[str, Any]:
+async def p2_agents_patch(agent_id: str, req: Request, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     body = await req.json()
     patch: dict[str, Any] = {}
-    for key in ["name", "emoji", "description", "allowedSkillIds", "skillSelectorContext", "finalOutputFormattingContext"]:
+    for key in ["name", "emoji", "description", "allowedSkillIds", "skillSelectorContext", "finalOutputFormattingContext", "visibility"]:
         if key in body:
             patch[key] = body[key]
-    updated = await update_agent(agent_id, patch)
+    updated = await update_agent(
+        agent_id,
+        patch,
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"agent": updated}
 
 
 @router.delete("/api/agents/{agent_id}")
-async def p2_agents_delete(agent_id: str) -> JSONResponse:
-    ok = await delete_agent(agent_id)
+async def p2_agents_delete(agent_id: str, current_user: Any = Depends(_require_phase2_user)) -> JSONResponse:
+    ok = await delete_agent(
+        agent_id,
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+        is_super_admin=current_user.is_super_admin,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")
     return JSONResponse(status_code=204, content=None)
 
 
 @router.get("/api/files/download")
-async def p2_files_download(path: str = Query(...)) -> FileResponse:
+async def p2_files_download(path: str = Query(...), current_user: Any = Depends(_require_phase2_user)) -> FileResponse:
     if not _allowed_file_path(path):
         raise HTTPException(status_code=403, detail="Access denied")
     p = Path(path)
@@ -813,14 +964,21 @@ async def p2_files_download(path: str = Query(...)) -> FileResponse:
 
 
 @router.post("/api/chat/message")
-async def p2_chat_message(req: Request) -> dict[str, Any]:
+async def p2_chat_message(req: Request, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     body = await req.json()
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    resolved = await _resolve_agent_and_skill(body, current_user=current_user)
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     await append_message(conv["id"], "user", message)
 
     result = await run_agent_turn_stream(
@@ -861,7 +1019,7 @@ async def p2_chat_message(req: Request) -> dict[str, Any]:
 
 
 @router.post("/api/chat/stream")
-async def p2_chat_stream(req: Request) -> StreamingResponse:
+async def p2_chat_stream(req: Request, current_user: Any = Depends(_require_phase2_user)) -> StreamingResponse:
     body = await req.json()
     message = str(body.get("message") or "").strip()
     if not message:
@@ -872,8 +1030,17 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
     if retry_from_stage and isinstance(retry_stage_outputs, dict):
         message = _build_retry_message(message, retry_from_stage, retry_stage_outputs)
 
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    resolved = await _resolve_agent_and_skill(body, current_user=current_user)
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    reveal_secrets = bool(current_user.is_admin) or not bool(resolved.get("isLocked"))
 
     await append_message(conv["id"], "user", message)
     assistant_message_id = await append_assistant_placeholder(conv["id"])
@@ -898,6 +1065,12 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
                     stage=str(meta.get("stage") or "chat-execution"),
                     provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
                 )
+            if not reveal_secrets and isinstance(event.get("meta"), dict):
+                meta2 = dict(event.get("meta") or {})
+                for k in ("skillId", "skill_id", "skill"):
+                    meta2.pop(k, None)
+                event = dict(event)
+                event["meta"] = meta2
             await emit({"progress": event})
 
         async def worker() -> None:
@@ -905,7 +1078,14 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
                 tokens_emitted = 0
 
                 async def on_stage(stage: str, label: str, idx: int) -> None:
-                    await emit({"stage": stage, "label": label, "stageIndex": idx, "agentId": resolved["agentId"]})
+                    await emit(
+                        {
+                            "stage": stage,
+                            "label": (label if reveal_secrets else "Running step"),
+                            "stageIndex": idx,
+                            "agentId": resolved["agentId"],
+                        }
+                    )
 
                 async def on_token(token: str) -> None:
                     nonlocal tokens_emitted
@@ -938,11 +1118,21 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
                 elif result.status == "error" and tokens_emitted == 0:
                     await emit({"token": text})
 
-                skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
+                skills_count = len(
+                    await get_skill_calls_by_message_id(
+                        assistant_message_id,
+                        user_id=current_user.user_id,
+                        is_admin=current_user.is_admin,
+                    )
+                )
                 await update_message_content(conv["id"], assistant_message_id, text, None, skills_count)
                 await save_stage_outputs(conv["id"], merged_stage_outputs, None)
 
-                token_usage = await get_token_usage(assistant_message_id)
+                token_usage = await get_token_usage(
+                    assistant_message_id,
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
                 await emit(
                     {
                         "done": True,
@@ -975,16 +1165,16 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
 
 
 @router.post("/api/chat/plan")
-async def p2_chat_plan(req: Request) -> dict[str, Any]:
+async def p2_chat_plan(req: Request, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     body = await req.json()
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
-    return await _create_plan_draft(body=body)
+    return await _create_plan_draft(body=body, current_user=current_user)
 
 
 @router.post("/api/chat/plan/stream")
-async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
+async def p2_chat_plan_stream(req: Request, current_user: Any = Depends(_require_phase2_user)) -> StreamingResponse:
     body = await req.json()
     message = str(body.get("message") or "").strip()
     if not message:
@@ -1004,7 +1194,7 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
             try:
                 _log("plan-stream-worker-start")
                 await emit({"stage": "thinking", "label": "Building plan", "stageIndex": 0})
-                result = await _create_plan_draft(body=body, emit_progress=emit_progress)
+                result = await _create_plan_draft(body=body, current_user=current_user, emit_progress=emit_progress)
                 _log("plan-stream-worker-done", plan_id=result.get("planId"), conversation_id=result.get("conversationId"))
                 await emit({
                     "done": True,
@@ -1034,16 +1224,24 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
 
 
 @router.post("/api/chat/plan/approve/stream")
-async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
+async def p2_approve_plan_stream(req: Request, current_user: Any = Depends(_require_phase2_user)) -> StreamingResponse:
     body = await req.json()
     plan_id = str(body.get("planId") or "").strip()
     if not plan_id:
         raise HTTPException(status_code=400, detail="planId is required")
 
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    resolved = await _resolve_agent_and_skill(body, current_user=current_user)
+    reveal_secrets = bool(current_user.is_admin) or not bool(resolved.get("isLocked"))
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    plan = await get_plan_run(plan_id)
+    plan = await get_plan_run(plan_id, user_id=current_user.user_id, is_admin=current_user.is_admin)
     if not plan:
         raise HTTPException(status_code=404, detail="plan not found")
     if plan.get("status") == "cancelled":
@@ -1052,10 +1250,30 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
         raise HTTPException(status_code=409, detail=f"plan is already {plan.get('status')}")
 
     if isinstance(body.get("planMarkdown"), str) and body.get("planMarkdown").strip():
-        await update_plan_run(plan_id, {"planMarkdown": body.get("planMarkdown")})
-    await update_plan_run(plan_id, {"status": "approved"})
+        await update_plan_run(
+            plan_id,
+            {"planMarkdown": body.get("planMarkdown")},
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+        )
+    await update_plan_run(
+        plan_id,
+        {"status": "approved"},
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
 
     assistant_message_id = await append_assistant_placeholder(conv["id"])
+    _log(
+        "approve-stream-start",
+        plan_id=plan_id,
+        conversation_id=conv.get("id"),
+        assistant_message_id=assistant_message_id,
+        agent_id=resolved.get("agentId"),
+        user_id=str(current_user.user_id),
+        is_admin=bool(current_user.is_admin),
+        is_super_admin=bool(getattr(current_user, "is_super_admin", False)),
+    )
 
     async def generator():
         queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -1071,10 +1289,15 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
             try:
                 exec_start_ms = _time.time() * 1000
                 tokens_emitted = 0
-                await update_plan_run(plan_id, {"status": "executing"})
+                await update_plan_run(
+                    plan_id,
+                    {"status": "executing"},
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
                 await emit({"stage": "thinking", "label": "Executing plan", "stageIndex": 0, "agentId": resolved["agentId"]})
-
                 steps = plan.get("planJson", {}).get("steps", []) if isinstance(plan.get("planJson"), dict) else []
+                _log("approve-stream-executing", plan_id=plan_id, conversation_id=conv.get("id"), step_count=len(steps))
                 plan_markdown_live = str(plan.get("planMarkdown") or "")
                 checklist_items = _parse_checklist_items(plan_markdown_live)
                 user_message = ""
@@ -1120,7 +1343,14 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                         step_args.setdefault("operationType", scope if scope in ("local", "global") else "")
                         step_args.setdefault("coveredRegion", str(result_block.get("coveredRegion") or ""))
 
-                    await emit({"stage": "running", "label": f"Running {sid}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
+                    await emit(
+                        {
+                            "stage": "running",
+                            "label": (f"Running {sid}" if reveal_secrets else "Running step"),
+                            "stageIndex": idx + 1,
+                            "agentId": resolved["agentId"],
+                        }
+                    )
 
                     run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
                     call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
@@ -1128,7 +1358,8 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                     page_worker_task: asyncio.Task | None = None
                     if _should_stream_page_nl(sid):
                         async def _page_worker() -> None:
-                            ai = AiHelper(provider="openai", temperature=0.2)
+                            # Prefer Claude when configured; avoid hard-failing on OpenAI quota.
+                            ai = AiHelper(temperature=0.2)
                             while True:
                                 meta = await page_queue.get()
                                 if meta is None:
@@ -1146,11 +1377,11 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                                         await append_skill_streamed_text(call_id, chunk)
                                     await save_token_usage(
                                         assistant_message_id,
-                                        OPENAI_MODEL,
+                                        (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL),
                                         r.input_tokens,
                                         r.output_tokens,
                                         stage=f"page-nl.{sid}",
-                                        provider="openai",
+                                        provider=("anthropic" if CLAUDE_API_KEY else "openai"),
                                     )
                                 except Exception:
                                     pass
@@ -1163,7 +1394,7 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                             "meta": {
                                 "kind": "skill-call",
                                 "id": run_id,
-                                "skillId": sid,
+                                "skillId": (sid if reveal_secrets else ""),
                                 "status": "running",
                                 "input": {"args": step_args},
                             },
@@ -1231,7 +1462,7 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                             "meta": {
                                 "kind": "skill-call",
                                 "id": run_id,
-                                "skillId": sid,
+                                "skillId": (sid if reveal_secrets else ""),
                                 "status": "error" if result.status == "error" else "done",
                                 "input": {"args": step_args},
                                 "outputSummary": (result.text or "")[:600],
@@ -1242,7 +1473,12 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                         changed_items = _mark_checklist_from_skill(checklist_items, sid, result.text or "")
                         if changed_items:
                             plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
-                            await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
+                            await update_plan_run(
+                                plan_id,
+                                {"planMarkdown": plan_markdown_live},
+                                user_id=current_user.user_id,
+                                is_admin=current_user.is_admin,
+                            )
                             if plan.get("planMessageId"):
                                 await update_message_content(
                                     conv["id"],
@@ -1266,10 +1502,26 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                     if result.text:
                         stage_outputs[sid] = result.text
 
-                formatter_calls = await get_skill_calls_by_message_id(assistant_message_id)
+                formatter_calls = await get_skill_calls_by_message_id(
+                    assistant_message_id,
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
+                last_heartbeat_s = _time.time()
                 async def _on_final_token(token: str) -> None:
                     nonlocal tokens_emitted
+                    nonlocal last_heartbeat_s
                     tokens_emitted += len(token)
+                    now_s = _time.time()
+                    if now_s - last_heartbeat_s >= 10:
+                        last_heartbeat_s = now_s
+                        _log(
+                            "approve-stream-final-formatter-heartbeat",
+                            plan_id=plan_id,
+                            conversation_id=conv.get("id"),
+                            output_chars=tokens_emitted,
+                            output_tokens_est=max(1, tokens_emitted // 4),
+                        )
                     await emit_progress(
                         {
                             "stage": "thinking",
@@ -1291,6 +1543,16 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                     contexts=resolved.get("contexts") or {},
                     on_token=_on_final_token,
                 )
+                _log(
+                    "approve-stream-final-formatter-done",
+                    plan_id=plan_id,
+                    conversation_id=conv.get("id"),
+                    provider=fmt.provider,
+                    model=fmt.model,
+                    input_tokens=fmt.input_tokens,
+                    output_tokens=fmt.output_tokens,
+                    output_chars=len(fmt.text or ""),
+                )
                 await save_token_usage(
                     assistant_message_id,
                     fmt.model,
@@ -1303,12 +1565,27 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                 if final_text and tokens_emitted == 0:
                     await emit({"token": final_text})
 
-                skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
+                skills_count = len(
+                    await get_skill_calls_by_message_id(
+                        assistant_message_id,
+                        user_id=current_user.user_id,
+                        is_admin=current_user.is_admin,
+                    )
+                )
                 await update_message_content(conv["id"], assistant_message_id, final_text, None, skills_count)
                 await save_stage_outputs(conv["id"], stage_outputs, None)
 
-                await update_plan_run(plan_id, {"status": "done"})
-                token_usage = await get_token_usage(assistant_message_id)
+                await update_plan_run(
+                    plan_id,
+                    {"status": "done"},
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
+                token_usage = await get_token_usage(
+                    assistant_message_id,
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
                 await emit(
                     {
                         "done": True,
@@ -1323,8 +1600,18 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                         "tokenUsage": token_usage,
                     }
                 )
+            except asyncio.CancelledError:
+                # Client disconnected (tab closed, network drop, etc.)
+                _log("approve-stream-worker-cancelled", plan_id=plan_id, conversation_id=conv.get("id"))
+                raise
             except Exception as exc:
-                await update_plan_run(plan_id, {"status": "error"})
+                _log("approve-stream-worker-error", error=str(exc), traceback=traceback.format_exc(), plan_id=plan_id, conversation_id=conv.get("id"))
+                await update_plan_run(
+                    plan_id,
+                    {"status": "error"},
+                    user_id=current_user.user_id,
+                    is_admin=current_user.is_admin,
+                )
                 await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
             finally:
                 done.set()
@@ -1342,8 +1629,14 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
 
 
 @router.get("/api/chat/messages")
-async def p2_chat_messages(conversationId: str | None = None) -> dict[str, Any]:
-    conv = await get_or_create_conversation(conversationId)
+async def p2_chat_messages(conversationId: str | None = None, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
+    conv = await get_or_create_conversation(
+        conversationId,
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return {
         "messages": conv.get("messages") or [],
         "conversationId": conv["id"],
@@ -1354,24 +1647,87 @@ async def p2_chat_messages(conversationId: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/api/chat/skill-calls")
-async def p2_chat_skill_calls(messageId: str | None = None) -> dict[str, Any]:
+async def p2_chat_skill_calls(messageId: str | None = None, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     if not messageId or not messageId.strip():
         raise HTTPException(status_code=400, detail="messageId is required")
-    return {"skillCalls": await get_skill_calls_by_message_id_full(messageId.strip())}
+    return {
+        "skillCalls": await get_skill_calls_by_message_id_full(
+            messageId.strip(),
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+        )
+    }
 
 
 @router.get("/api/chat/token-usage")
-async def p2_chat_token_usage(messageId: str | None = None) -> dict[str, Any]:
+async def p2_chat_token_usage(messageId: str | None = None, current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
     if not messageId or not messageId.strip():
         raise HTTPException(status_code=400, detail="messageId is required")
-    return await get_token_usage(messageId.strip())
+    return await get_token_usage(
+        messageId.strip(),
+        user_id=current_user.user_id,
+        is_admin=current_user.is_admin,
+    )
+
+
+@router.get("/api/chat/insight-feedback")
+async def p2_list_insight_feedback(
+    messageId: str | None = None,
+    current_user: Any = Depends(_require_phase2_user),
+) -> dict[str, Any]:
+    if not messageId or not messageId.strip():
+        raise HTTPException(status_code=400, detail="messageId is required")
+    items = await list_insight_feedback(messageId.strip(), user_id=current_user.user_id, is_admin=current_user.is_admin)
+    return {"feedback": items}
+
+
+@router.post("/api/chat/insight-feedback")
+async def p2_set_insight_feedback(
+    req: Request,
+    current_user: Any = Depends(_require_phase2_user),
+) -> dict[str, Any]:
+    body = await req.json()
+    message_id = str(body.get("messageId") or "").strip()
+    insight_index = body.get("insightIndex")
+    rating = body.get("rating")
+    if not message_id:
+        raise HTTPException(status_code=400, detail="messageId is required")
+    if insight_index is None:
+        raise HTTPException(status_code=400, detail="insightIndex is required")
+    if rating is None:
+        raise HTTPException(status_code=400, detail="rating is required")
+    try:
+        saved = await set_insight_feedback(
+            message_id,
+            insight_index=int(insight_index),
+            rating=int(rating),
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"feedback": saved}
 
 
 @router.get("/api/chat/conversations")
-async def p2_chat_conversations() -> dict[str, Any]:
-    return {"conversations": await list_conversations()}
+async def p2_chat_conversations(current_user: Any = Depends(_require_phase2_user)) -> dict[str, Any]:
+    return {
+        "conversations": await list_conversations(
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+        )
+    }
 
 
 @router.delete("/api/chat/conversations/{conversation_id}")
-async def p2_chat_delete_conversation(conversation_id: str) -> dict[str, bool]:
-    return {"ok": await delete_conversation(conversation_id)}
+async def p2_chat_delete_conversation(
+    conversation_id: str,
+    current_user: Any = Depends(_require_phase2_user),
+) -> dict[str, bool]:
+    return {
+        "ok": await delete_conversation(
+            conversation_id,
+            user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+        )
+    }

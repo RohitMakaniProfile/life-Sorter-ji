@@ -262,8 +262,8 @@ async def _emit_summary_token_usage(
                 "meta": {
                     "kind": "token-usage",
                     "stage": stage,
-                    "provider": "openai",
-                    "model": OPENAI_MODEL,
+                    "provider": ("anthropic" if CLAUDE_API_KEY else "openai"),
+                    "model": (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL),
                     "inputTokens": int(input_tokens or 0),
                     "outputTokens": int(output_tokens or 0),
                 },
@@ -285,7 +285,7 @@ async def _summarize_single(
     except Exception:
         return fallback_text
     raw_json = raw_json[:120_000]
-    ai = AiHelper(provider="openai", temperature=0.2)
+    ai = AiHelper(temperature=0.2)
     prompt = "\n".join(
         [
             f"Skill: {skill_id}",
@@ -328,7 +328,7 @@ async def _summarize_multi_page(
     if not isinstance(pages, list) or not pages:
         return await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
 
-    ai = AiHelper(provider="openai", temperature=0.2)
+    ai = AiHelper(temperature=0.2)
     blocks: list[str] = []
 
     for idx, item in enumerate(pages, start=1):

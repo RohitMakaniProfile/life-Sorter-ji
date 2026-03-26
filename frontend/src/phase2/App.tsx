@@ -5,6 +5,7 @@ import ChatPage from './pages/ChatPage';
 import ConversationsPage from './pages/ConversationsPage';
 import AgentsPage from './pages/AgentsPage';
 import AgentContextsPage from './pages/AgentContextsPage';
+import InternalGoogleLoginPage from './pages/InternalGoogleLoginPage';
 import { getConversations } from './api/client';
 import { UiAgentsProvider } from './context/UiAgentsContext';
 
@@ -45,6 +46,8 @@ function App({ basename = '' }: { basename?: string }) {
     <UiAgentsProvider>
       <BrowserRouter basename={basename || undefined}>
         <Routes>
+          <Route path="login-internal" element={<InternalGoogleLoginPage mode="internal" />} />
+          <Route path="login-admin" element={<InternalGoogleLoginPage mode="admin" />} />
           <Route path="/" element={<Layout />}>
             <Route index element={<Navigate to="/chat" replace />} />
             <Route path="chat" element={<DefaultChat />} />

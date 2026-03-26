@@ -1,9 +1,11 @@
-import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import VideoCard from './VideoCard';
 import type { AgentId, PipelineStage } from '../../api/client';
 import { downloadReportAsPdf } from '../../utils/downloadPdf';
+import { downloadMarkdownAsFile } from '../../utils/downloadMarkdown';
+import { getInsightFeedback, setInsightFeedback } from '../../api/client';
 import SidePanel from './SidePanel';
 import type { PipelineState as SharedPipelineState } from '../../types';
 
@@ -19,6 +21,7 @@ export interface RichMessage {
   skillsCount?: number;
   kind?: 'plan' | 'final';
   planId?: string;
+  todoState?: 'draft' | 'started';
 }
 
 export interface ChatUIProps {
@@ -101,28 +104,50 @@ const mdComponentsUser: React.ComponentProps<typeof ReactMarkdown>['components']
 const REPORT_THRESHOLD = 500; // chars — above this, show accordion
 const PREVIEW_LINES = 6;      // lines visible when collapsed
 
+function extractInsights(markdown: string): Array<{ index: number; title: string }> {
+  const out: Array<{ index: number; title: string }> = [];
+  const re = /^#{2,4}\s*Insight\s+(\d+)\s*:\s*(.+)\s*$/gim;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(markdown || ''))) {
+    const idx = Number(m[1]);
+    const title = String(m[2] || '').trim();
+    if (!Number.isFinite(idx) || idx <= 0) continue;
+    out.push({ index: idx, title: title || `Insight ${idx}` });
+  }
+  // de-dupe by index
+  const seen = new Set<number>();
+  return out.filter((x) => (seen.has(x.index) ? false : (seen.add(x.index), true)));
+}
+
 function PlanMessage({
   message,
   onOpenContext,
   onApprovePlan,
+  canEdit,
 }: {
   message: RichMessage;
   onOpenContext: (messageId: string) => void;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
+  canEdit: boolean;
 }) {
   const [draft, setDraft] = useState(message.content);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const started = message.todoState === 'started';
 
   useEffect(() => {
     setDraft(message.content);
   }, [message.content]);
 
+  useEffect(() => {
+    if (started) setEditing(false);
+  }, [started]);
+
   return (
     <div className="bg-white text-slate-800 border border-slate-200 rounded-2xl rounded-tl-none shadow-sm overflow-hidden w-full">
       <div className="px-5 pt-3.5 pb-2 flex items-start justify-between gap-3">
-        <div className="text-sm font-semibold text-slate-800">Plan (edit then approve)</div>
+        <div className="text-sm font-semibold text-slate-800">Todo (edit then start working)</div>
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -163,7 +188,7 @@ function PlanMessage({
         </div>
 
         {/* Editor (optional) */}
-        {editing && (
+        {editing && canEdit && !started && (
           <div className="mt-3">
             <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
               Editor
@@ -177,29 +202,33 @@ function PlanMessage({
           </div>
         )}
         <div className="flex justify-end gap-2 mt-3">
-          <button
-            type="button"
-            onClick={() => setEditing((v) => !v)}
-            className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            {editing ? 'Done editing' : 'Edit'}
-          </button>
-          <button
-            type="button"
-            disabled={!onApprovePlan || saving}
-            onClick={async () => {
-              if (!onApprovePlan || !message.planId) return;
-              setSaving(true);
-              try {
-                await onApprovePlan(message.planId, draft);
-              } finally {
-                setSaving(false);
-              }
-            }}
-            className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
-          >
-            {saving ? 'Starting…' : 'Approve & run'}
-          </button>
+          {canEdit && !started && (
+            <button
+              type="button"
+              onClick={() => setEditing((v) => !v)}
+              className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              {editing ? 'Done editing' : 'Edit todo'}
+            </button>
+          )}
+          {canEdit && !started && (
+            <button
+              type="button"
+              disabled={!onApprovePlan || saving}
+              onClick={async () => {
+                if (!onApprovePlan || !message.planId) return;
+                setSaving(true);
+                try {
+                  await onApprovePlan(message.planId, draft);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
+            >
+              {saving ? 'Starting…' : 'Start working'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -223,7 +252,14 @@ function AssistantMessage({
 }) {
   // Plan approval UI
   if (m.role === 'assistant' && m.kind === 'plan' && m.planId) {
-    return <PlanMessage message={m} onOpenContext={onOpenContext} onApprovePlan={onApprovePlan} />;
+    return (
+      <PlanMessage
+        message={m}
+        onOpenContext={onOpenContext}
+        onApprovePlan={onApprovePlan}
+        canEdit={isLast && m.todoState !== 'started'}
+      />
+    );
   }
 
   // Determine if this is a long report that needs the accordion.
@@ -242,6 +278,33 @@ function AssistantMessage({
   const previewContent = isReport
     ? m.content.split('\n').slice(0, PREVIEW_LINES).join('\n')
     : m.content;
+
+  const [insightFeedback, setInsightFeedbackState] = useState<Record<number, 1 | -1>>({});
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const insights = useMemo(() => (isReport ? extractInsights(m.content) : []), [isReport, m.content]);
+
+  useEffect(() => {
+    if (!m.messageId) return;
+    if (!isReport) return;
+    if (!insights.length) return;
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+    getInsightFeedback(m.messageId)
+      .then((r) => {
+        const map: Record<number, 1 | -1> = {};
+        for (const it of r.feedback || []) {
+          const idx = Number((it as any).insightIndex);
+          const rating = Number((it as any).rating);
+          if (Number.isFinite(idx) && (rating === 1 || rating === -1)) {
+            map[idx] = rating as 1 | -1;
+          }
+        }
+        setInsightFeedbackState(map);
+      })
+      .catch((e) => setFeedbackError(e instanceof Error ? e.message : 'Failed to load feedback'))
+      .finally(() => setFeedbackLoading(false));
+  }, [m.messageId, isReport, insights.length]);
 
   return (
     <div
@@ -344,17 +407,111 @@ function AssistantMessage({
                 <span className="text-[11px] text-slate-400 font-medium">
                   {loading ? 'Generating…' : 'Report ready'}
                 </span>
-                <button
-                  disabled={loading}
-                  onClick={() => downloadReportAsPdf(m.content)}
-                  className="flex items-center gap-1.5 px-4 py-1.5 bg-violet-600 hover:bg-violet-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all shadow-sm"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  Download PDF
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={loading}
+                    onClick={() => downloadMarkdownAsFile(m.content, m.agentId ? String(m.agentId) : 'ikshan-report')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 hover:bg-slate-50 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold rounded-lg transition-all"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download MD
+                  </button>
+                  <button
+                    disabled={loading}
+                    onClick={() => downloadReportAsPdf(m.content)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 bg-violet-600 hover:bg-violet-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all shadow-sm"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download PDF
+                  </button>
+                </div>
               </div>
+
+              {/* Insight feedback */}
+              {m.messageId && insights.length > 0 && (
+                <div className="px-5 py-3 border-t border-slate-100">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="text-[11px] font-semibold text-slate-600">Insight feedback</div>
+                    <div className="text-[11px] text-slate-400">
+                      {feedbackLoading ? 'Loading…' : 'Thumbs up/down per insight'}
+                    </div>
+                  </div>
+                  {feedbackError && (
+                    <div className="mb-2 text-[11px] text-red-600">
+                      {feedbackError}
+                    </div>
+                  )}
+                  <div className="max-h-[180px] overflow-y-auto pr-1 space-y-1">
+                    {insights.map((it) => {
+                      const rating = insightFeedback[it.index];
+                      const upOn = rating === 1;
+                      const downOn = rating === -1;
+                      return (
+                        <div key={it.index} className="flex items-center gap-2 py-1">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[11px] text-slate-700 truncate">
+                              <span className="font-mono text-slate-400 mr-2">#{it.index}</span>
+                              {it.title}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={feedbackLoading}
+                            onClick={async () => {
+                              if (!m.messageId) return;
+                              setFeedbackLoading(true);
+                              setFeedbackError(null);
+                              try {
+                                const next: 1 | -1 = 1;
+                                await setInsightFeedback({ messageId: m.messageId, insightIndex: it.index, rating: next });
+                                setInsightFeedbackState((prev) => ({ ...prev, [it.index]: next }));
+                              } catch (e) {
+                                setFeedbackError(e instanceof Error ? e.message : 'Failed to save feedback');
+                              } finally {
+                                setFeedbackLoading(false);
+                              }
+                            }}
+                            className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
+                              upOn ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                            }`}
+                            title="Thumbs up"
+                          >
+                            👍
+                          </button>
+                          <button
+                            type="button"
+                            disabled={feedbackLoading}
+                            onClick={async () => {
+                              if (!m.messageId) return;
+                              setFeedbackLoading(true);
+                              setFeedbackError(null);
+                              try {
+                                const next: 1 | -1 = -1;
+                                await setInsightFeedback({ messageId: m.messageId, insightIndex: it.index, rating: next });
+                                setInsightFeedbackState((prev) => ({ ...prev, [it.index]: next }));
+                              } catch (e) {
+                                setFeedbackError(e instanceof Error ? e.message : 'Failed to save feedback');
+                              } finally {
+                                setFeedbackLoading(false);
+                              }
+                            }}
+                            className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
+                              downOn ? 'bg-red-50 border-red-200 text-red-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                            }`}
+                            title="Thumbs down"
+                          >
+                            👎
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

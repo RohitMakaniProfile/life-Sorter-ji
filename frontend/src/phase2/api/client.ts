@@ -39,8 +39,114 @@ function getApiBase(): string {
   return getApiBaseRequired();
 }
 
+const PHASE2_JWT_STORAGE_KEY = 'ikshan.phase2.jwt';
+let isRedirectingOn401 = false;
+
+function getPhase2Jwt(): string | null {
+  try {
+    const raw = window.localStorage.getItem(PHASE2_JWT_STORAGE_KEY);
+    return raw ? String(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodePhase2JwtPayload(token: string): any | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const payloadB64Url = parts[1];
+    const payloadB64 = payloadB64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = '='.repeat((4 - (payloadB64.length % 4)) % 4);
+    const json = atob(payloadB64 + pad);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+export function getPhase2JwtPayload(): any | null {
+  const token = getPhase2Jwt();
+  if (!token) return null;
+  return decodePhase2JwtPayload(token);
+}
+
+export function getPhase2JwtTokenPrefix(): string | null {
+  const token = getPhase2Jwt();
+  if (!token) return null;
+  return String(token).slice(0, 18);
+}
+
+export function getPhase2UserId(): string | null {
+  const payload = getPhase2JwtPayload();
+  const sub = payload?.sub;
+  return typeof sub === 'string' && sub.trim() ? sub.trim() : null;
+}
+
+export function getPhase2IsSuperAdmin(): boolean {
+  const token = getPhase2Jwt();
+  if (!token) return false;
+  const payload = decodePhase2JwtPayload(token);
+  return Boolean(payload?.super);
+}
+
+export function getPhase2IsAdmin(): boolean {
+  const token = getPhase2Jwt();
+  if (!token) return false;
+  const payload = decodePhase2JwtPayload(token);
+  return Boolean(payload?.admin);
+}
+
+function maybeRedirectToLogin(): void {
+  try {
+    if (isRedirectingOn401) return;
+    const path = window.location.pathname || '';
+    if (path.startsWith('/phase2/login-internal') || path.startsWith('/phase2/login-admin')) {
+      return; // avoid loops
+    }
+
+    // Phase2 app is mounted at /phase2.
+    // Intentionally do NOT include `next` to avoid redirect loops creating huge URLs.
+    isRedirectingOn401 = true;
+    window.localStorage.removeItem(PHASE2_JWT_STORAGE_KEY);
+    window.location.href = '/phase2/login-internal';
+  } catch {
+    // ignore
+  } finally {
+    // Keep it conservative; in practice the navigation will happen immediately.
+    setTimeout(() => {
+      isRedirectingOn401 = false;
+    }, 5000);
+  }
+}
+
+function withAuthHeaders(headers: HeadersInit | undefined): HeadersInit {
+  const token = getPhase2Jwt();
+  if (!token) return headers ?? {};
+  const base: Record<string, string> = {};
+  if (headers) {
+    if (headers instanceof Headers) {
+      headers.forEach((v, k) => (base[k] = v));
+    } else if (Array.isArray(headers)) {
+      for (const [k, v] of headers) base[k] = v;
+    } else {
+      Object.assign(base, headers as any);
+    }
+  }
+  base['Authorization'] = `Bearer ${token}`;
+  return base;
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  return fetch(`${getApiBase()}${path}`, { ...options, credentials: 'include' });
+  const res = await fetch(`${getApiBase()}${path}`, {
+    ...options,
+    headers: withAuthHeaders(options.headers),
+    credentials: 'include',
+  });
+  if (res.status === 401) {
+    maybeRedirectToLogin();
+  }
+  return res;
 }
 
 export interface ChatMessage {
@@ -86,7 +192,7 @@ export async function createPlanStream(opts: {
 }): Promise<StreamResult> {
   const res = await fetch(`${getApiBase()}/api/chat/plan/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify({
       message: opts.message,
@@ -95,6 +201,7 @@ export async function createPlanStream(opts: {
       cancelPlanId: opts.cancelPlanId,
     }),
   });
+  if (res.status === 401) maybeRedirectToLogin();
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Plan request failed' })) as { error?: string };
     throw new Error(err.error ?? 'Plan request failed');
@@ -111,10 +218,11 @@ export async function approvePlanStream(opts: {
 }): Promise<StreamResult> {
   const res = await fetch(`${getApiBase()}/api/chat/plan/approve/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(opts),
   });
+  if (res.status === 401) maybeRedirectToLogin();
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Approve request failed' })) as { error?: string };
     throw new Error(err.error ?? 'Approve request failed');
@@ -169,6 +277,39 @@ export async function getTokenUsage(messageId: string): Promise<TokenUsage> {
   const res = await apiFetch(`/api/chat/token-usage?messageId=${encodeURIComponent(messageId)}`);
   if (!res.ok) throw new Error('Failed to load token usage');
   return res.json() as Promise<TokenUsage>;
+}
+
+// ─── Insight feedback API ─────────────────────────────────────────────────────
+
+export type InsightFeedbackRating = 1 | -1;
+
+export interface InsightFeedbackEntry {
+  insightIndex: number;
+  rating: InsightFeedbackRating;
+  updatedAt?: string;
+}
+
+export async function getInsightFeedback(messageId: string): Promise<{ feedback: InsightFeedbackEntry[] }> {
+  const res = await apiFetch(`/api/chat/insight-feedback?messageId=${encodeURIComponent(messageId)}`);
+  if (!res.ok) throw new Error('Failed to load insight feedback');
+  return res.json() as Promise<{ feedback: InsightFeedbackEntry[] }>;
+}
+
+export async function setInsightFeedback(opts: {
+  messageId: string;
+  insightIndex: number;
+  rating: InsightFeedbackRating;
+}): Promise<{ feedback: InsightFeedbackEntry }> {
+  const res = await apiFetch('/api/chat/insight-feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string; error?: string };
+    throw new Error(err.detail ?? err.error ?? 'Failed to save feedback');
+  }
+  return res.json() as Promise<{ feedback: InsightFeedbackEntry }>;
 }
 
 export interface ConversationSummary {
@@ -384,6 +525,9 @@ export interface UiAgent {
   name: string;
   emoji: string;
   description: string;
+  isLocked?: boolean;
+  visibility?: 'public' | 'private';
+  createdByUserId?: string | null;
   allowedSkillIds: string[];
   skillSelectorContext?: string;
   finalOutputFormattingContext?: string;

@@ -58,7 +58,7 @@ export default function AssistantMessage({
     return (
       <div className="bg-white border rounded-xl p-4 max-w-[70%] w-full">
         <div className="flex items-start justify-between gap-3 mb-2">
-          <div className="text-sm font-semibold text-slate-800">Plan (edit then approve)</div>
+          <div className="text-sm font-semibold text-slate-800">Todo (edit then start working)</div>
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -110,7 +110,7 @@ export default function AssistantMessage({
             onClick={() => setEditing((v) => !v)}
             className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
-            {editing ? 'Done editing' : 'Edit'}
+            {editing ? 'Done editing' : 'Edit todo'}
           </button>
           <button
             type="button"
@@ -126,7 +126,7 @@ export default function AssistantMessage({
             }}
             className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
           >
-            {saving ? 'Starting…' : 'Approve & run'}
+            {saving ? 'Starting…' : 'Start working'}
           </button>
         </div>
       </div>

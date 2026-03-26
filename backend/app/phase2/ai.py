@@ -13,6 +13,7 @@ class AiChatResult:
     message: str
     input_tokens: int
     output_tokens: int
+    stop_reason: str | None = None
 
 
 class AiHelper:
@@ -61,9 +62,14 @@ class AiHelper:
         )
 
         content = (response.choices[0].message.content or "").strip()
+        stop_reason = None
+        try:
+            stop_reason = response.choices[0].finish_reason  # type: ignore[attr-defined]
+        except Exception:
+            stop_reason = None
         input_tokens = response.usage.prompt_tokens if response.usage else 0
         output_tokens = response.usage.completion_tokens if response.usage else 0
-        return AiChatResult(message=content, input_tokens=input_tokens, output_tokens=output_tokens)
+        return AiChatResult(message=content, input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason)
 
     async def chat_stream(
         self,
@@ -117,8 +123,13 @@ class AiHelper:
             if final.usage:
                 input_tokens = final.usage.prompt_tokens
                 output_tokens = final.usage.completion_tokens
+            stop_reason = None
+            try:
+                stop_reason = final.choices[0].finish_reason  # type: ignore[attr-defined]
+            except Exception:
+                stop_reason = None
 
-        return AiChatResult(message=full_text.strip(), input_tokens=input_tokens, output_tokens=output_tokens)
+        return AiChatResult(message=full_text.strip(), input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason)
 
     async def _chat_stream_anthropic(
         self,
@@ -157,8 +168,13 @@ class AiHelper:
             if final_msg.usage:
                 input_tokens = final_msg.usage.input_tokens
                 output_tokens = final_msg.usage.output_tokens
+            stop_reason = None
+            try:
+                stop_reason = str(getattr(final_msg, "stop_reason", None) or "") or None
+            except Exception:
+                stop_reason = None
 
-        return AiChatResult(message=full_text.strip(), input_tokens=input_tokens, output_tokens=output_tokens)
+        return AiChatResult(message=full_text.strip(), input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason)
 
     async def _chat_anthropic(
         self,
@@ -183,6 +199,11 @@ class AiHelper:
         )
 
         content = (response.content[0].text if response.content else "").strip()
+        stop_reason = None
+        try:
+            stop_reason = str(getattr(response, "stop_reason", None) or "") or None
+        except Exception:
+            stop_reason = None
         input_tokens = response.usage.input_tokens if response.usage else 0
         output_tokens = response.usage.output_tokens if response.usage else 0
-        return AiChatResult(message=content, input_tokens=input_tokens, output_tokens=output_tokens)
+        return AiChatResult(message=content, input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason)

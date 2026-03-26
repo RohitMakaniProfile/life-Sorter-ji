@@ -5,6 +5,8 @@ import { useUiAgents } from '../context/UiAgentsContext';
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { agents, activeAgentId } = useUiAgents();
+  const PHASE2_JWT_STORAGE_KEY = 'ikshan.phase2.jwt';
+  const ACTIVE_KEY = 'ikshan-active-agent-id';
   const agentDef = agents.find((a) => a.id === activeAgentId) ?? agents[0] ?? {
     id: 'amazon-video',
     name: 'Agent',
@@ -71,6 +73,23 @@ export default function Layout() {
               <p className="text-[10px] text-slate-400">Local agent active</p>
             </div>
             <span className="ml-auto w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+          </div>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  window.localStorage.removeItem(PHASE2_JWT_STORAGE_KEY);
+                  window.localStorage.removeItem(ACTIVE_KEY);
+                } catch {
+                  // ignore
+                }
+                window.location.href = '/phase2/login-internal';
+              }}
+              className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </aside>

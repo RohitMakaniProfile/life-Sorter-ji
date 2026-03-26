@@ -56,7 +56,7 @@ Evidence-first execution rules
 
 Skill routing policy by phase
 
-- Phase 1 (start): if website URL exists and `business-scan` not run this turn, run in parallel:
+* Phase 1 (start): if website URL exists and `business-scan` not run this turn, run in parallel:
   - `business-scan`
   - `scrape-playwright` (strict default crawler on same domain; use JS-rendered extraction)
   - Use `scrape-bs4` only for clearly static/simple pages if explicitly required.
@@ -65,26 +65,30 @@ Skill routing policy by phase
   - **B2C add**: product catalog, promotions, cart/checkout hints, consumer policies, loyalty/community.
   - Ignore blog/news unless explicitly needed by user.
 
-- Phase 2 (mandatory): run `platform-scout` with grounding inputs from on-site evidence.
-  - Must infer: market/category, **B2B vs B2C (or hybrid)**, scope (local/global), covered region granularity, prioritized platform hypotheses, and concrete query sets for reviews/listings, competitors, discussions, funding/news (if relevant).
+### Phase 2 (mandatory): run `platform-scout` with grounding inputs from on-site evidence
 
-- Phase 3 (mandatory): run `web-search` using top-priority scout queries.
-  - Goal: concrete URLs for exact-business reviews/listings, close competitors, and region/ecosystem-specific directories/marketplaces.
-  - If insufficient: iterate `platform-scout` refinement → `web-search`.
+- Must infer: market/category, **B2B vs B2C (or hybrid)**, scope (local/global), covered region granularity, prioritized platform hypotheses, and concrete query sets for reviews/listings, competitors, discussions, funding/news (if relevant).
 
-- Phase 4: run `platform-taxonomy` on discovered links from crawl + search.
+### Phase 3 (mandatory): run `web-search` using top-priority scout queries
 
-- Phase 5: run `classify-links` using taxonomy output against crawl/search URLs.
+- Goal: concrete URLs for exact-business reviews/listings, close competitors, and region/ecosystem-specific directories/marketplaces.
+- If insufficient: iterate `platform-scout` refinement → `web-search`.
 
-- Phase 6 (targeted collection):
-  - Reviews first: use `scrape-googlebusiness` when local + listing identity is strong.
-  - Scrape review/listing pages via `scrape-playwright`.
-  - Collect competitor evidence from competitor sites/listings/reviews with same scraping rules.
-  - Run optional sentiment skills (`instagram-sentiment`, `youtube-sentiment`, `playstore-sentiment`) when identifiers are verified and **category-appropriate** (e.g. stronger default pull for B2C brand/social proof; for B2B use when brand/channel is clearly buyer-relevant).
+### Phase 4: run `platform-taxonomy` on discovered links from crawl + search
 
-- Phase 7 (gap-fill):
-  - Fill gaps using the active **B2B or B2C lens** (see definitions above): e.g. B2C → sentiment, preference, checkout friction; B2B → ROI narrative, decision criteria, competitive displacement, procurement clarity.
-  - Repeat Scout → Search → Taxonomy → Classify → Collect until stop condition is met.
+### Phase 5: run `classify-links` using taxonomy output against crawl/search URLs
+
+### Phase 6 (targeted collection)
+
+- Reviews first: use `scrape-googlebusiness` when local + listing identity is strong.
+- Scrape review/listing pages via `scrape-playwright`.
+- Collect competitor evidence from competitor sites/listings/reviews with same scraping rules.
+- Run optional sentiment skills (`instagram-sentiment`, `youtube-sentiment`, `playstore-sentiment`) when identifiers are verified and **category-appropriate** (e.g. stronger default pull for B2C brand/social proof; for B2B use when brand/channel is clearly buyer-relevant).
+
+### Phase 7 (gap-fill)
+
+- Fill gaps using the active **B2B or B2C lens** (see definitions above): e.g. B2C → sentiment, preference, checkout friction; B2B → ROI narrative, decision criteria, competitive displacement, procurement clarity.
+- Repeat Scout → Search → Taxonomy → Classify → Collect until stop condition is met.
 
 Stop condition (`done=true`)
 
