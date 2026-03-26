@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getApiBaseRequired } from '../../config/apiBase';
 
@@ -31,8 +31,10 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
   }
   const forceLogin = ['1', 'true', 'yes'].includes((params.get('force') || '').toLowerCase());
   const [ready, setReady] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const buttonRef = useRef<HTMLDivElement | null>(null);
+  const didInitRef = useRef(false);
 
   const clientId = useMemo(() => (import.meta as any).env.VITE_GOOGLE_CLIENT_ID as string | undefined, []);
   const API_BASE = useMemo(() => getApiBaseRequired(), []);
@@ -76,22 +78,22 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
     };
   }, [navigate, next]);
 
-  const start = async () => {
+  useEffect(() => {
     setError(null);
-    if (!clientId) {
-      setError('Google Sign-In is not configured (missing VITE_GOOGLE_CLIENT_ID).');
-      return;
-    }
-    if (!window.google?.accounts?.id) {
-      setError('Google Sign-In library not loaded. Please refresh and try again.');
-      return;
-    }
+    if (!clientId) return;
+    if (!ready) return;
+    if (!window.google?.accounts?.id) return;
+    if (!buttonRef.current) return;
+    if (didInitRef.current) return;
 
-    setLoading(true);
+    didInitRef.current = true;
     try {
       window.google.accounts.id.initialize({
         client_id: clientId,
+        // Opt-in to FedCM (Google is migrating One Tap / prompts).
+        use_fedcm_for_prompt: true,
         callback: async (response: any) => {
+          setLoading(true);
           try {
             const idToken = String(response?.credential || '').trim();
             if (!idToken) throw new Error('Missing credential from Google');
@@ -126,27 +128,19 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
         },
       });
 
-      window.google.accounts.id.prompt((notification: any) => {
-        try {
-          const skipped =
-            Boolean(notification?.isSkippedMoment?.()) ||
-            Boolean(notification?.isNotDisplayed?.()) ||
-            Boolean(notification?.isDismissedMoment?.());
-          if (skipped) {
-            // eslint-disable-next-line no-console
-            console.warn('[phase2 login] google prompt skipped/not displayed', {
-              reason: notification?.getNotDisplayedReason?.() || notification?.getSkippedReason?.() || '',
-            });
-          }
-        } catch {
-          // ignore prompt callback issues
-        }
+      // Use the supported rendered button instead of One Tap prompt().
+      buttonRef.current.innerHTML = '';
+      window.google.accounts.id.renderButton(buttonRef.current, {
+        theme: 'filled_black',
+        size: 'large',
+        shape: 'rectangular',
+        text: 'continue_with',
+        width: 320,
       });
     } catch (e: any) {
       setError(e?.message || 'Login failed');
-      setLoading(false);
     }
-  };
+  }, [API_BASE, clientId, navigate, next, ready]);
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
@@ -160,13 +154,9 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
         </p>
 
         <div className="mt-5 flex flex-col gap-3">
-          <button
-            className="w-full rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-700 px-4 py-2 font-medium"
-            onClick={start}
-            disabled={!ready || loading}
-          >
-            {loading ? 'Signing in…' : (ready ? 'Continue with Google' : 'Loading Google…')}
-          </button>
+          <div className="flex justify-center">
+            <div ref={buttonRef} />
+          </div>
 
           <button
             className="w-full rounded-lg border border-zinc-700 hover:bg-zinc-800 px-4 py-2 text-sm"
@@ -188,6 +178,12 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
         <div className="mt-4 text-xs text-zinc-500">
           Next: <span className="text-zinc-300">{next}</span>
         </div>
+
+        {!clientId && (
+          <div className="mt-3 text-xs text-amber-300 bg-amber-950/30 border border-amber-900 rounded-lg p-3">
+            Missing <code className="text-amber-200">VITE_GOOGLE_CLIENT_ID</code>. Set it in your deployment env and rebuild.
+          </div>
+        )}
       </div>
     </div>
   );
