@@ -7,7 +7,8 @@ on:
       - production
     paths:
       - 'backend/**'
-      - '.github/workflows/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/cloudrun/**'
   workflow_dispatch:
 
 jobs:
