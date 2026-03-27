@@ -264,7 +264,13 @@ async def delete_agent(agent_id: str) -> bool:
     return result.endswith("1")
 
 
-async def get_or_create_conversation(conversation_id: str | None, agent_id: str | None = None) -> dict[str, Any]:
+async def get_or_create_conversation(
+    conversation_id: str | None,
+    agent_id: str | None = None,
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     existing = await get_conversation(conversation_id) if conversation_id else None
     if existing:
         return existing
@@ -276,17 +282,44 @@ async def get_or_create_conversation(conversation_id: str | None, agent_id: str 
         all_agents = await list_agents()
         selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
 
+    sid = (session_id or "").strip() or None
+    uid = (user_id or "").strip() or None
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if uid:
+            existing_for_user = await conn.fetchrow(
+                "SELECT id FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+                uid,
+            )
+            if existing_for_user:
+                return await get_conversation(str(existing_for_user["id"])) or {}
+        elif sid:
+            existing_for_session = await conn.fetchrow(
+                """
+                SELECT id
+                FROM conversations
+                WHERE session_id = $1 AND user_id IS NULL
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                sid,
+            )
+            if existing_for_session:
+                return await get_conversation(str(existing_for_session["id"])) or {}
+
     cid = str(uuid4())
     now = now_dt()
-    pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
             """,
             cid,
             selected_agent,
+            sid,
+            uid,
             now,
             now,
         )
@@ -342,6 +375,8 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
     return {
         "id": conv["id"],
         "agentId": conv["agent_id"] or DEFAULT_AGENT_ID,
+        "sessionId": conv["session_id"],
+        "userId": conv["user_id"],
         "title": conv["title"] or None,
         "messages": [_message_from_row(m) for m in messages],
         "lastStageOutputs": {str(k): str(v) for k, v in stage_outputs.items() if isinstance(v, str)},
@@ -521,10 +556,32 @@ async def get_stage_outputs(conversation_id: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in obj.items() if isinstance(v, str)}
 
 
-async def list_conversations() -> list[dict[str, Any]]:
+async def list_conversations(
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
     pool = get_pool()
+    sid = (session_id or "").strip()
+    uid = (user_id or "").strip()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM conversations ORDER BY updated_at DESC")
+        if uid:
+            rows = await conn.fetch(
+                "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
+                uid,
+            )
+        elif sid:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM conversations
+                WHERE session_id = $1 OR (session_id = $1 AND user_id IS NULL)
+                ORDER BY updated_at DESC
+                """,
+                sid,
+            )
+        else:
+            rows = await conn.fetch("SELECT * FROM conversations ORDER BY updated_at DESC")
     out: list[dict[str, Any]] = []
     for r in rows:
         count = 0
@@ -534,6 +591,8 @@ async def list_conversations() -> list[dict[str, Any]]:
             {
                 "id": r["id"],
                 "agentId": r["agent_id"] or DEFAULT_AGENT_ID,
+                "sessionId": r["session_id"],
+                "userId": r["user_id"],
                 "title": r["title"] or "New conversation",
                 "messageCount": count,
                 "createdAt": r["created_at"],
@@ -852,20 +911,56 @@ async def save_token_usage(
     *,
     stage: str | None = None,
     provider: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     pool = get_pool()
     encoded_model = _encode_token_usage_model(model, stage, provider)
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO token_usage (message_id, model, input_tokens, output_tokens)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO token_usage (message_id, session_id, model, input_tokens, output_tokens)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             message_id,
+            (session_id or "").strip() or None,
             encoded_model,
             input_tokens,
             output_tokens,
         )
+
+
+async def promote_session_conversations(session_id: str, user_id: str) -> dict[str, Any]:
+    sid = (session_id or "").strip()
+    uid = (user_id or "").strip()
+    if not sid or not uid:
+        return {"updatedConversations": 0}
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            updated = await conn.execute(
+                """
+                UPDATE conversations
+                SET user_id = $2, updated_at = NOW()
+                WHERE session_id = $1 AND (user_id IS NULL OR user_id = '')
+                """,
+                sid,
+                uid,
+            )
+            await conn.execute(
+                """
+                INSERT INTO session_user_links (session_id, user_id, linked_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (session_id, user_id) DO NOTHING
+                """,
+                sid,
+                uid,
+            )
+    try:
+        count = int((updated or "UPDATE 0").split()[-1])
+    except Exception:
+        count = 0
+    return {"updatedConversations": count}
 
 
 async def get_token_usage(message_id: str) -> dict[str, Any]:

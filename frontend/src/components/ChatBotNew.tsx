@@ -1471,8 +1471,10 @@ const DOMAIN_TASKS = {
 // LocalStorage keys
 const STORAGE_KEYS = {
   CHAT_HISTORY: 'ikshan-chat-history',
+  CURRENT_CHAT: 'ikshan-current-chat',
   USER_NAME: 'ikshan-user-name',
-  USER_EMAIL: 'ikshan-user-email'
+  USER_EMAIL: 'ikshan-user-email',
+  AUTH_TOKEN: 'ikshan-auth-token'
 };
 
 // Helper to safely parse JSON from localStorage
@@ -1491,6 +1493,22 @@ const saveToStorage = (key, value) => {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (error) {
     // Storage might be full or disabled - fail silently
+  }
+};
+
+const getAuthToken = () => {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+  } catch {
+    return null;
+  }
+};
+
+const clearAuthToken = () => {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+  } catch {
+    // Ignore localStorage errors.
   }
 };
 
@@ -1580,8 +1598,8 @@ const ChatBotNew = ({ onNavigate }) => {
   const [selectedDomainName, setSelectedDomainName] = useState(null);
   const [userRole, setUserRole] = useState(null);
   const [requirement, setRequirement] = useState(null);
-  const [userName, setUserName] = useState(null);
-  const [userEmail, setUserEmail] = useState(null);
+  const [userName, setUserName] = useState(() => getFromStorage(STORAGE_KEYS.USER_NAME, null));
+  const [userEmail, setUserEmail] = useState(() => getFromStorage(STORAGE_KEYS.USER_EMAIL, null));
   const [flowStage, setFlowStage] = useState('outcome');
 
   // ── OTP Auth State ─────────────────────────────────────────
@@ -1615,6 +1633,7 @@ const ChatBotNew = ({ onNavigate }) => {
   const scaleAnswersRef = useRef({}); // ref to avoid stale closures
   const [scaleFormSelections, setScaleFormSelections] = useState({}); // {questionId: selectedOption}
   const [scaleFormSubmitted, setScaleFormSubmitted] = useState(false);
+  const hasHydratedChatRef = useRef(false);
 
   // ── Precision Questions State ──────────────────────────────
   const [precisionQuestions, setPrecisionQuestions] = useState([]);
@@ -1629,6 +1648,46 @@ const ChatBotNew = ({ onNavigate }) => {
   const [websiteSnapshot, setWebsiteSnapshot] = useState(null); // crawl insights shown during playbook gen
 
   const API_BASE = getApiBaseRequired();
+
+  // Validate persisted JWT on refresh and recover auth identity.
+  useEffect(() => {
+    let cancelled = false;
+    const token = getAuthToken();
+    if (!token) return;
+
+    const verifyToken = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/auth/me`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!res.ok) {
+          clearAuthToken();
+          if (!cancelled) {
+            setUserName(null);
+            setUserEmail(null);
+          }
+          return;
+        }
+
+        const data = await res.json();
+        if (!cancelled && data?.user) {
+          setUserName(data.user.name || 'User');
+          setUserEmail(data.user.email || data.user.user_id || null);
+        }
+      } catch {
+        clearAuthToken();
+      }
+    };
+
+    verifyToken();
+    return () => {
+      cancelled = true;
+    };
+  }, [API_BASE]);
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;
@@ -1777,6 +1836,64 @@ const ChatBotNew = ({ onNavigate }) => {
       saveToStorage(STORAGE_KEYS.CHAT_HISTORY, chatHistory);
     }
   }, [chatHistory]);
+
+  // Persist signed-in identity so refresh keeps user context.
+  useEffect(() => {
+    if (userName) {
+      saveToStorage(STORAGE_KEYS.USER_NAME, userName);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.USER_NAME);
+    }
+  }, [userName]);
+
+  useEffect(() => {
+    if (userEmail) {
+      saveToStorage(STORAGE_KEYS.USER_EMAIL, userEmail);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.USER_EMAIL);
+    }
+  }, [userEmail]);
+
+  // Persist currently open chat so refresh restores ongoing conversation.
+  useEffect(() => {
+    if (!hasHydratedChatRef.current) return;
+    if (messages.length > 0) {
+      saveToStorage(STORAGE_KEYS.CURRENT_CHAT, {
+        messages,
+        flowStage,
+        timestamp: new Date(),
+      });
+    }
+  }, [messages, flowStage]);
+
+  // Restore active chat once identity is available on refresh.
+  useEffect(() => {
+    hasHydratedChatRef.current = false;
+    if (!userEmail) {
+      hasHydratedChatRef.current = true;
+      return;
+    }
+
+    const restoreMessages = (list) =>
+      (list || []).map((msg) => ({
+        ...msg,
+        timestamp: new Date(msg.timestamp),
+      }));
+
+    const current = getFromStorage(STORAGE_KEYS.CURRENT_CHAT, null);
+    if (current?.messages?.length > 1) {
+      setMessages(restoreMessages(current.messages));
+      setFlowStage(current.flowStage || 'complete');
+      hasHydratedChatRef.current = true;
+      return;
+    }
+
+    if (chatHistory.length > 0) {
+      setMessages(restoreMessages(chatHistory[0].messages));
+      setFlowStage('complete');
+    }
+    hasHydratedChatRef.current = true;
+  }, [userEmail]);
 
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -2034,11 +2151,64 @@ const ChatBotNew = ({ onNavigate }) => {
     window.google.accounts.id.prompt();
   };
 
-  const handleGoogleCallback = (response) => {
-    const payload = JSON.parse(atob(response.credential.split('.')[1]));
-    setUserName(payload.name);
-    setUserEmail(payload.email);
-    setShowAuthModal(false);
+  const handleGoogleCallback = async (response) => {
+    let payload;
+    try {
+      payload = JSON.parse(atob(response.credential.split('.')[1]));
+    } catch {
+      const errorMessage = {
+        id: generateUniqueId(),
+        text: '⚠️ Google sign-in failed. Please try again.',
+        sender: 'bot',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      return;
+    }
+
+    const sid = await ensureSession();
+    if (!sid) {
+      const errorMessage = {
+        id: generateUniqueId(),
+        text: '⚠️ Could not create login session. Please retry.',
+        sender: 'bot',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sid,
+          google_id: payload.sub,
+          email: payload.email,
+          name: payload.name,
+          avatar_url: payload.picture || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success || !data?.token) {
+        throw new Error(data?.detail || data?.message || 'Google login failed');
+      }
+
+      saveToStorage(STORAGE_KEYS.AUTH_TOKEN, data.token);
+      setUserName(data?.user?.name || payload.name || 'User');
+      setUserEmail(data?.user?.email || payload.email || null);
+      setShowAuthModal(false);
+    } catch {
+      const errorMessage = {
+        id: generateUniqueId(),
+        text: '⚠️ Sign-in could not be completed with backend. Please try again.',
+        sender: 'bot',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      return;
+    }
 
     // If auth-gate before recommendations, proceed directly
     if (pendingAuthActionRef.current === 'recommendations') {
@@ -2126,11 +2296,16 @@ const ChatBotNew = ({ onNavigate }) => {
       });
       const data = await res.json();
       if (data.verified) {
+        if (data?.token) {
+          saveToStorage(STORAGE_KEYS.AUTH_TOKEN, data.token);
+        }
         setOtpVerified(true);
         setShowAuthModal(false);
         setOtpStep('phone');
         setOtpCode('');
         setOtpError('');
+        if (data?.user?.name) setUserName(data.user.name);
+        if (data?.user?.email || data?.user?.user_id) setUserEmail(data.user.email || data.user.user_id);
 
         // Proceed to playbook if auth-gated
         if (pendingAuthActionRef.current === 'recommendations') {
@@ -2191,6 +2366,7 @@ const ChatBotNew = ({ onNavigate }) => {
     setRequirement(null);
     setUserName(null);
     setUserEmail(null);
+    clearAuthToken();
     setCustomRole('');
     setSelectedCategory(null);
     setCustomCategoryInput('');

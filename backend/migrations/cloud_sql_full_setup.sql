@@ -314,12 +314,20 @@ ON CONFLICT (id) DO NOTHING;
 CREATE TABLE IF NOT EXISTS conversations (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL,
+    session_id          TEXT,
+    user_id             TEXT,
     title               TEXT,
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
     last_output_file    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS session_id TEXT;
+
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS user_id TEXT;
 
 DO $$
 BEGIN
@@ -346,6 +354,12 @@ $$;
 
 CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
     ON conversations (agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_session_id
+    ON conversations (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id
+    ON conversations (user_id);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
     ON conversations (updated_at DESC);
@@ -474,17 +488,88 @@ COMMENT ON TABLE plan_runs IS
 CREATE TABLE IF NOT EXISTS token_usage (
     id              BIGSERIAL   PRIMARY KEY,
     message_id      TEXT        NOT NULL,
+    session_id      TEXT,
     model           TEXT        NOT NULL DEFAULT '',
     input_tokens    INTEGER     NOT NULL DEFAULT 0,
     output_tokens   INTEGER     NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS session_id TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
     ON token_usage (message_id);
 
+CREATE INDEX IF NOT EXISTS idx_token_usage_session_id
+    ON token_usage (session_id);
+
 COMMENT ON TABLE token_usage IS
     'LLM token usage per assistant message, one row per model call.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Guest chat tables (pre-auth flow)
+-- Keep unauthenticated records separated so promotion can be audited.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS guest_conversations (
+    id                  TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    title               TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    promoted_to_user_id TEXT,
+    promoted_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_guest_conversations_session_id
+    ON guest_conversations (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_guest_conversations_updated_at
+    ON guest_conversations (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS guest_messages (
+    guest_conversation_id TEXT        NOT NULL REFERENCES guest_conversations (id) ON DELETE CASCADE,
+    message_index         INTEGER     NOT NULL,
+    role                  TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
+    content               TEXT        NOT NULL DEFAULT '',
+    message               JSONB       NOT NULL DEFAULT '{}'::JSONB,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (guest_conversation_id, message_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_guest_messages_conversation_id
+    ON guest_messages (guest_conversation_id, message_index ASC);
+
+CREATE TABLE IF NOT EXISTS guest_llm_calls (
+    id                    BIGSERIAL   PRIMARY KEY,
+    guest_conversation_id TEXT        NOT NULL REFERENCES guest_conversations (id) ON DELETE CASCADE,
+    message_id            TEXT        NOT NULL,
+    model                 TEXT        NOT NULL DEFAULT '',
+    input_tokens          INTEGER     NOT NULL DEFAULT 0,
+    output_tokens         INTEGER     NOT NULL DEFAULT 0,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_guest_llm_calls_conversation_id
+    ON guest_llm_calls (guest_conversation_id);
+
+CREATE INDEX IF NOT EXISTS idx_guest_llm_calls_message_id
+    ON guest_llm_calls (message_id);
+
+CREATE TABLE IF NOT EXISTS session_user_links (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    linked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (session_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_user_links_session
+    ON session_user_links (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_session_user_links_user
+    ON session_user_links (user_id);
+
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════

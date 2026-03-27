@@ -20,10 +20,6 @@ from app.config import get_settings
 from app.middleware.rate_limit import limiter
 from app.services import session_store
 from app.services.playbook_service import (
-    run_phase0_gap_questions,
-    run_agent1_context_parser,
-    run_agent2_icp_analyst,
-    run_full_playbook_pipeline,
     run_agent_a_merged,
     run_agent_e_standalone,
     run_agent_c,
@@ -67,17 +63,6 @@ class SubmitGapAnswersResponse(BaseModel):
     session_id: str
     stage: str                    # "generating" → full pipeline running
     message: str = ""
-
-
-class PlaybookResultResponse(BaseModel):
-    session_id: str
-    complete: bool
-    stage: str
-    playbook: str = ""            # Agent C output — the 10-step playbook
-    website_audit: str = ""       # Agent E output
-    context_brief: str = ""       # Agent A output
-    icp_card: str = ""            # Agent A ICP portion
-    latencies: dict[str, Any] = {}
 
 
 class GenerateFullPlaybookRequest(BaseModel):
@@ -280,6 +265,13 @@ async def start_playbook(request: Request, body: StartPlaybookRequest = Body(...
             message="Context parsed and ICP built. Ready to generate playbook.",
         )
 
+    except ValueError as exc:
+        logger.error(
+            "Playbook /start configuration error",
+            session_id=body.session_id,
+            error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=f"Playbook configuration error: {str(exc)}")
     except Exception as exc:
         logger.error(
             "Playbook /start failed",
@@ -432,6 +424,13 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             message="Your AI Growth Playbook is ready.",
         )
 
+    except ValueError as exc:
+        logger.error(
+            "Playbook /generate configuration error",
+            session_id=body.session_id,
+            error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=f"Playbook configuration error: {str(exc)}")
     except Exception as exc:
         logger.error(
             "Playbook /generate failed",
@@ -440,29 +439,6 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             traceback=traceback.format_exc(),
         )
         raise HTTPException(status_code=500, detail=f"Playbook generation failed: {str(exc)}")
-
-
-@router.get("/{session_id}", response_model=PlaybookResultResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_playbook(request: Request, session_id: str):
-    """
-    Get the playbook results for a session.
-    Returns whatever has been generated so far.
-    """
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return PlaybookResultResponse(
-        session_id=session_id,
-        complete=session.playbook_complete,
-        stage=session.playbook_stage or "not_started",
-        playbook=session.playbook_agent3_output,
-        website_audit=session.playbook_agent5_output,
-        context_brief=session.playbook_agent1_output,
-        icp_card=session.playbook_agent2_output,
-        latencies=session.playbook_latencies,
-    )
 
 
 # ── Helpers ────────────────────────────────────────────────────

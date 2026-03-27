@@ -74,10 +74,6 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "z-ai/glm-5"
     OPENROUTER_CLAUDE_MODEL: str = "anthropic/claude-sonnet-4-6"  # Used only for playbook Agent C comparison
 
-    # ── Supabase ───────────────────────────────────────────────
-    SUPABASE_URL: str = "https://bbaydychuoahmdkbgghw.supabase.co"
-    SUPABASE_ANON_KEY: str = ""
-
     # ── SERP API ───────────────────────────────────────────────
     SERP_API_KEY: str = ""
 
@@ -91,6 +87,10 @@ class Settings(BaseSettings):
 
     # ── Frontend ───────────────────────────────────────────────
     FRONTEND_URL: str = "https://ikshan.in"
+
+    # ── JWT Auth ───────────────────────────────────────────────
+    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_ACCESS_TOKEN_EXPIRES_HOURS: int = 168
 
     # ── 2Factor.in OTP ─────────────────────────────────────────
     TWO_FACTOR_API_KEY: str = ""

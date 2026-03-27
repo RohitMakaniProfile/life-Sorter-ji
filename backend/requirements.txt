@@ -13,9 +13,6 @@ openai==1.82.0
 # HTTP Client (async)
 httpx==0.28.1
 
-# Database
-supabase==2.15.2
-
 # Environment
 python-dotenv==1.1.0
 

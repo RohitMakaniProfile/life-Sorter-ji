@@ -6,7 +6,7 @@ import re
 import time as _time
 import traceback
 from functools import lru_cache
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -19,6 +19,7 @@ from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
 from .config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
 from .skills import first_skill_id, get_skill, list_skills, run_skill
+from app.services import unified_chat_service
 from .stores import (
     append_skill_streamed_text,
     append_assistant_placeholder,
@@ -50,6 +51,12 @@ from .stores import (
 )
 
 router = APIRouter()
+
+
+def _actor_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None
+    user_id = str(payload.get("userId") or payload.get("user_id") or "").strip() or None
+    return session_id, user_id
 
 def _log(label: str, **fields: Any) -> None:
     try:
@@ -323,9 +330,15 @@ async def _create_plan_draft(
     emit_progress=None,
 ) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
+    session_id, user_id = _actor_from_payload(body)
     _log("plan-draft-start", message_preview=message[:200], has_emit_progress=emit_progress is not None)
     resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        session_id=session_id,
+        user_id=user_id,
+    )
     contexts = resolved.get("contexts", {})
     _log("plan-draft-conversation-resolved", conversation_id=conv.get("id"), agent_id=resolved.get("agentId"))
 
@@ -387,6 +400,7 @@ async def _create_plan_draft(
                             r.output_tokens,
                             stage=f"page-nl.{sid}",
                             provider="openai",
+                            session_id=session_id,
                         )
                     except Exception:
                         pass
@@ -572,6 +586,7 @@ async def _create_plan_draft(
             ai_result.output_tokens,
             stage="plan-creation.draft",
             provider="anthropic" if CLAUDE_API_KEY else "openai",
+            session_id=session_id,
         )
     except Exception:
         plan_markdown = "\n".join([
@@ -720,21 +735,6 @@ def _mark_checklist_from_skill(items: list[dict[str, Any]], skill_id: str, summa
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/api/health")
-async def p2_health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "service": "ikshan-phase2",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "agent": {"provider": "openai", "model": OPENAI_MODEL},
-    }
-
-
-@router.get("/api/skills")
-async def p2_skills_root() -> dict[str, Any]:
-    return {"skills": list_skills()}
-
-
 @router.get("/api/chat/skills")
 async def p2_skills_chat() -> list[dict[str, Any]]:
     return list_skills()
@@ -818,44 +818,35 @@ async def p2_chat_message(req: Request) -> dict[str, Any]:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
-    await append_message(conv["id"], "user", message)
+    session_id, user_id = _actor_from_payload(body)
+    # No agent selected => phase1-style normal chat flow.
+    if not str(body.get("agentId") or "").strip():
+        out = await unified_chat_service.run_standard_chat(
+            message=message,
+            persona=str(body.get("persona") or "default"),
+            context=body.get("context") if isinstance(body.get("context"), dict) else None,
+            conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
+            conversation_id=str(body.get("conversationId") or "").strip() or None,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        return {
+            "message": out["message"],
+            "conversationId": out["conversationId"],
+            "mode": "standard",
+            "usage": out.get("usage"),
+            "stageOutputs": {},
+            "outputFile": None,
+        }
 
-    result = await run_agent_turn_stream(
-        message,
-        conv.get("messages") or [],
-        resolved["skillId"],
-        opts=RunOpts(
-            allowed_skill_ids=resolved.get("allowedSkillIds") or None,
-            contexts=resolved.get("contexts") or {},
-        ),
-    )
-
-    text = result.text or ""
-
-    if result.status == "error" and not text:
-        try:
-            ai = AiHelper(temperature=0.3)
-            ai_res = await ai.chat(
-                message=message,
-                system_prompt="You are a helpful assistant. The skill automation failed. Answer to the best of your ability.",
-                conversation_history=conv.get("messages") or [],
-            )
-            text = ai_res.message.strip() or "I could not run the automation for this request. Please try again or adjust the prompt."
-        except Exception:
-            text = "I could not run the automation for this request. Please try again or adjust the prompt."
-
-    await append_message(conv["id"], "assistant", text, outputFile=None)
-    await save_stage_outputs(conv["id"], {}, None)
+    # Agent selected => plan-first flow, execution happens only after approval.
+    draft = await _create_plan_draft(body=body)
     return {
-        "message": text,
-        "conversationId": conv["id"],
-        "runId": result.run_id,
-        "model": CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
-        "durationMs": result.duration_ms,
-        "stageOutputs": {},
-        "outputFile": None,
+        "mode": "agentic-plan",
+        "conversationId": draft["conversationId"],
+        "planId": draft["planId"],
+        "planMessageId": draft["planMessageId"],
+        "planMarkdown": draft["planMarkdown"],
     }
 
 
@@ -866,13 +857,46 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    session_id, user_id = _actor_from_payload(body)
+    if not str(body.get("agentId") or "").strip():
+        async def standard_generator():
+            try:
+                out = await unified_chat_service.run_standard_chat(
+                    message=message,
+                    persona=str(body.get("persona") or "default"),
+                    context=body.get("context") if isinstance(body.get("context"), dict) else None,
+                    conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
+                    conversation_id=str(body.get("conversationId") or "").strip() or None,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+                yield _sse({"token": out["message"]})
+                yield _sse(
+                    {
+                        "done": True,
+                        "mode": "standard",
+                        "conversationId": out["conversationId"],
+                        "usage": out.get("usage"),
+                        "stageOutputs": {},
+                        "outputFile": None,
+                    }
+                )
+            except Exception as exc:
+                yield _sse({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
+        return StreamingResponse(standard_generator(), media_type="text/event-stream")
+
     retry_from_stage = str(body.get("retryFromStage") or "").strip()
     retry_stage_outputs: dict[str, str] = body.get("stageOutputs") or {}
     if retry_from_stage and isinstance(retry_stage_outputs, dict):
         message = _build_retry_message(message, retry_from_stage, retry_stage_outputs)
 
     resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        session_id=session_id,
+        user_id=user_id,
+    )
 
     await append_message(conv["id"], "user", message)
     assistant_message_id = await append_assistant_placeholder(conv["id"])
@@ -896,6 +920,7 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
                     int(meta.get("outputTokens") or 0),
                     stage=str(meta.get("stage") or "chat-execution"),
                     provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
+                    session_id=session_id,
                 )
             await emit({"progress": event})
 
@@ -979,6 +1004,8 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+    if not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="agentId is required for plan mode")
     return await _create_plan_draft(body=body)
 
 
@@ -988,6 +1015,8 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+    if not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="agentId is required for plan mode")
 
     async def generator():
         queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -1038,9 +1067,17 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
     plan_id = str(body.get("planId") or "").strip()
     if not plan_id:
         raise HTTPException(status_code=400, detail="planId is required")
+    if not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="agentId is required for plan execution")
 
+    session_id, user_id = _actor_from_payload(body)
     resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(body.get("conversationId"), resolved["agentId"])
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        session_id=session_id,
+        user_id=user_id,
+    )
 
     plan = await get_plan_run(plan_id)
     if not plan:
@@ -1150,6 +1187,7 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                                         r.output_tokens,
                                         stage=f"page-nl.{sid}",
                                         provider="openai",
+                                        session_id=session_id,
                                     )
                                 except Exception:
                                     pass
@@ -1185,6 +1223,7 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                                 int(meta.get("outputTokens") or 0),
                                 stage=str(meta.get("stage") or f"plan-execution.{sid}"),
                                 provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
+                                session_id=session_id,
                             )
                         stream_kind = str(meta.get("streamKind") or "info").strip().lower()
                         if stream_kind == "data":
@@ -1297,6 +1336,7 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                     fmt.output_tokens,
                     stage="plan-execution.final-formatting",
                     provider=fmt.provider,
+                    session_id=session_id,
                 )
                 final_text = (fmt.text or "").strip()
                 if final_text and tokens_emitted == 0:
@@ -1341,8 +1381,16 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
 
 
 @router.get("/api/chat/messages")
-async def p2_chat_messages(conversationId: str | None = None) -> dict[str, Any]:
-    conv = await get_or_create_conversation(conversationId)
+async def p2_chat_messages(
+    conversationId: str | None = None,
+    sessionId: str | None = Query(default=None),
+    userId: str | None = Query(default=None),
+) -> dict[str, Any]:
+    conv = await get_or_create_conversation(
+        conversationId,
+        session_id=sessionId,
+        user_id=userId,
+    )
     return {
         "messages": conv.get("messages") or [],
         "conversationId": conv["id"],
@@ -1367,10 +1415,20 @@ async def p2_chat_token_usage(messageId: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/api/chat/conversations")
-async def p2_chat_conversations() -> dict[str, Any]:
-    return {"conversations": await list_conversations()}
+async def p2_chat_conversations(
+    sessionId: str | None = Query(default=None),
+    userId: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return {
+        "conversations": await list_conversations(
+            session_id=sessionId,
+            user_id=userId,
+        )
+    }
 
 
 @router.delete("/api/chat/conversations/{conversation_id}")
 async def p2_chat_delete_conversation(conversation_id: str) -> dict[str, bool]:
     return {"ok": await delete_conversation(conversation_id)}
+
+

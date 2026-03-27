@@ -20,17 +20,17 @@ import time
 from typing import Optional
 
 import structlog
-from openai import AsyncOpenAI
 
 from app.config import get_settings
+from app.services import openrouter_service
 from app.services.persona_doc_service import load_persona_doc, load_task_context
 
 logger = structlog.get_logger()
 
 
-def _get_client() -> AsyncOpenAI:
+def _model_name() -> str:
     settings = get_settings()
-    return AsyncOpenAI(api_key=settings.openai_api_key_active)
+    return settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME
 
 
 # ── Dynamic Question Generation ────────────────────────────────
@@ -84,9 +84,6 @@ async def generate_dynamic_questions(
     Strategies, RCA Bridge), and uses those sections to generate targeted diagnostic
     questions.
     """
-    settings = get_settings()
-    client = _get_client()
-
     # ── Load structured task context from persona doc ──────────
     task_ctx = load_task_context(domain, task)
 
@@ -159,18 +156,16 @@ Each question should directly map to documented content — not generic consulti
     )
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
+        response = await openrouter_service.chat_completion(
+            model=_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.7,
             max_tokens=1500,
-            response_format={"type": "json_object"},
         )
-
-        raw = response.choices[0].message.content or "{}"
+        raw = response.get("message") or "{}"
         parsed = json.loads(raw)
         questions = parsed.get("questions", [])
 
@@ -419,9 +414,6 @@ async def generate_early_recommendations(
 
     # ── Attempt 1: Full RAG pipeline ─────────────────────────────
     try:
-        settings = get_settings()
-        client = _get_client()
-
         rag_results = await search_by_session(
             outcome_label=outcome_label,
             domain=domain,
@@ -458,19 +450,18 @@ RAG RESULTS — Real tools from our verified database
 Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
 
             t0 = time.monotonic()
-            response = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL_NAME,
+            response = await openrouter_service.chat_completion(
+                model=_model_name(),
                 messages=[
                     {"role": "system", "content": EARLY_RECOMMENDATION_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
                 temperature=0.4,
                 max_tokens=1200,
-                response_format={"type": "json_object"},
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
 
-            raw = response.choices[0].message.content or "{}"
+            raw = response.get("message") or "{}"
             parsed = json.loads(raw)
 
             if parsed.get("tools"):
@@ -485,7 +476,7 @@ Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
                     "message": parsed.get("message", default_message),
                     "_meta": {
                         "service": "openai",
-                        "model": settings.OPENAI_MODEL_NAME,
+                        "model": _model_name(),
                         "purpose": "early_recommendations",
                         "system_prompt": EARLY_RECOMMENDATION_PROMPT,
                         "user_message": user_message,
@@ -494,9 +485,9 @@ Select the 3-5 most broadly relevant tools for this user's goal+domain+task."""
                         "raw_response": raw,
                         "latency_ms": latency_ms,
                         "token_usage": {
-                            "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                            "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                            "total_tokens": response.usage.total_tokens if response.usage else 0,
+                            "prompt_tokens": int((response.get("usage") or {}).get("prompt_tokens") or 0),
+                            "completion_tokens": int((response.get("usage") or {}).get("completion_tokens") or 0),
+                            "total_tokens": int((response.get("usage") or {}).get("total_tokens") or 0),
                         },
                     },
                 }
@@ -581,30 +572,8 @@ async def analyze_website_audience(
     task: str,
     rca_history: list[dict],
 ) -> dict:
-    """
-    Fetch and analyze a business website to generate audience insights.
-
-    Attempts to scrape the website content, then uses GPT to analyze
-    the target audience positioning and identify potential mismatches
-    between intended and actual audience.
-
-    Args:
-        website_url: The business website URL
-        outcome_label: User's growth goal
-        domain: User's domain
-        task: User's task
-        rca_history: Diagnostic conversation so far
-
-    Returns:
-        Dict with intended_audience, actual_audience, mismatch_analysis,
-        recommendations, business_summary
-    """
     import httpx
 
-    settings = get_settings()
-    client = _get_client()
-
-    # ── Step 1: Fetch website content ──────────────────────────
     website_content = ""
     try:
         async with httpx.AsyncClient(
@@ -616,16 +585,10 @@ async def analyze_website_audience(
             resp.raise_for_status()
             raw_html = resp.text
 
-            # Basic HTML text extraction (strip tags, keep content)
-            import re
-            # Remove script and style blocks
-            clean = re.sub(r'<script[^>]*>.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
-            clean = re.sub(r'<style[^>]*>.*?</style>', '', clean, flags=re.DOTALL | re.IGNORECASE)
-            # Remove HTML tags
-            clean = re.sub(r'<[^>]+>', ' ', clean)
-            # Collapse whitespace
-            clean = re.sub(r'\s+', ' ', clean).strip()
-            # Limit to first ~4000 chars to stay within token limits
+            clean = re.sub(r"<script[^>]*>.*?</script>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+            clean = re.sub(r"<style[^>]*>.*?</style>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+            clean = re.sub(r"<[^>]+>", " ", clean)
+            clean = re.sub(r"\s+", " ", clean).strip()
             website_content = clean[:4000]
 
             logger.info(
@@ -641,7 +604,6 @@ async def analyze_website_audience(
         )
         website_content = f"(Could not fetch website at {website_url} — analyze based on URL and user context only)"
 
-    # ── Step 2: Build context ──────────────────────────────────
     rca_text = ""
     if rca_history:
         for i, qa in enumerate(rca_history, 1):
@@ -662,20 +624,17 @@ DIAGNOSTIC CONVERSATION SO FAR:
 
 Analyze this website and provide audience insights."""
 
-    # ── Step 3: GPT analysis ──────────────────────────────────
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
+        response = await openrouter_service.chat_completion(
+            model=_model_name(),
             messages=[
                 {"role": "system", "content": WEBSITE_ANALYSIS_PROMPT},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.5,
             max_tokens=1000,
-            response_format={"type": "json_object"},
         )
-
-        raw = response.choices[0].message.content or "{}"
+        raw = response.get("message") or "{}"
         parsed = json.loads(raw)
 
         logger.info(
@@ -838,9 +797,6 @@ async def generate_personalized_recommendations(
     """
     from app.rag.retrieval import search_by_session
 
-    settings = get_settings()
-    client = _get_client()
-
     # ── Step 1: Query RAG for real tools ────────────────────────
     rag_results = await search_by_session(
         outcome_label=outcome_label,
@@ -1001,27 +957,24 @@ Based on the user's profile and answers, select the most relevant tools from the
 
     t0 = time.monotonic()
     try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
+        response = await openrouter_service.chat_completion(
+            model=_model_name(),
             messages=[
                 {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.4,
             max_tokens=3500,
-            response_format={"type": "json_object"},
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        raw = response.choices[0].message.content or "{}"
+        raw = response.get("message") or "{}"
         parsed = json.loads(raw)
-
-        usage = response.usage
         token_usage = {
-            "prompt_tokens": usage.prompt_tokens if usage else 0,
-            "completion_tokens": usage.completion_tokens if usage else 0,
-            "total_tokens": usage.total_tokens if usage else 0,
-        } if usage else {}
+            "prompt_tokens": int((response.get("usage") or {}).get("prompt_tokens") or 0),
+            "completion_tokens": int((response.get("usage") or {}).get("completion_tokens") or 0),
+            "total_tokens": int((response.get("usage") or {}).get("total_tokens") or 0),
+        }
 
         logger.info(
             "Personalized recommendations generated (RAG-powered)",
@@ -1040,7 +993,7 @@ Based on the user's profile and answers, select the most relevant tools from the
             "summary": parsed.get("summary", ""),
             "_meta": {
                 "service": "openai",
-                "model": settings.OPENAI_MODEL_NAME,
+                "model": _model_name(),
                 "purpose": "personalized_recommendations",
                 "system_prompt": RECOMMENDATION_SYSTEM_PROMPT,
                 "user_message": user_message,
@@ -1060,370 +1013,3 @@ Based on the user's profile and answers, select the most relevant tools from the
         return {"extensions": [], "gpts": [], "companies": [], "summary": ""}
 
 
-# ── Business Insights + ICP Analysis ──────────────────────────
-
-INSIGHTS_SYSTEM_PROMPT = """You are an elite business strategist generating a crystal-clear diagnostic report for a business owner.
-
-You have the user's complete profile: their business goal, domain, task, diagnostic answers, website analysis, and business stage.
-
-Your job: Generate a report with 3 sections:
-
-SECTION 1 — SHARP INSIGHTS (exactly 5-6 points)
-
-CRITICAL RATIO: 70% of insights MUST come from the WEBSITE ANALYSIS / CRAWL DATA (what you 
-observed about their actual business — tech stack, CTAs, content gaps, SEO signals, positioning). 
-Only 30% should reference the user's DIAGNOSTIC ANSWERS (the problem they described). 
-This means 4 out of 6 insights should be things the user DIDN'T tell you — things you discovered 
-from analyzing their business. This makes the report feel powerful and insightful.
-
-Each insight must be:
-- 1 sentence max, punchy and specific to THIS user's situation
-- Contains a "highlight" — the single most impactful phrase (3-6 words) to bold
-- Actionable, not generic. The user should think "that's exactly my situation"
-- 70% from business scraping data (crawl/website analysis), 30% from user-described issues
-
-SECTION 2 — ICP ANALYSIS (Ideal Customer Profile)
-Based on crawl data + answers:
-- Who their ideal customer actually is (be specific: demographics, behavior, pain)
-- VERDICT: If you land on their business URL as their ideal customer, what would you feel? \
-  Be brutally honest but constructive. Would you trust them? Would you buy? What's missing?
-- 3 improvement areas for their site/business to better attract their ICP
-
-SECTION 3 — HOOK (catchy line before payment CTA)
-- A single sentence that creates urgency or reveals a counter-intuitive insight
-- Should make the user think "I need to see the rest of this"
-- Reference something specific from their diagnostic — not generic marketing copy
-- Max 15-20 words. Punchy. Memorable.
-
-OUTPUT FORMAT (strict JSON):
-{
-  "insights": [
-    {"point": "Your single-sentence insight", "highlight": "3-6 word key phrase to bold"},
-    ...
-  ],
-  "icp_analysis": {
-    "ideal_customer_profile": "2-3 sentences describing their ICP specifically",
-    "targeting_verdict": "2-3 sentences: honest verdict of what a customer feels landing on their URL",
-    "improvement_areas": ["Area 1 (1 sentence)", "Area 2", "Area 3"]
-  },
-  "hook": "Your catchy hook sentence here"
-}
-
-Return ONLY valid JSON."""
-
-
-async def generate_business_insights(
-    outcome_label: str,
-    domain: str,
-    task: str,
-    rca_history: list[dict],
-    business_profile: dict,
-    crawl_summary: dict,
-    crawl_raw: dict = None,
-    rca_diagnostic_context: dict = None,
-    rca_summary: str = "",
-    gbp_data: dict = None,
-) -> Optional[dict]:
-    """
-    Generate sharp business insights, ICP analysis, and catchy hook.
-    Uses all available session context for maximum personalization.
-    """
-    settings = get_settings()
-    client = _get_client()
-
-    # Build user message
-    parts = [
-        f"Growth Goal: {outcome_label}",
-        f"Domain: {domain}",
-        f"Task: {task}",
-    ]
-
-    if business_profile:
-        parts.append("\nBUSINESS PROFILE:")
-        for k, v in business_profile.items():
-            parts.append(f"  • {k.replace('_', ' ').title()}: {v}")
-
-    if crawl_summary and crawl_summary.get("points"):
-        parts.append("\nWEBSITE ANALYSIS (from crawling their site):")
-        for pt in crawl_summary["points"]:
-            parts.append(f"  • {pt}")
-
-    if crawl_raw:
-        if crawl_raw.get("tech_signals"):
-            parts.append(f"\nTech stack detected: {', '.join(crawl_raw['tech_signals'][:10])}")
-        if crawl_raw.get("cta_patterns"):
-            parts.append(f"CTAs found: {', '.join(crawl_raw['cta_patterns'][:5])}")
-        if crawl_raw.get("social_links"):
-            parts.append(f"Social links: {', '.join(crawl_raw['social_links'][:5])}")
-
-    if rca_history:
-        parts.append("\nDIAGNOSTIC Q&A:")
-        for i, qa in enumerate(rca_history, 1):
-            parts.append(f"  Q{i}: {qa.get('question', '')}")
-            parts.append(f"  A{i}: {qa.get('answer', '')}")
-
-    if rca_summary:
-        parts.append(f"\nROOT CAUSE DIAGNOSIS: {rca_summary}")
-
-    if rca_diagnostic_context:
-        sections = rca_diagnostic_context.get("sections", [])
-        for sec in sections:
-            key = sec.get("key", "")
-            items = sec.get("items", [])
-            if key == "problems" and items:
-                parts.append("\nDOCUMENTED PROBLEM PATTERNS:")
-                for item in items[:6]:
-                    parts.append(f"  • {item}")
-            elif key == "opportunities" and items:
-                parts.append("\nGROWTH OPPORTUNITIES:")
-                for item in items[:6]:
-                    parts.append(f"  • {item}")
-
-    if gbp_data:
-        parts.append("\nGOOGLE BUSINESS PROFILE DATA:")
-        if gbp_data.get("business_name"):
-            parts.append(f"  • Business: {gbp_data['business_name']}")
-        if gbp_data.get("rating"):
-            parts.append(f"  • Rating: {gbp_data['rating']}/5 ({gbp_data.get('total_reviews', '?')} reviews)")
-        if gbp_data.get("category"):
-            parts.append(f"  • Category: {gbp_data['category']}")
-        reviews = gbp_data.get("reviews", [])
-        if reviews:
-            parts.append(f"  Customer Reviews ({len(reviews)}):")
-            for i, rev in enumerate(reviews[:5], 1):
-                text = rev.get("text", rev.get("snippet", ""))
-                if text:
-                    parts.append(f"    R{i}. [{rev.get('rating', '?')}★] {text[:200]}")
-
-    user_message = "\n".join(parts)
-
-    t0 = time.monotonic()
-    try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
-            messages=[
-                {"role": "system", "content": INSIGHTS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.6,
-            max_tokens=1500,
-            response_format={"type": "json_object"},
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        raw = response.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-
-        usage = response.usage
-        token_usage = {
-            "prompt_tokens": usage.prompt_tokens if usage else 0,
-            "completion_tokens": usage.completion_tokens if usage else 0,
-            "total_tokens": usage.total_tokens if usage else 0,
-        } if usage else {}
-
-        logger.info(
-            "Business insights generated",
-            insights_count=len(parsed.get("insights", [])),
-            has_icp=bool(parsed.get("icp_analysis")),
-            has_hook=bool(parsed.get("hook")),
-        )
-
-        parsed["_meta"] = {
-            "service": "openai",
-            "model": settings.OPENAI_MODEL_NAME,
-            "purpose": "business_insights",
-            "system_prompt": INSIGHTS_SYSTEM_PROMPT,
-            "user_message": user_message,
-            "temperature": 0.6,
-            "max_tokens": 1500,
-            "raw_response": raw,
-            "latency_ms": latency_ms,
-            "token_usage": token_usage,
-        }
-
-        return parsed
-
-    except Exception as e:
-        logger.error("Business insights generation failed", error=str(e))
-        return None
-
-
-# ── Business Intelligence Verdict (Crawl-Powered, Pre-RCA) ────
-
-BUSINESS_INTEL_SYSTEM_PROMPT = """You are a world-class business intelligence analyst. You've just crawled a business's website \
-and gathered their raw data — tech stack, CTAs, pages, SEO basics, social presence.
-
-Your job: Generate a powerful Business Intelligence Verdict that makes the business owner feel \
-EMPOWERED about their growth potential. This is shown BEFORE the diagnostic, so it should feel \
-like a strategic advantage — "we already know a lot about your business."
-
-Be sharp, specific, and reference concrete signals from the crawl data. Never be generic. \
-Every insight should prove you actually analyzed THEIR website.
-
-SECTION 1 — ICP SNAPSHOT
-2-3 crisp sentences describing who their ideal customer really is, based on what their site \
-reveals (messaging, offers, positioning, content style). Be specific — demographics, behavior, \
-pain points they're addressing.
-
-SECTION 2 — SEO HEALTH
-Score from 1-10 with a brief diagnosis:
-- What's working (reference specific signals)
-- What's critically missing
-- One quick-win recommendation they can act on today
-
-SECTION 3 — FUNNEL GROWTH STRATEGIES
-For each funnel stage, provide exactly 5 actionable growth moves based on what the crawl reveals. \
-Each strategy should be specific to THIS business, not generic marketing advice.
-
-TOP FUNNEL (Awareness & Discovery):
-5 strategies to attract new eyeballs — based on their content gaps, SEO state, social presence
-
-MID FUNNEL (Consideration & Trust):
-5 strategies to convert visitors into leads — based on their CTAs, content, social proof signals
-
-BOTTOM FUNNEL (Conversion & Revenue):
-5 strategies to close deals — based on their pricing page, checkout flow, trust signals
-
-OUTPUT FORMAT (strict JSON):
-{
-  "icp_snapshot": "2-3 sentence ICP description",
-  "seo_health": {
-    "score": 7,
-    "diagnosis": "Brief diagnosis",
-    "working": "What's working",
-    "missing": "What's critically missing",
-    "quick_win": "One actionable quick win"
-  },
-  "top_funnel": [
-    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
-  ],
-  "mid_funnel": [
-    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
-  ],
-  "bottom_funnel": [
-    {"strategy": "Strategy name", "action": "Specific 1-2 sentence actionable step"}
-  ],
-  "verdict_line": "Single powerful sentence — their biggest opportunity (max 20 words)"
-}
-
-Return ONLY valid JSON. 5 items per funnel stage."""
-
-
-async def generate_business_intel_verdict(
-    outcome_label: str,
-    domain: str,
-    task: str,
-    crawl_raw: dict,
-    crawl_summary: dict,
-    business_profile: dict = None,
-) -> Optional[dict]:
-    """
-    Generate a Business Intelligence Verdict from crawl data.
-    Shown to the user BEFORE the RCA diagnostic to empower them
-    with strategic insights about their business.
-    """
-    settings = get_settings()
-    client = _get_client()
-
-    # Build rich context from crawl data
-    parts = [
-        f"Growth Goal: {outcome_label}",
-        f"Domain: {domain}",
-        f"Task: {task}",
-    ]
-
-    if business_profile:
-        parts.append("\nBUSINESS PROFILE:")
-        for k, v in business_profile.items():
-            parts.append(f"  {k.replace('_', ' ').title()}: {v}")
-
-    if crawl_summary and crawl_summary.get("points"):
-        parts.append("\nCRAWL SUMMARY:")
-        for pt in crawl_summary["points"]:
-            parts.append(f"  - {pt}")
-
-    # Include detailed crawl signals
-    hp = crawl_raw.get("homepage", {})
-    if hp.get("title"):
-        parts.append(f"\nHomepage Title: {hp['title']}")
-    if hp.get("meta_desc"):
-        parts.append(f"Meta Description: {hp['meta_desc']}")
-    if hp.get("h1s"):
-        parts.append(f"H1 Headlines: {', '.join(hp['h1s'][:5])}")
-    if hp.get("nav_links"):
-        nav_labels = [n.get("text", "") for n in hp["nav_links"][:10] if isinstance(n, dict)]
-        if nav_labels:
-            parts.append(f"Navigation: {', '.join(nav_labels)}")
-
-    tech = crawl_raw.get("tech_signals", [])
-    if tech:
-        parts.append(f"\nTech Stack: {', '.join(tech[:12])}")
-
-    ctas = crawl_raw.get("cta_patterns", [])
-    if ctas:
-        parts.append(f"CTAs Found: {', '.join(ctas[:8])}")
-
-    socials = crawl_raw.get("social_links", [])
-    if socials:
-        parts.append(f"Social Links: {', '.join(socials[:6])}")
-
-    schema = crawl_raw.get("schema_markup", [])
-    if schema:
-        parts.append(f"Schema Markup: {', '.join(str(s) for s in schema[:5])}")
-
-    seo = crawl_raw.get("seo_basics", {})
-    seo_notes = []
-    if seo.get("has_meta"):
-        seo_notes.append("Has meta tags")
-    else:
-        seo_notes.append("Missing meta tags")
-    if seo.get("has_viewport"):
-        seo_notes.append("Mobile viewport set")
-    else:
-        seo_notes.append("No mobile viewport")
-    if seo.get("has_sitemap"):
-        seo_notes.append("Sitemap detected")
-    else:
-        seo_notes.append("No sitemap")
-    parts.append(f"SEO Basics: {', '.join(seo_notes)}")
-
-    pages = crawl_raw.get("pages_crawled", [])
-    if pages:
-        parts.append(f"\nPages Crawled ({len(pages)}):")
-        for p in pages[:5]:
-            content = p.get("key_content", "")[:400]
-            parts.append(f"  [{p.get('type', 'page')}] {p.get('url', '')}")
-            if content:
-                parts.append(f"    Content: {content}")
-
-    user_message = "\n".join(parts)
-
-    try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
-            messages=[
-                {"role": "system", "content": BUSINESS_INTEL_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.5,
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-        )
-
-        raw = response.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-
-        logger.info(
-            "Business intel verdict generated",
-            has_icp=bool(parsed.get("icp_snapshot")),
-            seo_score=parsed.get("seo_health", {}).get("score"),
-            top_funnel=len(parsed.get("top_funnel", [])),
-            mid_funnel=len(parsed.get("mid_funnel", [])),
-            bottom_funnel=len(parsed.get("bottom_funnel", [])),
-        )
-
-        return parsed
-
-    except Exception as e:
-        logger.error("Business intel verdict generation failed", error=str(e))
-        return None

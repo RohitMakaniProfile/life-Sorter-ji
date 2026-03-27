@@ -25,10 +25,39 @@ import json
 
 import re
 from app.config import get_settings
+from app.services import openrouter_service
 
 logger = structlog.get_logger()
 
-OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+async def _call_openrouter_with_retry(
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    temperature: float,
+    max_tokens: int,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await openrouter_service.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code == 429 and attempt < 2:
+                await asyncio.sleep(2 ** attempt + 1)
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("OpenRouter call failed")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -198,41 +227,18 @@ async def generate_task_alignment_filter(
 
     user_content = _build_filter_user_message(task, diagnostic_context)
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": TASK_FILTER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 800,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Task Filter",
-    }
-
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=TASK_FILTER_SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.3,
+            max_tokens=800,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            content = data["choices"][0]["message"].get("reasoning", "")
+        content = str(result.get("message") or "")
         logger.info("Task filter raw response", raw_content=content[:500] if content else "<empty>")
 
         if not content or not content.strip():
@@ -907,44 +913,19 @@ async def generate_next_rca_question(
         rca_running_summary=rca_running_summary,
     )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan RCA Engine",
-    }
-
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.7,
+            max_tokens=4000,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        # GLM-5 reasoning models may return reasoning separately
-        if not content or not content.strip():
-            # Try reasoning field as fallback
-            content = data["choices"][0]["message"].get("reasoning", "")
-        logger.info("RCA raw response", raw_content=content[:500] if content else "<empty>", finish_reason=data["choices"][0].get("finish_reason", "?"))
+        content = str(result.get("message") or "")
+        logger.info("RCA raw response", raw_content=content[:500] if content else "<empty>")
 
         if not content or not content.strip():
             logger.error("RCA model returned empty content")
@@ -1199,41 +1180,18 @@ async def generate_precision_questions(
         business_profile=business_profile,
     )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Precision Questions",
-    }
-
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=0.7,
+            max_tokens=4000,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            content = data["choices"][0]["message"].get("reasoning", "")
+        content = str(result.get("message") or "")
 
         if not content or not content.strip():
             logger.error("Precision questions: empty response")

@@ -26,8 +26,7 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services import session_store
-from app.services.openai_service import _get_client
+from app.services import session_store, openrouter_service
 
 logger = structlog.get_logger()
 
@@ -463,11 +462,9 @@ async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
         }
     """
     settings = get_settings()
-    if not settings.openai_api_key_active:
+    if not settings.OPENROUTER_API_KEY:
         # Fallback: generate basic summary without GPT
         return _generate_fallback_summary(crawl_raw)
-
-    client = _get_client()
 
     # Build context from raw crawl
     context_parts = []
@@ -525,28 +522,27 @@ async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
         import time as _time
         _t0 = _time.time()
 
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
+        response = await openrouter_service.chat_completion(
+            model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.3,
             max_tokens=300,
-            response_format={"type": "json_object"},
         )
 
         _latency = int((_time.time() - _t0) * 1000)
-        raw = response.choices[0].message.content or "{}"
+        raw = response.get("message") or "{}"
         parsed = json.loads(raw)
         points = parsed.get("points", [])[:5]
 
-        usage = response.usage
+        usage = response.get("usage") or {}
         token_usage = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-            "total_tokens": getattr(usage, "total_tokens", 0),
-        } if usage else {}
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
 
         return {
             "points": points,
@@ -554,7 +550,7 @@ async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
             "completed_at": datetime.utcnow().isoformat() + "Z",
             "_meta": {
                 "service": "openai",
-                "model": settings.OPENAI_MODEL_NAME,
+                "model": settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
                 "system_prompt": system_prompt,
                 "user_message": user_message,
                 "temperature": 0.3,
@@ -930,10 +926,8 @@ async def generate_gbp_summary(crawl_raw: dict, url: str) -> dict:
         return _generate_fallback_summary(crawl_raw)
 
     settings = get_settings()
-    if not settings.openai_api_key_active:
+    if not settings.OPENROUTER_API_KEY:
         return _generate_gbp_fallback_summary(gbp)
-
-    client = _get_client()
 
     # Build rich context from GBP data
     context_parts = []
@@ -976,28 +970,27 @@ async def generate_gbp_summary(crawl_raw: dict, url: str) -> dict:
         import time as _time
         _t0 = _time.time()
 
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL_NAME,
+        response = await openrouter_service.chat_completion(
+            model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.3,
             max_tokens=300,
-            response_format={"type": "json_object"},
         )
 
         _latency = int((_time.time() - _t0) * 1000)
-        raw = response.choices[0].message.content or "{}"
+        raw = response.get("message") or "{}"
         parsed = json.loads(raw)
         points = parsed.get("points", [])[:5]
 
-        usage = response.usage
+        usage = response.get("usage") or {}
         token_usage = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-            "total_tokens": getattr(usage, "total_tokens", 0),
-        } if usage else {}
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
 
         return {
             "points": points,
@@ -1005,7 +998,7 @@ async def generate_gbp_summary(crawl_raw: dict, url: str) -> dict:
             "completed_at": datetime.utcnow().isoformat() + "Z",
             "_meta": {
                 "service": "openai",
-                "model": settings.OPENAI_MODEL_NAME,
+                "model": settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
                 "system_prompt": system_prompt,
                 "user_message": user_message,
                 "temperature": 0.3,

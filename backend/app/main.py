@@ -140,14 +140,9 @@ def create_app() -> FastAPI:
         auth,
         chat,
         companies,
-        speak,
-        leads,
         payments,
-        recommendations,
-        ideas,
         legacy,
         agent,
-        rag,
         sandbox,
         playbook,
     )
@@ -160,13 +155,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
-    app.include_router(speak.router, prefix="/api/v1", tags=["Text-to-Speech"])
-    app.include_router(leads.router, prefix="/api/v1", tags=["Leads"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
-    app.include_router(recommendations.router, prefix="/api/v1", tags=["Recommendations"])
-    app.include_router(ideas.router, prefix="/api/v1", tags=["Ideas"])
     app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
-    app.include_router(rag.router, prefix="/api/v1", tags=["RAG"])
     app.include_router(sandbox.router, prefix="/api/v1", tags=["Sandbox"])
     app.include_router(playbook.router, tags=["Playbook"])
 

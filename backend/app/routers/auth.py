@@ -11,14 +11,19 @@ Endpoints:
 from __future__ import annotations
 
 import re
+import time
 from pydantic import BaseModel, field_validator
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 
 import structlog
 
 from app.services.otp_service import send_otp, verify_otp
 from app.services.user_session_service import update_session_auth
 from app.services.session_store import get_session
+from app.services.jwt_service import create_access_token, decode_and_verify_access_token
+from app.phase2.stores import promote_session_conversations
+from app.phase2.db import get_pool
+from app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -65,6 +70,8 @@ class VerifyOTPResponse(BaseModel):
     success: bool
     verified: bool
     message: str
+    token: str | None = None
+    user: dict | None = None
 
 
 class GoogleAuthRequest(BaseModel):
@@ -78,6 +85,37 @@ class GoogleAuthRequest(BaseModel):
 class GoogleAuthResponse(BaseModel):
     success: bool
     message: str
+    token: str | None = None
+    user: dict | None = None
+
+
+class AuthMeResponse(BaseModel):
+    authenticated: bool
+    user: dict
+
+
+def _parse_bearer_token(authorization: str | None) -> str:
+    raw = (authorization or "").strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    if not raw.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+    token = raw[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    return token
+
+
+async def _user_exists(user_id: str, email: str | None) -> bool:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM conversations WHERE user_id = $1 LIMIT 1", user_id):
+            return True
+        if await conn.fetchval("SELECT 1 FROM session_user_links WHERE user_id = $1 LIMIT 1", user_id):
+            return True
+        if email and await conn.fetchval("SELECT 1 FROM user_sessions WHERE google_email = $1 LIMIT 1", email):
+            return True
+    return False
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -131,12 +169,21 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             message="Incorrect OTP — please try again",
         )
 
-    # OTP matched → persist auth to Supabase
+    # OTP matched -> persist auth state
     # Extract phone from the send-otp step (stored in session or passed again)
     await update_session_auth(
         session_id=req.session_id,
         otp_verified=True,
         auth_provider="otp",
+    )
+    user_id = f"otp:{req.session_id}"
+    await promote_session_conversations(req.session_id, user_id)
+    token = create_access_token(
+        subject=user_id,
+        claims={
+            "provider": "otp",
+            "session_id": req.session_id,
+        },
     )
 
     logger.info("OTP verified for session", session_id=req.session_id)
@@ -145,6 +192,14 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
         success=True,
         verified=True,
         message="Phone number verified successfully",
+        token=token,
+        user={
+            "user_id": user_id,
+            "provider": "otp",
+            "email": None,
+            "name": "Verified User",
+            "session_id": req.session_id,
+        },
     )
 
 
@@ -156,13 +211,25 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    email = req.email.strip().lower()
     await update_session_auth(
         session_id=req.session_id,
         google_id=req.google_id,
-        google_email=req.email,
+        google_email=email,
         google_name=req.name,
         google_avatar_url=req.avatar_url,
         auth_provider="google",
+    )
+    await promote_session_conversations(req.session_id, email)
+    token = create_access_token(
+        subject=email,
+        claims={
+            "provider": "google",
+            "email": email,
+            "name": req.name,
+            "avatar_url": req.avatar_url,
+            "session_id": req.session_id,
+        },
     )
 
     logger.info("Google auth saved for session", session_id=req.session_id, email=req.email)
@@ -170,4 +237,52 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
     return GoogleAuthResponse(
         success=True,
         message=f"Signed in as {req.name}",
+        token=token,
+        user={
+            "user_id": email,
+            "provider": "google",
+            "email": email,
+            "name": req.name,
+            "avatar_url": req.avatar_url,
+            "session_id": req.session_id,
+        },
+    )
+
+
+@router.get("/me", response_model=AuthMeResponse)
+async def auth_me_endpoint(authorization: str | None = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    try:
+        payload = decode_and_verify_access_token(token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(exc)}") from exc
+
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+
+    email = payload.get("email")
+    if isinstance(email, str):
+        email = email.strip().lower() or None
+    else:
+        email = None
+
+    if not await _user_exists(user_id, email):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    exp = int(payload.get("exp", 0))
+    now = int(time.time())
+    expires_in_seconds = max(0, exp - now)
+    return AuthMeResponse(
+        authenticated=True,
+        user={
+            "user_id": user_id,
+            "provider": payload.get("provider") or "unknown",
+            "email": email,
+            "name": payload.get("name"),
+            "avatar_url": payload.get("avatar_url"),
+            "session_id": payload.get("session_id"),
+            "expires_in_seconds": expires_in_seconds,
+            "token_ttl_hours": get_settings().JWT_ACCESS_TOKEN_EXPIRES_HOURS,
+        },
     )

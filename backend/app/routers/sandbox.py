@@ -33,10 +33,8 @@ from app.services import session_store
 from app.services.sandbox_logger import (
     LogLevel,
     clear_logs,
-    export_global_txt,
     export_session_txt,
     get_all_sessions,
-    get_global_logs,
     get_session_context,
     get_session_logs,
     log_event,
@@ -528,21 +526,10 @@ async def test_get_recommendations(body: TestRecommendRequest):
 async def list_all_sessions():
     """List all tracked sandbox sessions with summary."""
     sessions = get_all_sessions()
-    global_count = len(get_global_logs())
     return {
         "sessions": sessions,
         "total_sessions": len(sessions),
-        "total_global_entries": global_count,
-    }
-
-
-@router.get("/logs/global")
-async def get_global(since: float = 0, limit: int = 200):
-    """Get global logs across all sessions. Supports polling with since=epoch_ms."""
-    entries = get_global_logs(since_ms=since, limit=limit)
-    return {
-        "entries": [e.model_dump() for e in entries],
-        "count": len(entries),
+        "total_global_entries": 0,
     }
 
 
@@ -555,19 +542,6 @@ async def export_session(session_id: str):
         media_type="text/plain",
         headers={
             "Content-Disposition": f'attachment; filename="sandbox-log-{session_id[:8]}.txt"'
-        },
-    )
-
-
-@router.get("/logs/export-all/global")
-async def export_all():
-    """Export all global logs as downloadable .txt file."""
-    txt = export_global_txt()
-    return PlainTextResponse(
-        content=txt,
-        media_type="text/plain",
-        headers={
-            "Content-Disposition": 'attachment; filename="sandbox-global-log.txt"'
         },
     )
 

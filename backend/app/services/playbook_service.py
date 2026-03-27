@@ -41,11 +41,9 @@ import httpx
 import structlog
 
 from app.config import get_settings
+from app.services import openrouter_service
 
 logger = structlog.get_logger()
-
-OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-
 
 # ══════════════════════════════════════════════════════════════
 #  SYSTEM PROMPTS — EXACT USER-PROVIDED TEXT (DO NOT MODIFY)
@@ -742,44 +740,40 @@ async def _call_claude(
     Returns {"content": str, "usage": dict, "latency_ms": int}.
     """
     settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
     model = model_override or settings.OPENROUTER_MODEL
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Playbook Engine",
-    }
-
     t0 = time.perf_counter()
     max_retries = 3
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        for attempt in range(max_retries):
-            resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
-            if resp.status_code == 429 and attempt < max_retries - 1:
-                wait = 2 ** attempt + 1  # 2s, 3s, 5s
+    last_error: Exception | None = None
+    result: dict[str, Any] | None = None
+    for attempt in range(max_retries):
+        try:
+            result = await openrouter_service.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            break
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code == 429 and attempt < max_retries - 1:
+                wait = 2 ** attempt + 1
                 logger.warning("OpenRouter 429 rate limit, retrying", attempt=attempt + 1, wait_s=wait)
                 await asyncio.sleep(wait)
                 continue
-            resp.raise_for_status()
-            break
+            raise
+
+    if result is None:
+        if last_error:
+            raise last_error
+        raise RuntimeError("OpenRouter call failed")
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
-    data = resp.json()
-
-    content = data["choices"][0]["message"]["content"]
-    usage = data.get("usage", {})
+    content = str(result.get("message") or "")
+    usage = result.get("usage", {}) or {}
 
     return {"content": content, "usage": usage, "latency_ms": latency_ms}
 

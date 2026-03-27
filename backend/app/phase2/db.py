@@ -46,6 +46,7 @@ async def connect_db() -> None:
             CREATE TABLE IF NOT EXISTS token_usage (
                 id BIGSERIAL PRIMARY KEY,
                 message_id TEXT NOT NULL,
+                session_id TEXT,
                 model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -55,6 +56,32 @@ async def connect_db() -> None:
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_token_usage_message_id ON token_usage (message_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_session_id ON token_usage (session_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session_id TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id TEXT"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations (session_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations (user_id)"
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_user_links (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (session_id, user_id)
+            )
+            """
         )
 
 

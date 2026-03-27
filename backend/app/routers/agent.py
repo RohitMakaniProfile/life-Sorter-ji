@@ -27,7 +27,7 @@ from app.config import get_settings
 from app.middleware.rate_limit import limiter
 from app.services import session_store, agent_service
 from app.services.crawl_service import detect_url_type, run_background_crawl
-from app.services.persona_doc_service import get_available_personas, get_doc_for_domain, get_diagnostic_sections
+from app.services.persona_doc_service import get_doc_for_domain, get_diagnostic_sections
 from app.services.claude_rca_service import generate_next_rca_question, generate_precision_questions, generate_task_alignment_filter
 from app.services.rca_tree_service import get_first_question, get_task_filter, get_next_from_tree, load_tree
 from app.models.session import (
@@ -99,22 +99,22 @@ class SetTaskResponse(BaseModel):
 
 class SubmitWebsiteRequest(BaseModel):
     session_id: str
-    website_url: str          # e.g., 'https://example.com'
+    website_url: str
 
 
 class AudienceInsight(BaseModel):
-    intended_audience: str = ""     # Who they seem to be targeting
-    actual_audience: str = ""       # Who their content actually reaches
-    mismatch_analysis: str = ""     # Gap between intended and actual
-    recommendations: list[str] = [] # Actionable suggestions
+    intended_audience: str = ""
+    actual_audience: str = ""
+    mismatch_analysis: str = ""
+    recommendations: list[str] = []
 
 
 class WebsiteAnalysisResponse(BaseModel):
     session_id: str
     website_url: str
     audience_insights: AudienceInsight
-    business_summary: str = ""      # Brief overview of the business
-    analysis_note: str = ""         # Message for the user
+    business_summary: str = ""
+    analysis_note: str = ""
 
 
 class SessionContextResponse(BaseModel):
@@ -916,34 +916,6 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
 
 
 
-# ── Instant Q1×Q2×Q3 Tool Lookup ──────────────────────────────
-
-class InstantToolsRequest(BaseModel):
-    outcome: str
-    domain: str
-    task: str
-    limit: int = 10
-
-
-@router.post("/session/instant-tools")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
-async def get_instant_tools_endpoint(request: Request, body: InstantToolsRequest = Body(...)):
-    """
-    Zero-latency tool lookup by Q1 (outcome) × Q2 (domain) × Q3 (task).
-    Returns pre-mapped tool recommendations from the static JSON mapping.
-    No LLM, no RAG — pure dictionary lookup in <1ms.
-    """
-    from app.services.instant_tool_service import get_tools_for_q1_q2_q3
-
-    result = get_tools_for_q1_q2_q3(
-        outcome=body.outcome,
-        domain=body.domain,
-        task=body.task,
-        limit=body.limit,
-    )
-    return result
-
-
 @router.get("/session/{session_id}", response_model=SessionContextResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def get_session_context(request: Request, session_id: str):
@@ -1370,14 +1342,6 @@ async def submit_scale_answers(request: Request, body: SubmitScaleAnswersRequest
     )
 
 
-@router.get("/personas")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def list_personas(request: Request):
-    """List all available persona domains with document mappings."""
-    personas = get_available_personas()
-    return {"personas": personas, "count": len(personas)}
-
-
 # ── Business URL & Crawl Endpoints ─────────────────────────────
 
 
@@ -1647,27 +1611,12 @@ async def skip_business_url(request: Request, body: dict = Body(...)):
 @router.post("/session/website", response_model=WebsiteAnalysisResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...)):
-    """
-    Submit business website URL for audience analysis.
-
-    Called during Stage 2 of RCA. Fetches the website, analyzes
-    the content to determine:
-    - Who the business is targeting (intended audience)
-    - Who the content actually reaches (actual audience)
-    - Any mismatch between the two
-    - Actionable recommendations
-
-    This creates an 'aha' moment for the user — showing them
-    a gap they may not have been aware of.
-    """
     session = session_store.get_session(body.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Store the website URL
     session_store.set_website_url(body.session_id, body.website_url)
 
-    # Analyze the website for audience insights
     try:
         analysis = await agent_service.analyze_website_audience(
             website_url=body.website_url,
@@ -1691,7 +1640,6 @@ async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...
             "business_summary": "",
         }
 
-    # Store insights in session
     session_store.set_audience_insights(body.session_id, analysis)
 
     audience_insights = AudienceInsight(
@@ -1720,207 +1668,4 @@ async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...
     )
 
 
-# ── ICP + Business Insights Endpoint ──────────────────────────
 
-
-class ICPInsight(BaseModel):
-    point: str              # Sharp insight text
-    highlight: str = ""     # Key phrase to highlight in the UI
-
-
-class ICPAnalysis(BaseModel):
-    ideal_customer_profile: str = ""   # Who their ICP should be
-    targeting_verdict: str = ""        # What a customer feels landing on their site
-    improvement_areas: list[str] = []  # Where to improve the business URL/site
-
-
-class BusinessInsightsResponse(BaseModel):
-    session_id: str
-    insights: list[ICPInsight] = []    # 5-6 sharp points
-    icp_analysis: Optional[ICPAnalysis] = None
-    hook: str = ""                     # Catchy hook line before CTA
-    available: bool = False
-
-
-@router.post("/session/insights")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
-async def get_business_insights(request: Request, body: dict = Body(...)):
-    """
-    Generate 5-6 sharp business insights + ICP analysis + catchy hook.
-
-    Combines:
-    - All Q&A history (outcome, domain, task, diagnostic, scale)
-    - Crawl data (website analysis)
-    - Business profile
-
-    Returns structured insights for the final report.
-    """
-    session_id = body.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Build context
-    crawl_data = session.crawl_summary or {}
-    business_profile = session.business_profile or {}
-    rca_history = session.rca_history or []
-
-    if not rca_history and not crawl_data.get("points"):
-        return BusinessInsightsResponse(
-            session_id=session_id, available=False
-        ).model_dump()
-
-    result = await agent_service.generate_business_insights(
-        outcome_label=session.outcome_label or "",
-        domain=session.domain or "",
-        task=session.task or "",
-        rca_history=rca_history,
-        business_profile=business_profile,
-        crawl_summary=crawl_data,
-        crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
-        rca_diagnostic_context=session.rca_diagnostic_context or {},
-        rca_summary=session.rca_summary or "",
-        gbp_data=session.gbp_data or None,
-    )
-
-    if not result:
-        return BusinessInsightsResponse(
-            session_id=session_id, available=False
-        ).model_dump()
-
-    # Log to context pool
-    if result.get("_meta"):
-        session_store.add_llm_call_log(session_id, **result["_meta"])
-
-    insights = [
-        {"point": i.get("point", ""), "highlight": i.get("highlight", "")}
-        for i in result.get("insights", [])
-    ]
-
-    icp = result.get("icp_analysis")
-    icp_data = None
-    if icp:
-        icp_data = {
-            "ideal_customer_profile": icp.get("ideal_customer_profile", ""),
-            "targeting_verdict": icp.get("targeting_verdict", ""),
-            "improvement_areas": icp.get("improvement_areas", []),
-        }
-
-    logger.info(
-        "Business insights generated",
-        session_id=session_id,
-        insights_count=len(insights),
-        has_icp=bool(icp_data),
-    )
-
-    return {
-        "session_id": session_id,
-        "insights": insights,
-        "icp_analysis": icp_data,
-        "hook": result.get("hook", ""),
-        "available": True,
-    }
-
-
-# ── Business Intelligence Verdict (Pre-RCA, Crawl-Powered) ────
-
-class BusinessIntelRequest(BaseModel):
-    session_id: str
-
-
-class SEOHealth(BaseModel):
-    score: int = 0
-    diagnosis: str = ""
-    working: str = ""
-    missing: str = ""
-    quick_win: str = ""
-
-
-class FunnelStrategy(BaseModel):
-    strategy: str = ""
-    action: str = ""
-
-
-class BusinessIntelResponse(BaseModel):
-    session_id: str
-    available: bool = False
-    icp_snapshot: str = ""
-    seo_health: Optional[SEOHealth] = None
-    top_funnel: list[FunnelStrategy] = []
-    mid_funnel: list[FunnelStrategy] = []
-    bottom_funnel: list[FunnelStrategy] = []
-    verdict_line: str = ""
-
-
-@router.post("/session/business-intel", response_model=BusinessIntelResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
-async def get_business_intel(request: Request, body: BusinessIntelRequest = Body(...)):
-    """
-    Generate a Business Intelligence Verdict from crawl data.
-
-    Shows ICP snapshot, SEO health score, and funnel growth strategies
-    BEFORE the RCA diagnostic — empowering users with strategic insights.
-
-    Requires crawl to be complete.
-    """
-    session = session_store.get_session(body.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Need crawl data
-    if not session.crawl_raw or session.crawl_status != "complete":
-        return BusinessIntelResponse(
-            session_id=body.session_id,
-            available=False,
-        )
-
-    result = await agent_service.generate_business_intel_verdict(
-        outcome_label=session.outcome_label or "",
-        domain=session.domain or "",
-        task=session.task or "",
-        crawl_raw=session.crawl_raw,
-        crawl_summary=session.crawl_summary or {},
-        business_profile=session.business_profile or None,
-    )
-
-    if not result:
-        return BusinessIntelResponse(
-            session_id=body.session_id,
-            available=False,
-        )
-
-    seo = result.get("seo_health")
-    seo_data = None
-    if seo and isinstance(seo, dict):
-        seo_data = SEOHealth(
-            score=seo.get("score", 0),
-            diagnosis=seo.get("diagnosis", ""),
-            working=seo.get("working", ""),
-            missing=seo.get("missing", ""),
-            quick_win=seo.get("quick_win", ""),
-        )
-
-    top = [FunnelStrategy(**s) for s in result.get("top_funnel", []) if isinstance(s, dict)]
-    mid = [FunnelStrategy(**s) for s in result.get("mid_funnel", []) if isinstance(s, dict)]
-    bot = [FunnelStrategy(**s) for s in result.get("bottom_funnel", []) if isinstance(s, dict)]
-
-    logger.info(
-        "Business intel verdict served",
-        session_id=body.session_id,
-        seo_score=seo_data.score if seo_data else None,
-        strategies=len(top) + len(mid) + len(bot),
-    )
-
-    return BusinessIntelResponse(
-        session_id=body.session_id,
-        available=True,
-        icp_snapshot=result.get("icp_snapshot", ""),
-        seo_health=seo_data,
-        top_funnel=top,
-        mid_funnel=mid,
-        bottom_funnel=bot,
-        verdict_line=result.get("verdict_line", ""),
-    )
