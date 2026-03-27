@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "headManifestId": "88329ced32f77547c44f85db37e5c0ab096cab97c83e63bcf12bc2e297a9e657",
+  "sourceCommit": "40877d76bf39c0249ad614e4844c7f4d00cf3afd",
+  "pushedAt": "2026-03-27T03:40:29.879Z",
+  "message": "initial",
+  "fileHashes": {
+    "backend/.env": "192666bc5eb56297bc6eb03f2b82f87a88ef1f014c1940b54ee95197f08d15fd",
+    "frontend/.env": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+  }
+}

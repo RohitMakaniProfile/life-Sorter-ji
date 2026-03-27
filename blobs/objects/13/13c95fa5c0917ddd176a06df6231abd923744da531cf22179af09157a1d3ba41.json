@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+  "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+  "encryptedAt": "2026-03-27T03:40:30.249Z",
+  "cipher": {
+    "v": 1,
+    "alg": "aes-256-gcm",
+    "kdf": "scrypt",
+    "salt": "33afdtkxqvF/wMCKz87qBg==",
+    "iv": "rPiP61tFLI1Ohqsr",
+    "tag": "J0+Qp+q57n2bZ6zCkTguig==",
+    "data": "lgjZdIdAz8YNiX4J4vS8VkBmkqR+LcUOa4v0/VEaG/LHQpmMzARSDjD+cbCaDK1pRnZzmVMdQsePV6+x1u1YxZ+tNaqwziwart/03h8JX/MoJOAgo9Cl9n++hJWBFkIRS+XGetDMv48Tuq03ou6IRChyaTwFpHXVmwmEoK6EhTA/Z7M="
+  }
+}
