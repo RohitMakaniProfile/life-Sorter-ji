@@ -1241,7 +1241,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = await ensureSession();
       if (sid) {
-        await coreApi.postOutcome({ session_id: sid, outcome: outcome.id, outcome_label: outcome.text });
+        await coreApi.patchAgentSession(sid, { outcome: outcome.id, outcome_label: outcome.text });
       }
     } catch (e) {
       console.log('Session tracking: outcome', e);
@@ -1281,7 +1281,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await coreApi.postDomain({ session_id: sid, domain });
+        await coreApi.patchAgentSession(sid, { domain });
       }
     } catch (e) {
       console.log('Session tracking: domain', e);
@@ -1313,7 +1313,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       const sid = await ensureSession();
       if (sid) {
         setLoadingPhase('diagnostic');
-        const data = await coreApi.postTask({ session_id: sid, task });
+        const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'task_setup', task });
 
         if (data.questions && data.questions.length > 0) {
           const isRca = data.rca_mode === true;
@@ -1402,10 +1402,9 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await coreApi.postAnswer({
-          session_id: sid,
-          question_index: 900 + currentPrecisionQIndex,
-          answer: `[${currentPQ?.type || 'precision'}] ${answer}`,
+        await coreApi.patchAgentSession(sid, {
+          dynamic_question: `[precision:${currentPQ?.type || 'unknown'}]`,
+          dynamic_answer: answer,
         });
       }
     } catch (e) {
@@ -1470,8 +1469,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       try {
         const sid = getSessionId();
         if (sid) {
-          const data = await coreApi.postAnswer({
-            session_id: sid,
+          const { result: data } = await coreApi.advanceAgentSession(sid, {
+            action: 'submit_answer',
             question_index: currentDynamicQIndex,
             answer,
           });
@@ -1490,7 +1489,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
                 const waitForCrawl = setInterval(async () => {
                   try {
                     const sid = getSessionId();
-                    const statusData = await coreApi.getCrawlStatus(sid);
+                    const statusData = await coreApi.getAgentSessionStatus(sid);
                     if (statusData.crawl_status === 'complete' || statusData.crawl_status === 'failed') {
                       setCrawlStatus(statusData.crawl_status);
                       clearInterval(waitForCrawl);
@@ -1514,7 +1513,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
             setIsTyping(true);
             try {
               const sid = getSessionId();
-              const precData = await coreApi.getPrecisionQuestions({ session_id: sid });
+              const { result: precData } = await coreApi.advanceAgentSession(sid, { action: 'precision_questions' });
 
               if (precData.available && precData.questions && precData.questions.length > 0) {
                 setIsTyping(false);
@@ -1621,10 +1620,9 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await coreApi.postAnswer({
-          session_id: sid,
-          question_index: currentDynamicQIndex,
-          answer,
+        await coreApi.patchAgentSession(sid, {
+          dynamic_question: currentQ?.question,
+          dynamic_answer: answer,
         });
       }
     } catch (e) {
@@ -1701,7 +1699,10 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        const data = await coreApi.analyzeWebsite({ session_id: sid, website_url: url });
+        const { result: data } = await coreApi.advanceAgentSession(sid, {
+          action: 'website_analysis',
+          website_url: url,
+        });
 
         if (data.audience_insights) {
           let insightText = `## Audience Analysis for Your Business\n\n`;
@@ -1818,7 +1819,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     if (!sid) { resumeDiagnosticQuestions(); return; }
 
     try {
-      const data = await coreApi.getScaleQuestions(sid);
+      const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'scale_questions' });
 
       if (!data.questions || data.questions.length === 0) {
         resumeDiagnosticQuestions();
@@ -1879,10 +1880,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       const submitScalePromise = (async () => {
         try {
           if (sid) {
-            await coreApi.submitScaleAnswers({
-              session_id: sid,
-              answers: scaleAnswersRef.current,
-            });
+            await coreApi.patchAgentSession(sid, { scale_answers: scaleAnswersRef.current });
           }
         } catch (e) {
           console.log('Scale answers submission failed (non-blocking)', e);
@@ -1904,7 +1902,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
       try {
         if (sid) {
-          const diagData = await coreApi.startDiagnostic({ session_id: sid });
+          const { result: diagData } = await coreApi.advanceAgentSession(sid, { action: 'start_diagnostic' });
 
           if (diagData.question && diagData.rca_mode) {
             const firstQ = diagData.question;
@@ -1979,16 +1977,16 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        const data = await coreApi.submitUrl({ session_id: sid, business_url: url });
+        const data = await coreApi.patchAgentSession(sid, { business_url: url });
 
-        if (data.crawl_started) {
+        if (data.crawl_status === 'in_progress') {
           setCrawlStatus('in_progress');
           startCrawlPolling();
         }
 
         const confirmMsg = {
           id: getNextMessageId(),
-          text: data.message || `Got it! I'm analyzing **${new URL(url).hostname}** in the background while we continue.`,
+          text: `Got it! I'm analyzing **${new URL(url).hostname}** in the background while we continue.`,
           sender: 'bot',
           timestamp: new Date(),
         };
@@ -2020,7 +2018,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        coreApi.skipUrl({ session_id: sid });
+        coreApi.patchAgentSession(sid, { skip_url: true });
       }
     } catch (e) {
       console.log('Skip URL notification failed', e);
@@ -2057,7 +2055,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       try {
         const sid = getSessionId();
         if (!sid) return;
-        const data = await coreApi.getCrawlStatus(sid);
+        const data = await coreApi.getAgentSessionStatus(sid);
         if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
           setCrawlStatus(data.crawl_status);
           clearInterval(crawlPollRef.current);
@@ -2257,7 +2255,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
     try {
       const sid = getSessionId();
-      const data = await coreApi.recommend({ session_id: sid });
+      const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'recommend' });
 
       const outcomeLabel = outcomeOptions.find(g => g.id === selectedGoal)?.text || selectedGoal;
       const domainLabel = selectedDomainName || 'General';

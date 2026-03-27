@@ -4,19 +4,16 @@ AGENT ROUTER — AI Agent with Dynamic Persona & Session Context
 ═══════════════════════════════════════════════════════════════
 Endpoints for the AI agent flow:
 
-POST /api/v1/agent/session              — Create a new session
-POST /api/v1/agent/session/outcome      — Record Q1 (outcome)
-POST /api/v1/agent/session/domain       — Record Q2 (domain)
-POST /api/v1/agent/session/task         — Record Q3 (task) + early recs + generate dynamic Qs
-POST /api/v1/agent/session/answer       — Submit dynamic question answer
-POST /api/v1/agent/session/website      — Submit website for audience analysis
-POST /api/v1/agent/session/recommend    — Get final personalized recommendations
-GET  /api/v1/agent/session/{id}         — Get full session context
-GET  /api/v1/agent/personas             — List available persona domains
+POST  /api/v1/agent/session                     — Create a new session
+PATCH /api/v1/agent/session/{id}                — Update simple session fields
+POST  /api/v1/agent/session/{id}/advance        — Execute workflow step
+GET   /api/v1/agent/session/{id}/status         — Lightweight progress status
+GET   /api/v1/agent/session/{id}                — Get full session context
+GET   /api/v1/agent/session/{id}/context-pool   — Full LLM/debug context
+GET   /api/v1/agent/session/{id}/website-snapshot — Structured crawl snapshot
 """
 
 import asyncio
-from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -44,7 +41,7 @@ from app.models.session import (
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/agent", tags=["agent"])
+router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
 # ── Request/Response Models ────────────────────────────────────
@@ -53,17 +50,6 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 class CreateSessionResponse(BaseModel):
     session_id: str
     stage: str
-
-
-class SetOutcomeRequest(BaseModel):
-    session_id: str
-    outcome: str           # e.g., 'lead-generation'
-    outcome_label: str     # e.g., 'Lead Generation (Marketing, SEO & Social)'
-
-
-class SetDomainRequest(BaseModel):
-    session_id: str
-    domain: str            # e.g., 'Content & Social Media'
 
 
 class SetTaskRequest(BaseModel):
@@ -137,6 +123,46 @@ class SessionContextResponse(BaseModel):
     scale_questions_complete: bool = False
 
 
+class SessionPatchRequest(BaseModel):
+    outcome: Optional[str] = None
+    outcome_label: Optional[str] = None
+    domain: Optional[str] = None
+    task: Optional[str] = None
+    business_url: Optional[str] = None
+    gbp_url: Optional[str] = None
+    skip_url: Optional[bool] = None
+    scale_answers: Optional[dict[str, Any]] = None
+    dynamic_question: Optional[str] = None
+    dynamic_answer: Optional[str] = None
+    stage: Optional[str] = None
+
+
+class SessionAdvanceRequest(BaseModel):
+    action: str = "auto"  # auto | task_setup | submit_answer | scale_questions | website_analysis | start_diagnostic | precision_questions | recommend
+    task: Optional[str] = None
+    question_index: Optional[int] = None
+    answer: Optional[str] = None
+    website_url: Optional[str] = None
+
+
+class SessionAdvanceResponse(BaseModel):
+    session_id: str
+    action: str
+    stage: str
+    result: dict[str, Any] = {}
+    snapshot: SessionContextResponse
+
+
+class SessionStatusResponse(BaseModel):
+    session_id: str
+    stage: str
+    crawl_status: str = ""
+    crawl_summary: Optional[dict[str, Any]] = None
+    rca_complete: bool = False
+    scale_questions_complete: bool = False
+    playbook_stage: str = ""
+
+
 # ── Endpoints ──────────────────────────────────────────────────
 
 
@@ -151,38 +177,6 @@ async def create_session(request: Request):
     )
 
 
-@router.post("/session/outcome", response_model=CreateSessionResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def set_outcome(request: Request, body: SetOutcomeRequest = Body(...)):
-    """Record Q1: Outcome / Growth Bucket selection."""
-    session = session_store.set_outcome(
-        body.session_id, body.outcome, body.outcome_label
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return CreateSessionResponse(
-        session_id=session.session_id,
-        stage=session.stage.value,
-    )
-
-
-@router.post("/session/domain", response_model=CreateSessionResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def set_domain(request: Request, body: SetDomainRequest = Body(...)):
-    """Record Q2: Domain / Sub-Category selection."""
-    session = session_store.set_domain(body.session_id, body.domain)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return CreateSessionResponse(
-        session_id=session.session_id,
-        stage=session.stage.value,
-    )
-
-
-@router.post("/session/task", response_model=SetTaskResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def set_task_and_generate_questions(request: Request, body: SetTaskRequest = Body(...)):
     """
     Record Q3: Task selection.
@@ -377,8 +371,6 @@ class StartDiagnosticResponse(BaseModel):
     context_used: list[str] = []   # What context influenced the question
 
 
-@router.post("/session/start-diagnostic", response_model=StartDiagnosticResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body(...)):
     """
     Generate the first diagnostic question with FULL context:
@@ -559,8 +551,6 @@ class PrecisionQuestionsResponse(BaseModel):
     available: bool = False     # True if questions were generated
 
 
-@router.post("/session/precision-questions", response_model=PrecisionQuestionsResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def get_precision_questions(request: Request, body: PrecisionQuestionsRequest = Body(...)):
     """
     Generate 3 precision questions that cross-reference crawl data with
@@ -628,8 +618,6 @@ async def get_precision_questions(request: Request, body: PrecisionQuestionsRequ
     )
 
 
-@router.post("/session/answer", response_model=SubmitDynamicAnswerResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerRequest = Body(...)):
     """
     Submit an answer to a diagnostic question.
@@ -805,8 +793,6 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
     )
 
 
-@router.post("/session/recommend", response_model=GetRecommendationsResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def get_recommendations(request: Request, body: GetRecommendationsRequest = Body(...)):
     """
     Generate final personalized tool recommendations based on
@@ -914,6 +900,174 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
     )
 
 
+
+
+def _get_session_or_404(session_id: str):
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+def _get_snapshot_or_404(session_id: str) -> SessionContextResponse:
+    summary = session_store.get_session_summary(session_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionContextResponse(**summary)
+
+
+@router.patch("/session/{session_id}", response_model=SessionContextResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def patch_session(request: Request, session_id: str, body: SessionPatchRequest = Body(...)):
+    """
+    Consolidated state update endpoint for simple session fields.
+    Keeps legacy step endpoints intact while enabling simplified frontend flow.
+    """
+    _get_session_or_404(session_id)
+
+    if body.outcome is not None or body.outcome_label is not None:
+        if not body.outcome or not body.outcome_label:
+            raise HTTPException(status_code=400, detail="Both outcome and outcome_label are required")
+        session_store.set_outcome(session_id, body.outcome, body.outcome_label)
+
+    if body.domain is not None:
+        session_store.set_domain(session_id, body.domain)
+
+    if body.task is not None:
+        # Patch path sets only task/stage; heavy generation remains in /advance
+        session_store.set_task(session_id, body.task)
+
+    if body.scale_answers is not None:
+        session_store.set_business_profile(session_id, body.scale_answers)
+
+    if body.business_url:
+        normalized = body.business_url.strip()
+        if normalized and not normalized.startswith("http://") and not normalized.startswith("https://"):
+            normalized = "https://" + normalized
+        url_type = detect_url_type(normalized) if normalized else "website"
+        session_store.set_website_url(session_id, normalized, url_type)
+        session_store.set_crawl_status(session_id, "in_progress")
+        asyncio.create_task(run_background_crawl(session_id, normalized))
+
+    if body.gbp_url:
+        session = _get_session_or_404(session_id)
+        normalized_gbp = body.gbp_url.strip()
+        if normalized_gbp and not normalized_gbp.startswith("http://") and not normalized_gbp.startswith("https://"):
+            normalized_gbp = "https://" + normalized_gbp
+        session.gbp_url = normalized_gbp
+        session_store.update_session(session)
+
+    if body.skip_url:
+        session = _get_session_or_404(session_id)
+        session.website_url = None
+        session.crawl_status = "skipped"
+        session_store.update_session(session)
+
+    if body.dynamic_answer:
+        question = body.dynamic_question or f"RCA Question {len(_get_session_or_404(session_id).rca_history) + 1}"
+        session_store.add_rca_answer(session_id, question, body.dynamic_answer)
+
+    if body.stage:
+        session = _get_session_or_404(session_id)
+        try:
+            session.stage = SessionStage(body.stage)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid stage: {body.stage}") from exc
+        session_store.update_session(session)
+
+    return _get_snapshot_or_404(session_id)
+
+
+@router.post("/session/{session_id}/advance", response_model=SessionAdvanceResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def advance_session(request: Request, session_id: str, body: SessionAdvanceRequest = Body(...)):
+    """
+    Consolidated workflow progression endpoint.
+    Runs heavyweight transitions while returning a fresh session snapshot.
+    """
+    session = _get_session_or_404(session_id)
+    action = (body.action or "auto").strip().lower()
+
+    if action == "auto":
+        if session.stage in {SessionStage.DYNAMIC_QUESTIONS, SessionStage.SCALE_QUESTIONS, SessionStage.TASK}:
+            action = "start_diagnostic"
+        elif session.rca_complete:
+            action = "recommend"
+        else:
+            action = "precision_questions"
+
+    if action == "task_setup":
+        if not body.task:
+            raise HTTPException(status_code=400, detail="task is required for action=task_setup")
+        result_model = await set_task_and_generate_questions(
+            request,
+            SetTaskRequest(session_id=session_id, task=body.task),
+        )
+        result = result_model.model_dump()
+    elif action == "submit_answer":
+        if body.question_index is None or body.answer is None:
+            raise HTTPException(status_code=400, detail="question_index and answer are required for action=submit_answer")
+        result_model = await submit_dynamic_answer(
+            request,
+            SubmitDynamicAnswerRequest(
+                session_id=session_id,
+                question_index=body.question_index,
+                answer=body.answer,
+            ),
+        )
+        result = result_model.model_dump()
+    elif action == "scale_questions":
+        result_model = await get_scale_questions_endpoint(request, session_id)
+        result = result_model.model_dump()
+    elif action == "website_analysis":
+        if not body.website_url:
+            raise HTTPException(status_code=400, detail="website_url is required for action=website_analysis")
+        result_model = await submit_website(
+            request,
+            SubmitWebsiteRequest(session_id=session_id, website_url=body.website_url),
+        )
+        result = result_model.model_dump()
+    elif action == "start_diagnostic":
+        result_model = await start_diagnostic(request, StartDiagnosticRequest(session_id=session_id))
+        result = result_model.model_dump()
+    elif action == "precision_questions":
+        result_model = await get_precision_questions(request, PrecisionQuestionsRequest(session_id=session_id))
+        result = result_model.model_dump()
+    elif action == "recommend":
+        result_model = await get_recommendations(request, GetRecommendationsRequest(session_id=session_id))
+        result = result_model.model_dump()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported action. Use one of: auto, task_setup, submit_answer, "
+                "scale_questions, website_analysis, start_diagnostic, precision_questions, recommend"
+            ),
+        )
+
+    snapshot = _get_snapshot_or_404(session_id)
+    return SessionAdvanceResponse(
+        session_id=session_id,
+        action=action,
+        stage=snapshot.stage,
+        result=result,
+        snapshot=snapshot,
+    )
+
+
+@router.get("/session/{session_id}/status", response_model=SessionStatusResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_session_status(request: Request, session_id: str):
+    session = _get_session_or_404(session_id)
+    return SessionStatusResponse(
+        session_id=session_id,
+        stage=session.stage.value,
+        crawl_status=session.crawl_status or "",
+        crawl_summary=session.crawl_summary if session.crawl_status == "complete" else None,
+        rca_complete=bool(session.rca_complete),
+        scale_questions_complete=bool(session.scale_questions_complete),
+        playbook_stage=session.playbook_stage or "",
+    )
 
 
 @router.get("/session/{session_id}", response_model=SessionContextResponse)
@@ -1255,19 +1409,6 @@ class ScaleQuestionsResponse(BaseModel):
     total: int
 
 
-class SubmitScaleAnswersRequest(BaseModel):
-    session_id: str
-    answers: dict[str, str | list[str]]   # values can be a string or list for multi-select
-
-
-class SubmitScaleAnswersResponse(BaseModel):
-    session_id: str
-    business_profile: dict[str, str | list[str]]
-    message: str
-
-
-@router.get("/session/{session_id}/scale-questions", response_model=ScaleQuestionsResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def get_scale_questions_endpoint(request: Request, session_id: str):
     """
     Return the business scale / context classification questions.
@@ -1302,216 +1443,7 @@ async def get_scale_questions_endpoint(request: Request, session_id: str):
     )
 
 
-@router.post("/session/scale-answers", response_model=SubmitScaleAnswersResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def submit_scale_answers(request: Request, body: SubmitScaleAnswersRequest = Body(...)):
-    """
-    Record all scale question answers at once.
-
-    Builds a business_profile{} and stores it in the session.
-    This profile is injected into the Opus system prompt to calibrate
-    the depth and complexity of diagnostic questions.
-    """
-    session = session_store.get_session(body.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Build business profile from answers (use dynamic questions for validation)
-    domain = session.domain or ""
-    dynamic_qs = _get_scale_questions(domain=domain)
-    valid_ids = {q["id"] for q in dynamic_qs}
-
-    business_profile = {}
-    for qid, answer in body.answers.items():
-        if qid in valid_ids:
-            business_profile[qid] = answer
-
-    # Store in session
-    session_store.set_business_profile(body.session_id, business_profile)
-
-    logger.info(
-        "Scale questions answered, business profile set",
-        session_id=body.session_id,
-        profile_keys=list(business_profile.keys()),
-    )
-
-    return SubmitScaleAnswersResponse(
-        session_id=body.session_id,
-        business_profile=business_profile,
-        message="Got it — I now understand your business context. Let's dive deeper.",
-    )
-
-
 # ── Business URL & Crawl Endpoints ─────────────────────────────
-
-
-class SubmitUrlRequest(BaseModel):
-    session_id: str
-    business_url: str = ""     # e.g., 'https://example.com' or 'instagram.com/brand'
-    gbp_url: str = ""          # e.g., 'https://maps.app.goo.gl/...' or Google Maps link
-
-
-class SubmitUrlResponse(BaseModel):
-    session_id: str
-    business_url: str = ""
-    gbp_url: str = ""
-    url_type: str = ""         # "website", "social_profile", or "gbp"
-    crawl_started: bool = False
-    gbp_crawl_started: bool = False
-    message: str
-
-
-class CrawlStatusResponse(BaseModel):
-    session_id: str
-    crawl_status: str          # "in_progress", "complete", "failed", ""
-    crawl_summary: Optional[dict] = None
-    gbp_data: Optional[dict] = None
-
-
-@router.post("/session/url", response_model=SubmitUrlResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
-async def submit_business_url(request: Request, body: SubmitUrlRequest = Body(...)):
-    """
-    Submit business URL and/or GBP URL after tool recommendations.
-
-    Supports:
-    - Website URL only (existing flow)
-    - GBP URL only (Google Maps / Business Profile link)
-    - Both website + GBP URLs simultaneously
-
-    1. Stores URLs in the session
-    2. Detects URL types
-    3. Fires async background crawl(s) (does NOT block the response)
-    4. Returns immediately so the frontend can advance to Scale Questions
-
-    Crawls run in parallel. Frontend polls /session/{id}/crawl-status
-    to check completion before starting Opus deep-dive questions.
-    """
-    session = session_store.get_session(body.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    website_url = ""
-    gbp_url = ""
-    url_type = ""
-    crawl_started = False
-    gbp_crawl_started = False
-
-    # ── Handle business/website URL ────────────────────────────
-    if body.business_url and body.business_url.strip():
-        website_url = body.business_url.strip()
-        if not website_url.startswith("http://") and not website_url.startswith("https://"):
-            website_url = "https://" + website_url
-        url_type = detect_url_type(website_url)
-
-        # If user put a GBP link in the website field, treat it as GBP
-        if url_type == "gbp" and not body.gbp_url:
-            gbp_url = website_url
-            website_url = ""
-        else:
-            session_store.set_website_url(body.session_id, website_url, url_type)
-            session_store.set_crawl_status(body.session_id, "in_progress")
-            asyncio.create_task(run_background_crawl(body.session_id, website_url))
-            crawl_started = True
-
-    # ── Handle GBP URL ─────────────────────────────────────────
-    if body.gbp_url and body.gbp_url.strip():
-        gbp_url = body.gbp_url.strip()
-        if not gbp_url.startswith("http://") and not gbp_url.startswith("https://"):
-            gbp_url = "https://" + gbp_url
-
-    if gbp_url:
-        # Store GBP URL in session
-        session = session_store.get_session(body.session_id)
-        if session:
-            session.gbp_url = gbp_url
-            session_store.update_session(session)
-
-        # If no website crawl is running, use the main crawl pipeline for GBP
-        if not crawl_started:
-            session_store.set_crawl_status(body.session_id, "in_progress")
-            asyncio.create_task(run_background_crawl(body.session_id, gbp_url))
-            crawl_started = True
-            url_type = "gbp"
-        else:
-            # Both URLs provided — fire a separate GBP crawl
-            asyncio.create_task(_run_gbp_side_crawl(body.session_id, gbp_url))
-        gbp_crawl_started = True
-
-    # Build message
-    parts = []
-    if website_url:
-        try:
-            parts.append(f"**{urlparse(website_url).netloc}**")
-        except Exception:
-            parts.append("your website")
-    if gbp_url:
-        parts.append("your **Google Business Profile**")
-    target = " and ".join(parts) if parts else "your business"
-    message = f"Got it! I'm analyzing {target} in the background while we continue."
-
-    logger.info(
-        "Business URL submitted, background crawl started",
-        session_id=body.session_id,
-        website_url=website_url or None,
-        gbp_url=gbp_url or None,
-        url_type=url_type,
-    )
-
-    return SubmitUrlResponse(
-        session_id=body.session_id,
-        business_url=website_url,
-        gbp_url=gbp_url,
-        url_type=url_type or "website",
-        crawl_started=crawl_started,
-        gbp_crawl_started=gbp_crawl_started,
-        message=message,
-    )
-
-
-async def _run_gbp_side_crawl(session_id: str, gbp_url: str):
-    """Run a GBP crawl as a side job alongside the main website crawl."""
-    try:
-        from app.services.crawl_service import crawl_gbp
-        crawl_raw = await crawl_gbp(gbp_url, session_id=session_id)
-        gbp_data = crawl_raw.get("gbp_data", {})
-        if gbp_data:
-            session = session_store.get_session(session_id)
-            if session:
-                session.gbp_data = gbp_data
-                session_store.update_session(session)
-                logger.info(
-                    "GBP side crawl complete",
-                    session_id=session_id,
-                    business=gbp_data.get("business_name", ""),
-                    rating=gbp_data.get("rating"),
-                    reviews=len(gbp_data.get("reviews", [])),
-                )
-    except Exception as e:
-        logger.error("GBP side crawl failed", session_id=session_id, error=str(e))
-
-
-@router.get("/session/{session_id}/crawl-status", response_model=CrawlStatusResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_crawl_status(request: Request, session_id: str):
-    """
-    Poll crawl status. Frontend calls this to check if the background
-    crawl has completed before starting the Opus deep-dive questions.
-
-    Returns:
-      - crawl_status: "in_progress" | "complete" | "failed" | ""
-      - crawl_summary: populated only when status is "complete"
-    """
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return CrawlStatusResponse(
-        session_id=session_id,
-        crawl_status=session.crawl_status or "",
-        crawl_summary=session.crawl_summary if session.crawl_status == "complete" else None,
-        gbp_data=session.gbp_data if session.gbp_data else None,
-    )
 
 
 # ── Website Snapshot — rich crawl data for display while playbook generates ──
@@ -1580,36 +1512,6 @@ async def get_website_snapshot(request: Request, session_id: str):
     )
 
 
-@router.post("/session/skip-url")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def skip_business_url(request: Request, body: dict = Body(...)):
-    """
-    User chose to skip URL submission.
-    Records the skip and allows flow to continue with generic recommendations.
-    """
-    session_id = body.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Mark as skipped — no crawl, no URL
-    session.website_url = None
-    session.crawl_status = "skipped"
-    session_store.update_session(session)
-
-    logger.info("User skipped URL submission", session_id=session_id)
-
-    return {
-        "session_id": session_id,
-        "message": "No problem — we'll give general recommendations instead of personalized ones.",
-    }
-
-
-@router.post("/session/website", response_model=WebsiteAnalysisResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...)):
     session = session_store.get_session(body.session_id)
     if not session:

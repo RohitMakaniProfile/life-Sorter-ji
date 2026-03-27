@@ -1,5 +1,5 @@
 import { API_ROUTES } from '../routes';
-import { apiDelete, apiGet, apiGetText, apiPost, apiRequest } from '../http';
+import { apiGet, apiPost, apiRequest } from '../http';
 import { getApiBaseRequired } from '../../config/apiBase';
 import type {
   AgentId,
@@ -30,20 +30,21 @@ export const coreApi = {
     ),
 
   createAgentSession: () => apiPost<{ session_id: string }>(API_ROUTES.agent.session, {}),
-  postOutcome: (payload: { session_id: string; outcome: string; outcome_label: string }) =>
-    apiPost<unknown>(API_ROUTES.agent.outcome, payload),
-  postDomain: (payload: { session_id: string; domain: string }) => apiPost<unknown>(API_ROUTES.agent.domain, payload),
-  postTask: (payload: { session_id: string; task: string }) => apiPost<any>(API_ROUTES.agent.task, payload),
-  postAnswer: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.answer, payload),
-  getCrawlStatus: (sessionId: string) => apiGet<any>(API_ROUTES.agent.crawlStatus(sessionId)),
-  getPrecisionQuestions: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.precisionQuestions, payload),
-  analyzeWebsite: (payload: { session_id: string; website_url: string }) => apiPost<any>(API_ROUTES.agent.website, payload),
-  getScaleQuestions: (sessionId: string) => apiGet<any>(API_ROUTES.agent.scaleQuestions(sessionId)),
-  submitScaleAnswers: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.scaleAnswers, payload),
-  startDiagnostic: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.startDiagnostic, payload),
-  submitUrl: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.url, payload),
-  skipUrl: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.skipUrl, payload),
-  recommend: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.agent.recommend, payload),
+  getAgentSession: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionById(sessionId)),
+  patchAgentSession: (sessionId: string, payload: Record<string, unknown>) =>
+    apiFetch(API_ROUTES.agent.patchSession(sessionId), {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(await extractApiError(res));
+      return (await res.json()) as any;
+    }),
+  advanceAgentSession: (
+    sessionId: string,
+    payload: { action?: string; task?: string; question_index?: number; answer?: string },
+  ) =>
+    apiPost<any>(API_ROUTES.agent.advanceSession(sessionId), payload),
+  getAgentSessionStatus: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionStatus(sessionId)),
   getWebsiteSnapshot: (sessionId: string) => apiGet<any>(API_ROUTES.agent.websiteSnapshot(sessionId)),
   getContextPool: (sessionId: string) => apiGet<any>(API_ROUTES.agent.contextPool(sessionId)),
 
@@ -59,19 +60,6 @@ export const coreApi = {
   chat: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.chat, payload),
 
   marketIntelligence: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.marketIntelligence, payload),
-
-  sandboxLogin: (payload: { id: string; password: string }) => apiPost<{ token: string }>(API_ROUTES.sandbox.login, payload),
-  sandboxCreateSession: () => apiPost<{ session_id: string }>(API_ROUTES.sandbox.testSession, {}),
-  sandboxOutcome: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.sandbox.testOutcome, payload),
-  sandboxDomain: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.sandbox.testDomain, payload),
-  sandboxTask: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.sandbox.testTask, payload),
-  sandboxAnswer: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.sandbox.testAnswer, payload),
-  sandboxRecommend: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.sandbox.testRecommend, payload),
-  sandboxLogs: () => apiGet<any>(API_ROUTES.sandbox.logs),
-  sandboxLogsBySession: (sessionId: string) => apiGet<any>(API_ROUTES.sandbox.logsBySession(sessionId)),
-  sandboxExportSession: (sessionId: string) => apiGetText(API_ROUTES.sandbox.exportSession(sessionId)),
-  sandboxExportGlobal: () => apiGetText(API_ROUTES.sandbox.exportGlobal),
-  sandboxClearLogs: () => apiDelete(API_ROUTES.sandbox.logs),
 
   // Raw passthrough for non-JSON/non-standard calls.
   request: apiRequest,

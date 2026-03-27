@@ -143,7 +143,6 @@ def create_app() -> FastAPI:
         payments,
         legacy,
         agent,
-        sandbox,
         playbook,
     )
 
@@ -156,8 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
-    app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
-    app.include_router(sandbox.router, prefix="/api/v1", tags=["Sandbox"])
+    app.include_router(agent.router, prefix="/api/v1")
     app.include_router(playbook.router, tags=["Playbook"])
 
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
