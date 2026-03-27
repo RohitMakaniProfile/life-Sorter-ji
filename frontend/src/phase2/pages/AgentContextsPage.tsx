@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
-import type { AgentId, UiAgent } from '../api/client';
-import { getAgent, updateAgent } from '../api/client';
+import type { AgentId, UiAgent } from '../../api';
+import { getAgent, updateAgent } from '../../api';
 
 type TabId = 'selector' | 'final';
 

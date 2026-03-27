@@ -6,7 +6,7 @@ import {
   Database, Code2, Hash, Activity, X, LogOut
 } from 'lucide-react';
 import './SandboxPanel.css';
-import { getApiBaseRequired } from '../config/apiBase';
+import { coreApi } from '../api';
 
 // ── Outcome/Domain/Task data (copied structure for sandbox, no imports from ChatBotNew) ──
 const OUTCOMES = [
@@ -25,8 +25,6 @@ const DOMAIN_MAP = {
   'efficiency': ['Personal & Team Productivity', 'Org Efficiency & Hiring', 'Recruiting & HR Ops', 'Business Intelligence & Analytics'],
   'finance': ['Finance Legal & Admin', 'Financial Health & Risk', 'Owner_ Founder Improvements'],
 };
-
-const API_BASE = getApiBaseRequired();
 
 // ══════════════════════════════════════════════════════════════
 // LOG LEVEL BADGES
@@ -138,8 +136,7 @@ const TestFlowPanel = () => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/test/session`, { method: 'POST' });
-      const data = await res.json();
+      const data = await coreApi.sandboxCreateSession();
       setSessionId(data.session_id);
       setStage('outcome');
     } catch (e) {
@@ -152,14 +149,10 @@ const TestFlowPanel = () => {
     setSelectedOutcome(outcome);
     setLoading(true);
     try {
-      await fetch(`${API_BASE}/api/v1/sandbox/test/outcome`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          outcome: outcome.id,
-          outcome_label: outcome.label,
-        }),
+      await coreApi.sandboxOutcome({
+        session_id: sessionId,
+        outcome: outcome.id,
+        outcome_label: outcome.label,
       });
       setStage('domain');
     } catch (e) {
@@ -172,11 +165,7 @@ const TestFlowPanel = () => {
     setSelectedDomain(domain);
     setLoading(true);
     try {
-      await fetch(`${API_BASE}/api/v1/sandbox/test/domain`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, domain }),
-      });
+      await coreApi.sandboxDomain({ session_id: sessionId, domain });
       setTasksList(getTasksForDomain(domain));
       setStage('task');
     } catch (e) {
@@ -189,12 +178,7 @@ const TestFlowPanel = () => {
     setSelectedTask(task);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/test/task`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, task }),
-      });
-      const data = await res.json();
+      const data = await coreApi.sandboxTask({ session_id: sessionId, task });
       if (data.questions && data.questions.length > 0) {
         setQuestions(data.questions);
         setCurrentQIndex(0);
@@ -212,16 +196,11 @@ const TestFlowPanel = () => {
     setAnswers(prev => ({ ...prev, [currentQIndex]: answer }));
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/test/answer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          question_index: currentQIndex,
-          answer,
-        }),
+      const data = await coreApi.sandboxAnswer({
+        session_id: sessionId,
+        question_index: currentQIndex,
+        answer,
       });
-      const data = await res.json();
       if (data.all_answered) {
         setStage('recommend');
       } else {
@@ -236,12 +215,7 @@ const TestFlowPanel = () => {
   const getRecommendations = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/test/recommend`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-      const data = await res.json();
+      const data = await coreApi.sandboxRecommend({ session_id: sessionId });
       setRecommendations(data);
       setStage('complete');
     } catch (e) {
@@ -472,16 +446,14 @@ const LoggerPanel = () => {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/logs`);
-      const data = await res.json();
+      const data = await coreApi.sandboxLogs();
       setSessions(data.sessions || []);
     } catch {}
   }, []);
 
   const fetchLogs = useCallback(async (sid) => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/logs/${sid}`);
-      const data = await res.json();
+      const data = await coreApi.sandboxLogsBySession(sid);
       setLogs(data.entries || []);
       setContext(data.context_snapshot || {});
     } catch {}
@@ -521,8 +493,7 @@ const LoggerPanel = () => {
   const exportTxt = async () => {
     if (!selectedSession) return;
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/logs/export/${selectedSession}`);
-      const text = await res.text();
+      const text = await coreApi.sandboxExportSession(selectedSession);
       const blob = new Blob([text], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -535,8 +506,7 @@ const LoggerPanel = () => {
 
   const exportGlobal = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/logs/export-all/global`);
-      const text = await res.text();
+      const text = await coreApi.sandboxExportGlobal();
       const blob = new Blob([text], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -549,7 +519,7 @@ const LoggerPanel = () => {
 
   const clearAllLogs = async () => {
     try {
-      await fetch(`${API_BASE}/api/v1/sandbox/logs`, { method: 'DELETE' });
+      await coreApi.sandboxClearLogs();
       setSessions([]);
       setLogs([]);
       setContext({});

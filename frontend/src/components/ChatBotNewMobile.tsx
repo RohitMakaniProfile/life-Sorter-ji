@@ -3,7 +3,7 @@ import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, Mess
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNewMobile.css';
-import { getApiBaseRequired } from '../config/apiBase';
+import { coreApi } from '../api';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 
 // ── Markdown normaliser — ensures consistent heading levels across LLM output ──
@@ -613,8 +613,6 @@ const ChatBotNewMobile = ({ onNavigate }) => {
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({});
 
-  const API_BASE = getApiBaseRequired();
-
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;
 
@@ -623,8 +621,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     let sid = sessionIdRef.current;
     if (sid) return sid;
     try {
-      const res = await fetch(`${API_BASE}/api/v1/agent/session`, { method: 'POST' });
-      const data = await res.json();
+      const data = await coreApi.createAgentSession();
       sid = data.session_id;
       sessionIdRef.current = sid;
       setSessionId(sid);
@@ -999,12 +996,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     setOtpLoading(true);
     setOtpError('');
     try {
-      const res = await fetch(`${API_BASE}/api/v1/auth/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdRef.current, phone_number: phone }),
-      });
-      const data = await res.json();
+      const data = await coreApi.sendOtp({ session_id: sessionIdRef.current, phone_number: phone });
       if (data.success) {
         setOtpSessionId(data.otp_session_id);
         setOtpStep('verify');
@@ -1027,12 +1019,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     setOtpLoading(true);
     setOtpError('');
     try {
-      const res = await fetch(`${API_BASE}/api/v1/auth/verify-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code }),
-      });
-      const data = await res.json();
+      const data = await coreApi.verifyOtp({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code });
       if (data.verified) {
         setOtpVerified(true);
         setShowAuthModal(false);
@@ -1076,22 +1063,16 @@ const ChatBotNewMobile = ({ onNavigate }) => {
   const handlePayForRCA = async () => {
     setPaymentLoading(true);
     try {
-      const response = await fetch('/api/v1/payments/create-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: 499,
-          customer_id: userEmail || `guest_${Date.now()}`,
-          customer_email: userEmail || '',
-          customer_phone: '',
-          return_url: `${window.location.origin}?payment_status=success`,
-          description: 'Ikshan Root Cause Analysis — Premium Deep Dive',
-          udf1: 'rca_unlock',
-          udf2: selectedGoal || ''
-        })
+      const data = await coreApi.createPaymentOrder({
+        amount: 499,
+        customer_id: userEmail || `guest_${Date.now()}`,
+        customer_email: userEmail || '',
+        customer_phone: '',
+        return_url: `${window.location.origin}?payment_status=success`,
+        description: 'Ikshan Root Cause Analysis — Premium Deep Dive',
+        udf1: 'rca_unlock',
+        udf2: selectedGoal || ''
       });
-
-      const data = await response.json();
 
       if (data.success && data.payment_links) {
         setPaymentOrderId(data.order_id);
@@ -1127,8 +1108,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     if (paymentStatus === 'success' && orderId) {
       const verifyPayment = async () => {
         try {
-          const res = await fetch(`/api/v1/payments/status/${orderId}`);
-          const data = await res.json();
+          const data = await coreApi.getPaymentStatus(orderId);
           if (data.success && (data.status === 'CHARGED' || data.status === 'AUTO_REFUND')) {
             setPaymentVerified(true);
             localStorage.setItem('ikshan-rca-paid', 'true');
@@ -1261,11 +1241,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = await ensureSession();
       if (sid) {
-        await fetch(`${API_BASE}/api/v1/agent/session/outcome`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, outcome: outcome.id, outcome_label: outcome.text })
-        });
+        await coreApi.postOutcome({ session_id: sid, outcome: outcome.id, outcome_label: outcome.text });
       }
     } catch (e) {
       console.log('Session tracking: outcome', e);
@@ -1305,11 +1281,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await fetch(`${API_BASE}/api/v1/agent/session/domain`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, domain })
-        });
+        await coreApi.postDomain({ session_id: sid, domain });
       }
     } catch (e) {
       console.log('Session tracking: domain', e);
@@ -1341,12 +1313,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       const sid = await ensureSession();
       if (sid) {
         setLoadingPhase('diagnostic');
-        const res = await fetch(`${API_BASE}/api/v1/agent/session/task`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, task })
-        });
-        const data = await res.json();
+        const data = await coreApi.postTask({ session_id: sid, task });
 
         if (data.questions && data.questions.length > 0) {
           const isRca = data.rca_mode === true;
@@ -1435,14 +1402,10 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await fetch(`${API_BASE}/api/v1/agent/session/answer`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sid,
-            question_index: 900 + currentPrecisionQIndex,
-            answer: `[${currentPQ?.type || 'precision'}] ${answer}`,
-          }),
+        await coreApi.postAnswer({
+          session_id: sid,
+          question_index: 900 + currentPrecisionQIndex,
+          answer: `[${currentPQ?.type || 'precision'}] ${answer}`,
         });
       }
     } catch (e) {
@@ -1507,16 +1470,11 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       try {
         const sid = getSessionId();
         if (sid) {
-          const res = await fetch(`${API_BASE}/api/v1/agent/session/answer`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: sid,
-              question_index: currentDynamicQIndex,
-              answer: answer
-            })
+          const data = await coreApi.postAnswer({
+            session_id: sid,
+            question_index: currentDynamicQIndex,
+            answer,
           });
-          const data = await res.json();
 
           if (data.all_answered) {
             setIsTyping(false);
@@ -1532,8 +1490,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
                 const waitForCrawl = setInterval(async () => {
                   try {
                     const sid = getSessionId();
-                    const statusRes = await fetch(`${API_BASE}/api/v1/agent/session/${sid}/crawl-status`);
-                    const statusData = await statusRes.json();
+                    const statusData = await coreApi.getCrawlStatus(sid);
                     if (statusData.crawl_status === 'complete' || statusData.crawl_status === 'failed') {
                       setCrawlStatus(statusData.crawl_status);
                       clearInterval(waitForCrawl);
@@ -1557,12 +1514,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
             setIsTyping(true);
             try {
               const sid = getSessionId();
-              const precRes = await fetch(`${API_BASE}/api/v1/agent/session/precision-questions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sid }),
-              });
-              const precData = await precRes.json();
+              const precData = await coreApi.getPrecisionQuestions({ session_id: sid });
 
               if (precData.available && precData.questions && precData.questions.length > 0) {
                 setIsTyping(false);
@@ -1669,14 +1621,10 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        await fetch(`${API_BASE}/api/v1/agent/session/answer`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sid,
-            question_index: currentDynamicQIndex,
-            answer: answer
-          })
+        await coreApi.postAnswer({
+          session_id: sid,
+          question_index: currentDynamicQIndex,
+          answer,
         });
       }
     } catch (e) {
@@ -1753,12 +1701,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        const res = await fetch(`${API_BASE}/api/v1/agent/session/website`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, website_url: url })
-        });
-        const data = await res.json();
+        const data = await coreApi.analyzeWebsite({ session_id: sid, website_url: url });
 
         if (data.audience_insights) {
           let insightText = `## Audience Analysis for Your Business\n\n`;
@@ -1875,8 +1818,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     if (!sid) { resumeDiagnosticQuestions(); return; }
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/agent/session/${sid}/scale-questions`);
-      const data = await res.json();
+      const data = await coreApi.getScaleQuestions(sid);
 
       if (!data.questions || data.questions.length === 0) {
         resumeDiagnosticQuestions();
@@ -1937,13 +1879,9 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       const submitScalePromise = (async () => {
         try {
           if (sid) {
-            await fetch(`${API_BASE}/api/v1/agent/session/scale-answers`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                session_id: sid,
-                answers: scaleAnswersRef.current,
-              }),
+            await coreApi.submitScaleAnswers({
+              session_id: sid,
+              answers: scaleAnswersRef.current,
             });
           }
         } catch (e) {
@@ -1966,12 +1904,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
       try {
         if (sid) {
-          const diagRes = await fetch(`${API_BASE}/api/v1/agent/session/start-diagnostic`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sid }),
-          });
-          const diagData = await diagRes.json();
+          const diagData = await coreApi.startDiagnostic({ session_id: sid });
 
           if (diagData.question && diagData.rca_mode) {
             const firstQ = diagData.question;
@@ -2046,12 +1979,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        const res = await fetch(`${API_BASE}/api/v1/agent/session/url`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid, business_url: url })
-        });
-        const data = await res.json();
+        const data = await coreApi.submitUrl({ session_id: sid, business_url: url });
 
         if (data.crawl_started) {
           setCrawlStatus('in_progress');
@@ -2092,11 +2020,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
       if (sid) {
-        fetch(`${API_BASE}/api/v1/agent/session/skip-url`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sid })
-        });
+        coreApi.skipUrl({ session_id: sid });
       }
     } catch (e) {
       console.log('Skip URL notification failed', e);
@@ -2133,8 +2057,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       try {
         const sid = getSessionId();
         if (!sid) return;
-        const res = await fetch(`${API_BASE}/api/v1/agent/session/${sid}/crawl-status`);
-        const data = await res.json();
+        const data = await coreApi.getCrawlStatus(sid);
         if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
           setCrawlStatus(data.crawl_status);
           clearInterval(crawlPollRef.current);
@@ -2188,19 +2111,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
 
-      const startRes = await fetch(`${API_BASE}/api/v1/playbook/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid }),
-      });
-
-      if (!startRes.ok) {
-        const errBody = await startRes.json().catch(() => ({}));
-        console.error('Playbook /start error:', startRes.status, errBody);
-        throw new Error(errBody.detail || `Server error ${startRes.status}`);
-      }
-
-      const startData = await startRes.json();
+      const startData = await coreApi.playbookStart({ session_id: sid });
 
       const parsedGaps = startData.gap_questions_parsed || [];
       if (startData.stage === 'gap_questions' && parsedGaps.length > 0) {
@@ -2234,19 +2145,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
         return updated;
       });
 
-      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid }),
-      });
-
-      if (!genRes.ok) {
-        const errBody = await genRes.json().catch(() => ({}));
-        console.error('Playbook /generate error:', genRes.status, errBody);
-        throw new Error(errBody.detail || `Server error ${genRes.status}`);
-      }
-
-      const genData = await genRes.json();
+      const genData = await coreApi.playbookGenerate({ session_id: sid });
 
       setPlaybookStage('complete');
       setIsTyping(false);
@@ -2313,29 +2212,9 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     try {
       const sid = getSessionId();
 
-      const gapRes = await fetch(`${API_BASE}/api/v1/playbook/gap-answers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid, answers: answerText }),
-      });
+      await coreApi.playbookGapAnswers({ session_id: sid, answers: answerText });
 
-      if (!gapRes.ok) {
-        const errBody = await gapRes.json().catch(() => ({}));
-        throw new Error(errBody.detail || `Server error ${gapRes.status}`);
-      }
-
-      const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid, gap_answers: answerText }),
-      });
-
-      if (!genRes.ok) {
-        const errBody = await genRes.json().catch(() => ({}));
-        throw new Error(errBody.detail || `Server error ${genRes.status}`);
-      }
-
-      const genData = await genRes.json();
+      const genData = await coreApi.playbookGenerate({ session_id: sid, gap_answers: answerText });
 
       setPlaybookStage('complete');
       setIsTyping(false);
@@ -2378,12 +2257,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
     try {
       const sid = getSessionId();
-      const res = await fetch(`${API_BASE}/api/v1/agent/session/recommend`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid })
-      });
-      const data = await res.json();
+      const data = await coreApi.recommend({ session_id: sid });
 
       const outcomeLabel = outcomeOptions.find(g => g.id === selectedGoal)?.text || selectedGoal;
       const domainLabel = selectedDomainName || 'General';
@@ -2508,25 +2382,18 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       // Search for relevant companies from CSV
       let relevantCompanies = [];
       try {
-        const searchResponse = await fetch('/api/search-companies', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            domain: category,
-            subdomain: category,
-            requirement: category,
+        const searchData = await coreApi.searchCompanies({
+          domain: category,
+          subdomain: category,
+          requirement: category,
+          goal: selectedGoal,
+          role: selectedDomainName,
+          userContext: {
             goal: selectedGoal,
-            role: selectedDomainName,
-            userContext: {
-              goal: selectedGoal,
-              domain: selectedDomainName,
-              category: category
-            }
-          })
+            domain: selectedDomainName,
+            category: category
+          }
         });
-        const searchData = await searchResponse.json();
         relevantCompanies = (searchData.companies || []).slice(0, 3);
       } catch (e) {
         console.log('Company search failed, using fallback');
@@ -2937,21 +2804,15 @@ const ChatBotNewMobile = ({ onNavigate }) => {
 
   const saveToSheet = async (userMessage, botResponse, domain = '', subdomain = '') => {
     try {
-      await fetch(`${API_BASE}/api/save-idea`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userMessage,
-          botResponse,
-          timestamp: new Date().toISOString(),
-          userName: userName || 'Pending',
-          userEmail: userEmail || 'Pending',
-          domain: domain || selectedDomain?.name || '',
-          subdomain: subdomain || selectedSubDomain || '',
-          requirement: requirement || ''
-        })
+      await coreApi.saveIdea({
+        userMessage,
+        botResponse,
+        timestamp: new Date().toISOString(),
+        userName: userName || 'Pending',
+        userEmail: userEmail || 'Pending',
+        domain: domain || selectedDomain?.name || '',
+        subdomain: subdomain || selectedSubDomain || '',
+        requirement: requirement || ''
       });
     } catch (error) {
       console.error('Error saving to sheet:', error);
@@ -3056,7 +2917,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         return;
       }
 
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      const response = await coreApi.request('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3125,26 +2986,18 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         const domainLabel = selectedDomainName || 'General';
 
         // Search for relevant companies from CSV
-        const searchResponse = await fetch('/api/search-companies', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            domain: selectedCategory,
-            subdomain: selectedCategory,
-            requirement: requirement,
+        const searchData = await coreApi.searchCompanies({
+          domain: selectedCategory,
+          subdomain: selectedCategory,
+          requirement: requirement,
+          goal: selectedGoal,
+          role: selectedDomainName,
+          userContext: {
             goal: selectedGoal,
-            role: selectedDomainName,
-            userContext: {
-              goal: selectedGoal,
-              domain: selectedDomainName,
-              category: selectedCategory
-            }
-          })
+            domain: selectedDomainName,
+            category: selectedCategory
+          }
         });
-
-        const searchData = await searchResponse.json();
         let relevantCompanies = (searchData.companies || []).slice(0, 3);
 
         // Get relevant Chrome extensions and GPTs
@@ -3346,19 +3199,11 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
       setIsTyping(true);
 
       try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: currentInput,
-            persona: 'assistant',
-            context: { isRedirecting: true }
-          })
+        const data = await coreApi.chat({
+          message: currentInput,
+          persona: 'assistant',
+          context: { isRedirecting: true }
         });
-
-        const data = await response.json();
         const aiAnswer = data.message || "I'm here to help!";
 
         const botMessage = {
@@ -3404,19 +3249,11 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
       setIsTyping(true);
 
       try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: currentInput,
-            persona: 'assistant',
-            context: { isRedirecting: true, domain: selectedDomain?.name }
-          })
+        const data = await coreApi.chat({
+          message: currentInput,
+          persona: 'assistant',
+          context: { isRedirecting: true, domain: selectedDomain?.name }
         });
-
-        const data = await response.json();
         const aiAnswer = data.message || "Great question!";
 
         const botMessage = {

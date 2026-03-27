@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ChatUI from '../components/chat/ChatUI';
 import type { RichMessage } from '../components/chat/ChatUI';
-import { getMessages, createPlanStream, approvePlanStream } from '../api/client';
-import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../api/client';
+import { getMessages, createPlanStream, approvePlanStream } from '../../api';
+import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../context/UiAgentsContext';
 
 // Stream-mode debug logs are kept in legacy flow; plan-only mode does not use them.

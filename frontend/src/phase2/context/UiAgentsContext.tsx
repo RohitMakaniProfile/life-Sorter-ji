@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { AgentId, SkillMeta, UiAgent } from '../api/client';
-import { fetchSkills, getAgents, createAgent as apiCreateAgent, updateAgent as apiUpdateAgent, deleteAgent as apiDeleteAgent } from '../api/client';
+import type { AgentId, SkillMeta, UiAgent } from '../../api';
+import { fetchSkills, getAgents, createAgent as apiCreateAgent, updateAgent as apiUpdateAgent, deleteAgent as apiDeleteAgent } from '../../api';
 
 interface UiAgentsState {
   agents: UiAgent[];

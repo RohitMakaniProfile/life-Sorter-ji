@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getConversations, deleteConversation } from '../api/client';
-import type { ConversationSummary } from '../api/client';
+import { getConversations, deleteConversation } from '../../api';
+import type { ConversationSummary } from '../../api';
 
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);

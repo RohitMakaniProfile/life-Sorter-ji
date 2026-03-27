@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PipelineState, TokenUsage } from '../../types';
-import { getSkillCalls, getTokenUsage, type SkillCallFull } from '../../api/client';
+import { getSkillCalls, getTokenUsage, type SkillCallFull } from '../../../api';
 import TokenUsagePanel from './TokenUsagePanel';
 
 type LiveSkillCard = {

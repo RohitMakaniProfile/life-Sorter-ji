@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Lock, Eye, EyeOff, ArrowLeft, Terminal } from 'lucide-react';
 import './SandboxLogin.css';
-import { getApiBaseRequired } from '../config/apiBase';
+import { coreApi } from '../api';
 
 const SandboxLogin = ({ onLogin, onBack }) => {
   const [id, setId] = useState('');
@@ -10,26 +10,14 @@ const SandboxLogin = ({ onLogin, onBack }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const API_BASE = getApiBaseRequired();
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/sandbox/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, password }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        onLogin(data.token);
-      } else {
-        setError('Invalid credentials');
-      }
+      const data = await coreApi.sandboxLogin({ id, password });
+      onLogin(data.token);
     } catch {
       setError('Connection failed');
     } finally {

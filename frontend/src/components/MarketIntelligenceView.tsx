@@ -31,7 +31,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import './MarketIntelligenceView.css';
-import { getApiBaseRequired } from '../config/apiBase';
+import { coreApi } from '../api';
 
 /**
  * Market Intelligence Full View Component
@@ -134,30 +134,14 @@ const MarketIntelligenceView = () => {
       const serviceQuery = businessDescription.trim() 
         || `Business website: ${extractDomain(websiteUrl)}`;
 
-      // Call the backend API instead of importing Node.js modules
-      const apiUrl = getApiBaseRequired();
-      const response = await fetch(`${apiUrl}/api/market-intelligence`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          service: serviceQuery,
-          location,
-          year: new Date().getFullYear(),
-          targetWebsite: websiteUrl.trim() || null
-        }),
-      });
-
       // Wait for animation to complete
       await animationPromise;
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Analysis failed');
-      }
-
-      const result = await response.json();
+      const result = await coreApi.marketIntelligence({
+        service: serviceQuery,
+        location,
+        year: new Date().getFullYear(),
+        targetWebsite: websiteUrl.trim() || null,
+      });
       const executionResults = result.data;
 
       // Debug logging

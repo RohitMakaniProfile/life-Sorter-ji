@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, ChevronDown, ChevronRight, Activity, Brain, Send as SendIcon, Layers, Clock, Zap, Database, Eye, EyeOff } from 'lucide-react';
 import './ContextPoolPanel.css';
-import { getApiBaseRequired } from '../config/apiBase';
+import { coreApi } from '../api';
 
 const STAGE_LABELS = {
   outcome: 'Q1: Outcome',
@@ -300,14 +300,11 @@ export default function ContextPoolPanel({ sessionId, isOpen, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const pollRef = useRef(null);
-  const API_BASE = getApiBaseRequired();
 
   const fetchContextPool = useCallback(async () => {
     if (!sessionId) return;
     try {
-      const res = await fetch(`${API_BASE}/api/v1/agent/session/${sessionId}/context-pool`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = await coreApi.getContextPool(sessionId);
       setData(json);
       setError(null);
     } catch (err) {
@@ -315,7 +312,7 @@ export default function ContextPoolPanel({ sessionId, isOpen, onClose }) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, API_BASE]);
+  }, [sessionId]);
 
   // Poll every 4s when panel is open
   useEffect(() => {

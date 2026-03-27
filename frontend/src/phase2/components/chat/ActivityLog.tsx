@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { ProgressEvent, PipelineStage } from '../../api/client';
+import type { ProgressEvent, PipelineStage } from '../../../api';
 
 export interface ActivityLogProps {
   events: ProgressEvent[];

@@ -1,3 +1,5 @@
+import { coreApi } from '../api';
+
 /**
  * Fetches company data from backend API (which fetches from Google Sheet)
  * @param {string} domain - Domain ID to fetch the correct sheet tab
@@ -9,7 +11,7 @@ export async function fetchCompaniesCSV(domain) {
       ? `/api/companies?domain=${encodeURIComponent(domain)}`
       : '/api/companies';
 
-    const response = await fetch(url);
+    const response = await coreApi.request(url, { method: 'GET' });
 
     if (!response.ok) {
       return [];

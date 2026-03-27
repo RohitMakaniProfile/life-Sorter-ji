@@ -5,7 +5,7 @@ import ChatPage from './pages/ChatPage';
 import ConversationsPage from './pages/ConversationsPage';
 import AgentsPage from './pages/AgentsPage';
 import AgentContextsPage from './pages/AgentContextsPage';
-import { getConversations } from './api/client';
+import { getConversations } from '../api';
 import { UiAgentsProvider } from './context/UiAgentsContext';
 
 function ChatWithId() {

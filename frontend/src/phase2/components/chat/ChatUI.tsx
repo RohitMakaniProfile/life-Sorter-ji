@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import VideoCard from './VideoCard';
-import type { AgentId, PipelineStage } from '../../api/client';
+import type { AgentId, PipelineStage } from '../../../api';
 import { downloadReportAsPdf } from '../../utils/downloadPdf';
 import SidePanel from './SidePanel';
 import type { PipelineState as SharedPipelineState } from '../../types';
