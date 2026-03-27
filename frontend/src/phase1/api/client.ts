@@ -44,9 +44,6 @@ export interface EarlyRecommendation {
   category: 'extension' | 'gpt' | 'company';
   rating: string | null;
   why_relevant: string;
-  implementation_stage: string;
-  issue_solved: string;
-  ease_of_use: string;
 }
 
 export interface ToolRecommendation {
@@ -143,6 +140,7 @@ export async function setTask(session_id: string, task: string): Promise<SetTask
 export interface SubmitAnswerResponse {
   session_id: string;
   all_answered: boolean;
+  rca_mode: boolean;
   next_question: DynamicQuestion | null;
   acknowledgment: string;
   rca_summary: string;  // populated when all_answered = true
@@ -209,7 +207,11 @@ export async function submitWebsiteForAnalysis(
 
 export interface SubmitUrlResponse {
   session_id: string;
+  business_url: string;
+  gbp_url: string;
+  url_type: string;
   crawl_started: boolean;
+  gbp_crawl_started: boolean;
   message: string;
 }
 

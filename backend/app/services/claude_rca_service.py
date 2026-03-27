@@ -29,6 +29,42 @@ from app.config import get_settings
 logger = structlog.get_logger()
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_FALLBACK_MODEL = "gpt-4o-mini"
+
+
+async def _llm_post(payload: dict, headers: dict) -> dict:
+    """
+    POST to OpenRouter. If 402 (out of credits), automatically fall back
+    to OpenAI gpt-4o-mini with the same messages/system prompt.
+    Returns the parsed JSON response dict.
+    """
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        resp = None
+        use_openrouter = True
+        for _attempt in range(3):
+            resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
+            if resp.status_code == 429 and _attempt < 2:
+                await asyncio.sleep(2 ** _attempt + 1)
+                continue
+            if resp.status_code == 402:
+                logger.warning("OpenRouter 402 in RCA service — falling back to OpenAI", model=payload.get("model"))
+                use_openrouter = False
+            break
+
+        if not use_openrouter:
+            openai_payload = {**payload, "model": OPENAI_FALLBACK_MODEL}
+            openai_headers = {
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            resp = await client.post(OPENAI_CHAT_URL, json=openai_payload, headers=openai_headers)
+            resp.raise_for_status()
+        elif use_openrouter:
+            resp.raise_for_status()
+
+    return resp.json()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -217,17 +253,7 @@ async def generate_task_alignment_filter(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        data = await _llm_post(payload, headers)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
@@ -926,17 +952,7 @@ async def generate_next_rca_question(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        data = await _llm_post(payload, headers)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
@@ -1218,17 +1234,7 @@ async def generate_precision_questions(
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        data = await _llm_post(payload, headers)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = data["choices"][0]["message"]["content"]
