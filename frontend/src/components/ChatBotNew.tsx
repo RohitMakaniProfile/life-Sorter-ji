@@ -87,9 +87,12 @@ const parsePlaybookSteps = (text) => {
   return { steps, checklist };
 };
 
-// ── Renders structured playbook steps ──
+// ── Renders structured playbook steps — interactive accordion ──
 const PlaybookStepsRenderer = ({ content }) => {
   const { steps, checklist } = parsePlaybookSteps(content);
+  const [openSteps, setOpenSteps] = useState(() => new Set([0]));
+  const [doneSteps, setDoneSteps] = useState(() => new Set());
+  const [copiedIdx, setCopiedIdx] = useState(null);
 
   if (!steps.length) {
     return (
@@ -99,72 +102,247 @@ const PlaybookStepsRenderer = ({ content }) => {
     );
   }
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      {steps.map((step, si) => (
-        <div key={si} style={{
-          background: '#fff',
-          border: '1px solid #e5e7eb',
-          borderRadius: '16px',
-          overflow: 'hidden',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-        }}>
-          {/* Step header */}
-          <div style={{
-            padding: '1rem 1.25rem',
-            background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
-            borderBottom: '1px solid #e9d5ff',
-            display: 'flex', alignItems: 'center', gap: '0.9rem',
-          }}>
-            <div style={{
-              width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
-              background: '#7c3aed', color: '#fff',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '0.85rem', fontWeight: 800,
-            }}>{step.num}</div>
-            <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e1b4b', letterSpacing: '-0.02em', lineHeight: 1.3 }}>
-              {step.title}
-            </div>
-          </div>
+  const toggleOpen = (i) => setOpenSteps(prev => {
+    const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n;
+  });
+  const toggleDone = (e, i) => {
+    e.stopPropagation();
+    setDoneSteps(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; });
+  };
+  const copyPrompt = (e, text, i) => {
+    e.stopPropagation();
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 2000);
+  };
+  const extractPrompt = (text) => {
+    const m = text.match(/Prompt:\s*["""']?([\s\S]+?)(?:\s*["""']?\s*$)/im);
+    return m ? m[1].trim().replace(/^[""\u201C]|[""\u201D]$/g, '') : null;
+  };
 
-          {/* Subsections */}
-          <div style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-            {step.subsections.map((sub, subi) => (
-              <div key={subi} style={{
-                borderRadius: '10px',
-                background: sub.bg === 'transparent' ? '#fafafa' : sub.bg,
-                border: `1px solid ${sub.border === 'transparent' ? '#f0f0f0' : sub.border}`,
-                padding: '0.8rem 1rem',
-              }}>
-                {sub.label && (
-                  <div style={{
-                    display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                    fontSize: '0.7rem', fontWeight: 800, color: sub.color,
-                    letterSpacing: '0.05em', textTransform: 'uppercase',
-                    marginBottom: '0.5rem',
-                  }}>
-                    <span>{sub.icon}</span> {sub.label}
-                  </div>
-                )}
-                <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
-                </div>
-              </div>
-            ))}
-          </div>
+  // Map step title to a Claw Agent name
+  const getClawAgent = (title: string) => {
+    const t = title.toLowerCase();
+    if (/headline|h1|hero|copy|hook|messaging|text|word/i.test(t)) return 'Copy Claw';
+    if (/cta|button|conversion|form|signup|book|demo/i.test(t)) return 'CTA Claw';
+    if (/seo|google|search|rank|keyword|sitemap|meta/i.test(t)) return 'SEO Claw';
+    if (/social|linkedin|twitter|instagram|youtube|content|post/i.test(t)) return 'Content Claw';
+    if (/pricing|price|plan|offer|package|tier/i.test(t)) return 'Pricing Claw';
+    if (/trust|review|testimonial|proof|case stud/i.test(t)) return 'Trust Claw';
+    if (/compet|rival|market|position|differentiat/i.test(t)) return 'Intel Claw';
+    if (/email|nurture|drip|sequence|follow.?up/i.test(t)) return 'Nurture Claw';
+    if (/landing|page|website|redesign|ux|design/i.test(t)) return 'UX Claw';
+    if (/lead|prospect|outreach|cold|pipeline/i.test(t)) return 'Lead Gen Claw';
+    if (/automat|workflow|zapier|tool|integrat/i.test(t)) return 'Automation Claw';
+    if (/brand|identity|story|narrative|authority/i.test(t)) return 'Brand Claw';
+    if (/analytic|track|measure|data|metric|dashboard/i.test(t)) return 'Analytics Claw';
+    if (/retention|churn|loyal|repeat|upsell/i.test(t)) return 'Retention Claw';
+    if (/ad|paid|campaign|roas|spend|facebook|google ads/i.test(t)) return 'Ads Claw';
+    return 'Growth Claw';
+  };
+
+  // Sort: HIGH priority steps first, then MEDIUM
+  const getPriority = (step) => {
+    const t = step.subsections.map((s: any) => s.content).join(' ').toLowerCase();
+    return step.num <= 3 || /today|this week|immediately|right now|before anything|foundation/.test(t) ? 'HIGH' : 'MEDIUM';
+  };
+  const sortedSteps = [...steps].sort((a, b) => {
+    const pa = getPriority(a) === 'HIGH' ? 0 : 1;
+    const pb = getPriority(b) === 'HIGH' ? 0 : 1;
+    return pa - pb;
+  });
+
+  const doneCount = doneSteps.size;
+  const totalCount = steps.length;
+  const pct = Math.round((doneCount / totalCount) * 100);
+
+  return (
+    <div>
+      {/* Progress bar */}
+      <div style={{ marginBottom: '1.1rem', padding: '0.85rem 1rem', background: 'linear-gradient(135deg, #faf5ff, #f5f3ff)', borderRadius: '12px', border: '1px solid #e9d5ff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#5b21b6' }}>Playbook Progress</span>
+          <span style={{ fontSize: '0.78rem', fontWeight: 800, color: doneCount === totalCount ? '#10b981' : '#7c3aed' }}>
+            {doneCount === totalCount ? '🎉 All Done!' : `${doneCount} / ${totalCount} completed`}
+          </span>
         </div>
-      ))}
+        <div style={{ height: '6px', background: '#e9d5ff', borderRadius: '99px', overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: doneCount === totalCount ? '#10b981' : 'linear-gradient(90deg, #7c3aed, #4f46e5)', borderRadius: '99px', transition: 'width 0.4s ease' }} />
+        </div>
+        <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+          {sortedSteps.map((s, i) => (
+            <div key={i} title={`Step ${s.num}: ${s.title}`} style={{
+              width: '22px', height: '22px', borderRadius: '6px', border: '1.5px solid',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '0.62rem', fontWeight: 700, cursor: 'pointer',
+              background: doneSteps.has(i) ? '#10b981' : openSteps.has(i) ? '#f5f3ff' : '#fff',
+              borderColor: doneSteps.has(i) ? '#10b981' : openSteps.has(i) ? '#7c3aed' : '#e5e7eb',
+              color: doneSteps.has(i) ? '#fff' : openSteps.has(i) ? '#7c3aed' : '#9ca3af',
+              transition: 'all 0.2s',
+            }} onClick={() => toggleOpen(i)}>
+              {doneSteps.has(i) ? '✓' : s.num}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Step cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+        {sortedSteps.map((step, si) => {
+          const isOpen = openSteps.has(si);
+          const isDone = doneSteps.has(si);
+          const priority = getPriority(step);
+          const priorityColor = priority === 'HIGH' ? '#dc2626' : '#f59e0b';
+          const priorityBg    = priority === 'HIGH' ? '#fee2e2' : '#fef3c7';
+          const clawName = getClawAgent(step.title);
+          return (
+            <div key={si} style={{
+              background: '#fff', borderRadius: '14px', overflow: 'hidden',
+              border: isDone ? '1.5px solid #10b981' : isOpen ? '1.5px solid #7c3aed' : '1px solid #e5e7eb',
+              boxShadow: isOpen ? '0 4px 20px rgba(124,58,237,0.1)' : '0 1px 4px rgba(0,0,0,0.04)',
+              transition: 'border-color 0.2s, box-shadow 0.2s',
+            }}>
+              {/* Top accent */}
+              <div style={{ height: '3px', background: isDone ? '#10b981' : isOpen ? 'linear-gradient(90deg,#7c3aed,#4f46e5)' : '#e5e7eb', transition: 'background 0.2s' }} />
+
+              {/* Header — clickable */}
+              <div onClick={() => toggleOpen(si)} style={{
+                padding: '0.9rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem',
+                cursor: 'pointer', userSelect: 'none',
+                background: isDone ? '#f0fdf4' : isOpen ? 'linear-gradient(135deg,#faf5ff,#f5f3ff)' : '#fff',
+                transition: 'background 0.2s',
+              }}>
+                {/* Done checkbox */}
+                <div onClick={(e) => toggleDone(e, si)} title="Mark as done" style={{
+                  width: '24px', height: '24px', borderRadius: '7px', flexShrink: 0,
+                  border: `2px solid ${isDone ? '#10b981' : '#d1d5db'}`,
+                  background: isDone ? '#10b981' : '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', color: '#fff', fontSize: '0.75rem', fontWeight: 800,
+                  transition: 'all 0.2s',
+                }}>{isDone ? '✓' : ''}</div>
+
+                {/* Step number badge */}
+                <div style={{
+                  width: '32px', height: '32px', borderRadius: '9px', flexShrink: 0,
+                  background: isDone ? '#10b981' : '#7c3aed', color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '0.8rem', fontWeight: 800, transition: 'background 0.2s',
+                }}>{step.num}</div>
+
+                {/* Title */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.15rem', flexWrap: 'wrap' }}>
+                    <div style={{
+                      fontSize: '0.9rem', fontWeight: 800,
+                      color: isDone ? '#065f46' : '#1e1b4b',
+                      letterSpacing: '-0.02em', lineHeight: 1.3,
+                      textDecoration: isDone ? 'line-through' : 'none',
+                      opacity: isDone ? 0.7 : 1,
+                    }}>"{step.title}"</div>
+                    <span style={{ fontSize: '0.58rem', fontWeight: 800, padding: '1px 6px', borderRadius: '4px', background: priorityBg, color: priorityColor, letterSpacing: '.05em', flexShrink: 0 }}>
+                      {priority}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: '#7c3aed', fontWeight: 600 }}>
+                    🦀 {clawName}
+                  </div>
+                </div>
+
+                {/* Chevron */}
+                <div style={{
+                  width: '28px', height: '28px', borderRadius: '50%',
+                  background: isOpen ? '#7c3aed' : '#f3f4f6',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: isOpen ? '#fff' : '#9ca3af', fontSize: '0.65rem', flexShrink: 0,
+                  transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'all 0.25s',
+                }}>▼</div>
+              </div>
+
+              {/* Expandable body */}
+              {isOpen && (
+                <div style={{ borderTop: '1px solid #f3f4f6', padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  {step.subsections.map((sub, subi) => {
+                    const prompt = sub.key === 'tool' ? extractPrompt(sub.content) : null;
+                    return (
+                      <div key={subi} style={{
+                        borderRadius: '10px',
+                        background: sub.bg === 'transparent' ? '#fafafa' : sub.bg,
+                        border: `1px solid ${sub.border === 'transparent' ? '#f0f0f0' : sub.border}`,
+                        padding: '0.8rem 1rem', overflow: 'hidden',
+                      }}>
+                        {sub.label && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                            <div style={{
+                              display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                              fontSize: '0.68rem', fontWeight: 800, color: sub.color,
+                              letterSpacing: '0.06em', textTransform: 'uppercase',
+                            }}>
+                              <span>{sub.icon}</span> {sub.label}
+                            </div>
+                            {prompt && (
+                              <button onClick={(e) => copyPrompt(e, prompt, si)} style={{
+                                display: 'flex', alignItems: 'center', gap: '0.3rem',
+                                fontSize: '0.68rem', fontWeight: 700, padding: '3px 9px',
+                                borderRadius: '6px', border: 'none', cursor: 'pointer',
+                                background: copiedIdx === si ? '#d1fae5' : '#ede9fe',
+                                color: copiedIdx === si ? '#065f46' : '#5b21b6',
+                                transition: 'all 0.2s',
+                              }}>
+                                {copiedIdx === si ? '✓ Copied!' : '📋 Copy Prompt'}
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Prompt highlight box */}
+                        {prompt && (
+                          <div style={{
+                            background: '#1e1b4b', color: '#c4b5fd', borderRadius: '8px',
+                            padding: '0.7rem 0.9rem', fontSize: '0.78rem', lineHeight: 1.6,
+                            marginBottom: '0.6rem', fontFamily: '"SF Mono","Fira Code",monospace',
+                            border: '1px solid #4c1d95',
+                          }}>
+                            <span style={{ color: '#6b7280', fontSize: '0.65rem', display: 'block', marginBottom: '0.3rem' }}>COPY-PASTE PROMPT</span>
+                            "{prompt}"
+                          </div>
+                        )}
+
+                        <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {prompt ? sub.content.replace(/Prompt:\s*["""']?[\s\S]+?(?:["""']?\s*$)/im, '').trim() : formatSectionMarkdown(sub.content)}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Done CTA */}
+                  <button onClick={(e) => toggleDone(e, si)} style={{
+                    alignSelf: 'flex-end', padding: '0.45rem 1rem',
+                    borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 700,
+                    fontSize: '0.78rem', transition: 'all 0.2s',
+                    background: isDone ? '#d1fae5' : '#7c3aed',
+                    color: isDone ? '#065f46' : '#fff',
+                  }}>
+                    {isDone ? '✓ Marked Done — Undo?' : '✅ Mark as Done'}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       {/* Week 1 Checklist */}
       {checklist && (
         <div style={{
-          background: '#fffbeb', border: '1px solid #fde68a',
+          marginTop: '1rem', background: '#fffbeb', border: '1px solid #fde68a',
           borderRadius: '16px', padding: '1.1rem 1.25rem',
           boxShadow: '0 2px 8px rgba(245,158,11,0.08)',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
             <span style={{ fontSize: '1.1rem' }}>📅</span>
-            <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#92400e', letterSpacing: '-0.01em' }}>Week 1 Execution Checklist</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#92400e' }}>Week 1 Execution Checklist</span>
           </div>
           <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{checklist}</ReactMarkdown>
@@ -175,7 +353,448 @@ const PlaybookStepsRenderer = ({ content }) => {
   );
 };
 
-const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isPlaybookSteps }) => {
+// ── Renders website audit in structured, visual sections ──
+const AuditRenderer = ({ content }) => {
+  const [openSections, setOpenSections] = useState(() => new Set(['verdict', 'health', 'quickwins']));
+  const toggle = (k) => setOpenSections(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+  // Parse sections from audit markdown
+  const SECTIONS = [
+    { key: 'verdict',    label: 'Verdict',          icon: '🎯', regex: /VERDICT\s*\n([\s\S]+?)(?=\n(?:HEALTH SCORE|ICP MISMATCHES|QUICK WINS|STRATEGIC FIXES|THE ONE THING|##)|$)/i,    color: '#dc2626', bg: '#fff1f2', border: '#fecdd3' },
+    { key: 'health',     label: 'Health Score',     icon: '📊', regex: /HEALTH SCORE\s*\n([\s\S]+?)(?=\n(?:ICP MISMATCHES|QUICK WINS|STRATEGIC FIXES|THE ONE THING|##)|$)/i,            color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff' },
+    { key: 'icp',        label: 'ICP Mismatches',   icon: '👤', regex: /ICP MISMATCHES\s*\n([\s\S]+?)(?=\n(?:QUICK WINS|STRATEGIC FIXES|THE ONE THING|##)|$)/i,                        color: '#b45309', bg: '#fffbeb', border: '#fde68a' },
+    { key: 'quickwins',  label: 'Quick Wins',       icon: '⚡', regex: /QUICK WINS[^\n]*\n([\s\S]+?)(?=\n(?:STRATEGIC FIXES|THE ONE THING|##)|$)/i,                                    color: '#059669', bg: '#f0fdf4', border: '#bbf7d0' },
+    { key: 'strategic',  label: 'Strategic Fixes',  icon: '🔧', regex: /STRATEGIC FIXES[^\n]*\n([\s\S]+?)(?=\n(?:THE ONE THING|##)|$)/i,                                               color: '#0284c7', bg: '#f0f9ff', border: '#bae6fd' },
+    { key: 'onething',   label: 'The One Thing',    icon: '🏆', regex: /THE ONE THING\s*\n([\s\S]+?)(?=\n##|$)/i,                                                                       color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+  ];
+
+  const parsed = SECTIONS.map(s => {
+    const m = content.match(s.regex);
+    return m ? { ...s, body: m[1].trim() } : null;
+  }).filter(Boolean);
+
+  if (parsed.length === 0) {
+    return (
+      <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(content)}</ReactMarkdown>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+      {parsed.map((sec) => {
+        const isOpen = openSections.has(sec.key);
+        return (
+          <div key={sec.key} style={{ borderRadius: '12px', overflow: 'hidden', border: `1px solid ${sec.border}`, background: '#fff' }}>
+            <div style={{ height: '3px', background: sec.color }} />
+            <div onClick={() => toggle(sec.key)} style={{
+              padding: '0.8rem 1rem', cursor: 'pointer', userSelect: 'none',
+              background: isOpen ? sec.bg : '#fff',
+              display: 'flex', alignItems: 'center', gap: '0.6rem', transition: 'background 0.2s',
+            }}>
+              <span style={{ fontSize: '1rem' }}>{sec.icon}</span>
+              <span style={{ fontSize: '0.82rem', fontWeight: 800, color: sec.color, flex: 1 }}>{sec.label}</span>
+              <div style={{
+                width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: isOpen ? sec.color : '#f3f4f6', color: isOpen ? '#fff' : '#9ca3af',
+                fontSize: '0.6rem', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'all 0.25s',
+              }}>▼</div>
+            </div>
+            {isOpen && (
+              <div style={{ padding: '0.85rem 1rem', borderTop: `1px solid ${sec.border}` }}>
+                <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sec.body)}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ── Animated counter ──
+const AnimCounter = ({ target, duration = 1400, decimals = 1 }) => {
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    const start = performance.now();
+    const tick = (now) => {
+      const p = Math.min((now - start) / duration, 1);
+      setVal((1 - Math.pow(1 - p, 3)) * target);
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [target, duration]);
+  return <span>{val.toFixed(decimals)}</span>;
+};
+
+// ── SVG score ring ──
+const ScoreRing = ({ score, max = 10, size = 130, color, bg = '#f0effa' }) => {
+  const r = (size - 14) / 2, circ = 2 * Math.PI * r;
+  return (
+    <div style={{ position: 'relative', width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={bg} strokeWidth={9} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color}
+          strokeWidth={9} strokeDasharray={circ}
+          strokeDashoffset={circ * (1 - score / max)} strokeLinecap="round"
+          style={{ transition: 'stroke-dashoffset 1.8s cubic-bezier(.4,0,.2,1)' }} />
+      </svg>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontSize: 34, fontWeight: 900, color: '#1a1a2e', lineHeight: 1 }}>
+          <AnimCounter target={score} />
+        </span>
+        <span style={{ fontSize: 12, color: '#9ca3af', fontWeight: 500 }}>/{max}</span>
+      </div>
+    </div>
+  );
+};
+
+// ── Parse audit into structured sections (handles both numbered & CAPS-header formats) ──
+const parseAuditSections = (audit: string) => {
+  const ex = (pat) => { const m = audit.match(pat); return m ? m[1].trim() : null; };
+
+  // Numbered format: "3. The 30-Minute Fix" — require space after period to avoid matching "4.4/10"
+  const numSection = (n: number) => ex(new RegExp(`${n}\\.\\s[^\\n]+\\n([\\s\\S]+?)(?=\\n${n+1}\\.\\s|$)`, 'i'));
+
+  // CAPS format
+  const capsQuickWins  = ex(/QUICK WINS[^\n]*\n([\s\S]+?)(?=\n(?:STRATEGIC FIXES|THE ONE THING|##)|$)/i);
+  const capsStrategic  = ex(/STRATEGIC FIXES[^\n]*\n([\s\S]+?)(?=\n(?:THE ONE THING|##)|$)/i);
+  const capsOneThing   = ex(/THE ONE THING\s*\n([\s\S]+?)(?=\n##|$)/i);
+  const capsVerdict    = ex(/^VERDICT\s*\n([\s\S]+?)(?=\n(?:HEALTH SCORE|ICP|QUICK|STRATEGIC|THE ONE)|$)/im);
+  const capsHealth     = ex(/HEALTH SCORE\s*\n([\s\S]+?)(?=\n(?:ICP|QUICK WINS|STRATEGIC|THE ONE)|$)/i);
+
+  // Overall score: prefer "Overall: X/10", fallback to first X/10
+  const overallM = audit.match(/Overall[:\s]+(\d+(?:\.\d+)?)\s*\/\s*10/i);
+  const anyScoreM = audit.match(/(\d+(?:\.\d+)?)\s*\/\s*10/);
+  const score = overallM ? parseFloat(overallM[1]) : anyScoreM ? parseFloat(anyScoreM[1]) : null;
+
+  // Individual metric scores from scorecard table: "Label\tX/10\tDesc"
+  const metricRows: { label: string; score: number; desc: string }[] = [];
+  const tableRows = audit.matchAll(/^([^\t\n]{10,60})\t(\d+)\/10\t([^\n]+)/gm);
+  for (const row of tableRows) {
+    const s = parseInt(row[2]);
+    if (s > 0 && s <= 10) metricRows.push({ label: row[1].trim(), score: s, desc: row[3].trim() });
+  }
+
+  // Revenue-impact issues from section 5 / ICP mismatches
+  const issueBlocks: { title: string; why: string; impact: string; who: string; blocks: string }[] = [];
+  const issueSection = numSection(5) || ex(/ICP MISMATCHES\s*\n([\s\S]+?)(?=\n(?:QUICK WINS|STRATEGIC|THE ONE|##)|$)/i) || '';
+  if (issueSection) {
+    const blockRe = /^([^\n]+)\n+Your site says:[\s\S]+?Why you(?:['''\u2019]re|re) losing the deal:\s*([\s\S]+?)(?=\nRevenue Impact:)\nRevenue Impact:\s*(HIGH|MEDIUM|LOW)[^\n]*(?:\nWho this blocks:\s*([^\n]+))?/gim;
+    for (const m of issueSection.matchAll(blockRe)) {
+      issueBlocks.push({
+        title: m[1].replace(/^[""'\u201C\u2018]|[""'\u201D\u2019]$/g, '').trim(),
+        why: m[2].replace(/\n/g, ' ').trim().slice(0, 220),
+        impact: m[3].toUpperCase(),
+        who: m[4] ? m[4].trim() : '',
+        blocks: m[0],
+      });
+    }
+  }
+
+  const isNumbered = /\d\.\s+(?:Who|Your Site|The 30|The Big|What Your)/i.test(audit);
+
+  return {
+    score,
+    metricRows,
+    issueBlocks,
+    quickFix:    isNumbered ? numSection(3) : capsQuickWins,
+    bigBuild:    isNumbered ? numSection(4) : capsStrategic,
+    oneThing:    capsOneThing,
+    verdict:     capsVerdict,
+    health:      capsHealth,
+    isNumbered,
+  };
+};
+
+// ── 3-phase container: Verdict → Quick Wins → Full Playbook ──
+const PlaybookPhaseContainer = ({ playbookData }) => {
+  const [phase, setPhase] = useState('verdict');
+  const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
+  const audit = playbookData.websiteAudit || '';
+  const parsed = parseAuditSections(audit);
+  const { score, metricRows, issueBlocks } = parsed;
+
+  const scoreColor = !score ? '#6b7280' : score >= 7 ? '#10b981' : score >= 5 ? '#f59e0b' : '#dc2626';
+  const scoreLabel = !score ? '' : score >= 8 ? 'Top 5% — you actually know what you\'re doing' : score >= 7 ? 'Good foundation, now execute' : score >= 5 ? 'Good bones, lazy execution' : score >= 3 ? 'Your competitors are thanking you right now' : 'Burning money every day this stays live';
+
+  // Revenue leak estimate (rough but impactful)
+  const highCount = issueBlocks.filter(b => b.impact === 'HIGH').length;
+  const medCount = issueBlocks.filter(b => b.impact === 'MEDIUM').length;
+  const revLeakMin = highCount * 150000 + medCount * 40000;
+  const revLeakMax = highCount * 350000 + medCount * 100000;
+  const formatINR = (n: number) => n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : `₹${(n / 1000).toFixed(0)}K`;
+
+  // Projected score if HIGH issues fixed
+  const projectedScore = score !== null ? Math.min(10, score + highCount * 0.9 + medCount * 0.3) : null;
+
+  const PHASES = ['verdict', 'quickwins', 'playbook'] as const;
+  const phaseLabels = { verdict: 'The Verdict', quickwins: 'Quick Wins', playbook: 'Full Playbook' };
+  const pi = PHASES.indexOf(phase as any);
+
+  // Before/After H1 from quick fix
+  const allQuotes = parsed.quickFix ? [...parsed.quickFix.matchAll(/["""\u201C]([^"""\u201D]{10,})["""\u201D]/gi)] : [];
+  const beforeH1 = allQuotes.length > 0 ? allQuotes[0][1] : null;
+  const afterH1 = allQuotes.length > 1 ? allQuotes[1][1] : null;
+
+  // Week 1 checklist from playbook
+  const weekDays: { day: string; task: string }[] = [];
+  const weekM = (playbookData.playbook || '').match(/WEEK 1[^\n]*\n([\s\S]+?)(?=\nThe contract|$)/i);
+  if (weekM) {
+    for (const line of weekM[1].split('\n')) {
+      const dm = line.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday):\s*(.+)/i);
+      if (dm) weekDays.push({ day: dm[1], task: dm[2].trim() });
+    }
+  }
+
+  const SCard = ({ label, color, border, children }) => (
+    <div style={{ background: '#fff', borderRadius: 14, border: `1px solid ${border}`, borderLeft: `4px solid ${color}`, padding: '1.25rem 1.5rem', marginBottom: '0.85rem', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+      <div style={{ fontSize: '0.66rem', color, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: '0.55rem' }}>{label}</div>
+      <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.75 }}>{children}</div>
+    </div>
+  );
+
+  const NextBtn = ({ label, to }) => (
+    <button onClick={() => setPhase(to as any)} style={{
+      width: '100%', padding: '1rem 1.5rem', marginTop: '0.5rem',
+      background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+      border: 'none', borderRadius: 14, cursor: 'pointer',
+      fontSize: '0.9rem', fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+      boxShadow: '0 4px 20px rgba(124,58,237,.25)', transition: 'transform .15s',
+    }}
+      onMouseOver={e => (e.currentTarget.style.transform = 'translateY(-1px)')}
+      onMouseOut={e => (e.currentTarget.style.transform = '')}
+    >{label}</button>
+  );
+
+  const highIssues = issueBlocks.filter(b => b.impact === 'HIGH');
+  const medIssues  = issueBlocks.filter(b => b.impact === 'MEDIUM');
+  const allIssues  = [...highIssues, ...medIssues];
+
+  return (
+    <div>
+      <style>{`
+        @keyframes vFadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+        @keyframes vPulse{0%,100%{box-shadow:0 1px 3px rgba(0,0,0,.04)}50%{box-shadow:0 0 18px 2px rgba(220,38,38,.1)}}
+        .v-hero{animation:vFadeUp .5s ease-out}
+        .v-pill{animation:vFadeUp .4s ease-out both}
+        .v-issue-high{animation:vPulse 3s ease-in-out infinite}
+      `}</style>
+
+      {/* Phase tabs */}
+      <div style={{ display: 'flex', borderBottom: '2px solid #f3f4f6', marginBottom: '1.25rem' }}>
+        {PHASES.map((p, i) => (
+          <button key={p} onClick={() => setPhase(p as any)} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: '0.4rem',
+            padding: '0.7rem 1.1rem', borderBottom: phase === p ? '2px solid #7c3aed' : '2px solid transparent',
+            marginBottom: '-2px', fontFamily: 'inherit', transition: 'all 0.2s',
+          }}>
+            <span style={{
+              width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '0.65rem', fontWeight: 800,
+              background: i <= pi ? '#7c3aed' : '#e5e7eb', color: i <= pi ? '#fff' : '#9ca3af', transition: 'all 0.3s',
+            }}>{i + 1}</span>
+            <span style={{ fontSize: '0.82rem', fontWeight: phase === p ? 700 : 400, color: phase === p ? '#1e1b4b' : '#9ca3af' }}>
+              {phaseLabels[p]}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* ══ VERDICT ══ */}
+      {phase === 'verdict' && (
+        <div>
+          {/* Score hero */}
+          <div className="v-hero" style={{ background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb', padding: '1.75rem 2rem', marginBottom: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
+              {score !== null && <ScoreRing score={score} color={scoreColor} bg={!score ? '#f3f4f6' : score >= 7 ? '#d1fae5' : score >= 5 ? '#fef3c7' : '#fee2e2'} />}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 600, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Website Health Score</div>
+                <div style={{ fontSize: '1.15rem', fontWeight: 900, color: scoreColor, lineHeight: 1.2 }}>{scoreLabel}</div>
+                {allIssues.length > 0 && (
+                  <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '0.4rem' }}>
+                    <span style={{ color: '#dc2626', fontWeight: 700 }}>{highIssues.length} HIGH</span> · <span style={{ color: '#f59e0b', fontWeight: 700 }}>{medIssues.length} MEDIUM</span> impact issues
+                  </div>
+                )}
+                {revLeakMin > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: '#dc2626', fontWeight: 700, marginTop: '0.35rem' }}>
+                    Est. Revenue Leak: {formatINR(revLeakMin)} – {formatINR(revLeakMax)}/month
+                  </div>
+                )}
+                {projectedScore !== null && projectedScore > (score || 0) + 0.5 && (
+                  <div style={{ fontSize: '0.72rem', color: '#059669', marginTop: '0.25rem', fontWeight: 600 }}>
+                    Fix HIGH issues → projected {projectedScore.toFixed(1)}/10
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Metric pills with progress bars */}
+          {metricRows.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: '0.6rem', marginBottom: '1.1rem' }}>
+              {metricRows.map((m, i) => {
+                const c = m.score >= 7 ? '#10b981' : m.score >= 5 ? '#f59e0b' : '#dc2626';
+                return (
+                  <div key={i} className="v-pill" style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', padding: '0.85rem 1rem', animationDelay: `${i * 0.08}s`, boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                      <span style={{ fontSize: '1.5rem', fontWeight: 900, color: c }}>{m.score}</span>
+                      <span style={{ fontSize: '0.65rem', color: '#d1d5db', fontWeight: 500 }}>/10</span>
+                    </div>
+                    <div style={{ height: 4, borderRadius: 2, background: '#f3f4f6', marginTop: '0.4rem', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${m.score * 10}%`, borderRadius: 2, background: c, transition: 'width 1.2s ease-out' }} />
+                    </div>
+                    <div style={{ fontSize: '0.68rem', color: '#6b7280', marginTop: '0.35rem', lineHeight: 1.3 }}>{m.label.length > 40 ? m.label.slice(0, 38) + '\u2026' : m.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Issue cards — expandable */}
+          {allIssues.length > 0 ? (
+            <>
+              <div style={{ fontSize: '0.7rem', color: '#9ca3af', fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: '0.65rem' }}>
+                Where You're Losing Deals
+              </div>
+              {allIssues.map((issue, i) => {
+                const isHigh = issue.impact === 'HIGH';
+                const ic = isHigh ? '#dc2626' : '#f59e0b';
+                const ib = isHigh ? '#fee2e2' : '#fef3c7';
+                const iborder = isHigh ? '#fecdd3' : '#fde68a';
+                const isExp = expandedIssue === i;
+                return (
+                  <div key={i} className={isHigh ? 'v-issue-high' : ''} onClick={() => setExpandedIssue(isExp ? null : i)} style={{ background: '#fff', borderRadius: 12, border: `1px solid ${iborder}`, padding: '1rem 1.25rem', marginBottom: '0.6rem', cursor: 'pointer', transition: 'all 0.2s', boxShadow: isHigh ? undefined : '0 1px 3px rgba(0,0,0,.04)' }}>
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                      <span style={{ display: 'inline-block', fontSize: '0.62rem', fontWeight: 800, padding: '2px 7px', borderRadius: '5px', background: ib, color: ic, letterSpacing: '.04em', flexShrink: 0, marginTop: '0.1rem' }}>
+                        {issue.impact}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#111827' }}>{issue.title}</div>
+                        {issue.who && <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '0.15rem' }}>Blocks: {issue.who}</div>}
+                      </div>
+                      <span style={{ fontSize: '0.6rem', color: '#9ca3af', transition: 'transform 0.2s', transform: isExp ? 'rotate(180deg)' : 'none', flexShrink: 0, marginTop: '0.2rem' }}>{'\u25BC'}</span>
+                    </div>
+                    {isExp && issue.why && (
+                      <div style={{ fontSize: '0.8rem', color: '#6b7280', lineHeight: 1.6, marginTop: '0.65rem', paddingTop: '0.6rem', borderTop: '1px solid #f3f4f6' }}>
+                        {issue.why}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : parsed.verdict ? (
+            <SCard label="Verdict" color="#dc2626" border="#fecdd3">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(parsed.verdict)}</ReactMarkdown>
+            </SCard>
+          ) : audit ? <AuditRenderer content={audit} /> : null}
+
+          <NextBtn label="See What To Fix First →" to="quickwins" />
+        </div>
+      )}
+
+      {/* ══ QUICK WINS ══ */}
+      {phase === 'quickwins' && (
+        <div>
+          {parsed.quickFix && (
+            <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #bbf7d0', borderLeft: '4px solid #059669', padding: '1.25rem 1.5rem', marginBottom: '0.85rem', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.7rem' }}>
+                <span style={{ fontSize: '0.6rem', fontWeight: 800, padding: '2px 8px', borderRadius: '6px', background: '#d1fae5', color: '#065f46', letterSpacing: '.04em' }}>5 MIN</span>
+                <span style={{ fontSize: '0.66rem', color: '#059669', fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase' }}>The 30-Minute Fix</span>
+              </div>
+              {beforeH1 && afterH1 && (
+                <div style={{ marginBottom: '0.85rem', background: '#f9fafb', borderRadius: 10, padding: '0.85rem 1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#dc2626', minWidth: 36, textAlign: 'right' }}>NOW</span>
+                    <div style={{ flex: 1, padding: '0.5rem 0.75rem', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecdd3', fontSize: '0.8rem', color: '#991b1b', textDecoration: 'line-through', fontStyle: 'italic' }}>
+                      {'\u201C'}{beforeH1}{'\u201D'}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#059669', minWidth: 36, textAlign: 'right' }}>FIX</span>
+                    <div style={{ flex: 1, padding: '0.5rem 0.75rem', borderRadius: 8, background: '#f0fdf4', border: '1px solid #bbf7d0', fontSize: '0.8rem', color: '#065f46', fontWeight: 600 }}>
+                      {'\u201C'}{afterH1}{'\u201D'}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.75 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(parsed.quickFix)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+          {parsed.bigBuild && (
+            <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #bae6fd', borderLeft: '4px solid #0284c7', padding: '1.25rem 1.5rem', marginBottom: '0.85rem', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.7rem' }}>
+                <span style={{ fontSize: '0.6rem', fontWeight: 800, padding: '2px 8px', borderRadius: '6px', background: '#dbeafe', color: '#1e40af', letterSpacing: '.04em' }}>1-2 WEEKS</span>
+                <span style={{ fontSize: '0.66rem', color: '#0284c7', fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase' }}>The Big Build</span>
+              </div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.75 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(parsed.bigBuild)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+          {parsed.oneThing && (
+            <SCard label="🏆 The One Thing" color="#7c3aed" border="#ddd6fe">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(parsed.oneThing)}</ReactMarkdown>
+            </SCard>
+          )}
+          {playbookData.toolMatrix && (
+            <SCard label="🛠 Tool & Tech Matrix" color="#059669" border="#bbf7d0">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(playbookData.toolMatrix)}</ReactMarkdown>
+            </SCard>
+          )}
+          {!parsed.quickFix && !parsed.bigBuild && audit && <AuditRenderer content={audit} />}
+          <NextBtn label="View Full 10-Step Playbook →" to="playbook" />
+        </div>
+      )}
+
+      {/* ══ FULL PLAYBOOK ══ */}
+      {phase === 'playbook' && (
+        <div>
+          {/* Week 1 Blueprint */}
+          {weekDays.length > 0 && (
+            <div style={{ background: 'linear-gradient(135deg,#faf5ff,#f5f3ff)', borderRadius: 14, border: '1px solid #ddd6fe', padding: '1.15rem 1.4rem', marginBottom: '1rem' }}>
+              <div style={{ fontSize: '0.66rem', color: '#7c3aed', fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: '0.65rem' }}>
+                Your Week 1 Blueprint
+              </div>
+              {weekDays.map((d, i) => (
+                <div key={i} style={{ display: 'flex', gap: '0.6rem', padding: '0.4rem 0', borderBottom: i < weekDays.length - 1 ? '1px solid #ede9fe' : 'none', alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#5b21b6', minWidth: 78 }}>{d.day}</span>
+                  <span style={{ fontSize: '0.78rem', color: '#4b5563', lineHeight: 1.4 }}>{d.task}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {playbookData.icpCard && (
+            <div style={{ background: 'linear-gradient(135deg,#f0f9ff,#e0f2fe)', borderRadius: 14, border: '1px solid rgba(14,165,233,.25)', padding: '1.25rem 1.5rem', marginBottom: '1rem' }}>
+              <div style={{ fontSize: '0.68rem', color: '#0284c7', fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: '0.6rem' }}>👤 Ideal Customer Profile</div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.75 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(playbookData.icpCard)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+          {playbookData.playbook && <PlaybookStepsRenderer content={playbookData.playbook} />}
+          {playbookData.latencies && Object.keys(playbookData.latencies).length > 0 && (
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', fontSize: '0.7rem', color: '#9ca3af', marginTop: '0.5rem' }}>
+              {Object.entries(playbookData.latencies).map(([agent, ms]) => (
+                <span key={agent}>{agent}: {((ms as number) / 1000).toFixed(1)}s</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isPlaybookSteps, isAudit = false }) => {
   const [expanded, setExpanded] = useState(false);
   const [height, setHeight] = useState(0);
   const [visible, setVisible] = useState(false);
@@ -249,6 +868,8 @@ const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isP
         <div ref={contentRef} style={{ borderTop: `1px solid ${borderColor}`, padding: '1.25rem 1.5rem' }}>
           {isPlaybookSteps ? (
             <PlaybookStepsRenderer content={content} />
+          ) : isAudit ? (
+            <AuditRenderer content={content} />
           ) : (
             <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(content)}</ReactMarkdown>
@@ -3466,6 +4087,25 @@ const ChatBotNew = ({ onNavigate }) => {
         throw new Error(errBody.detail || `Server error ${gapRes.status}`);
       }
 
+      // Fetch website snapshot (non-blocking) to show while playbook generates
+      fetch(`${API_BASE}/api/v1/agent/session/${sid}/website-snapshot`)
+        .then(r => r.json())
+        .then(snap => {
+          if (snap.available) {
+            const snapMsg = {
+              id: getNextMessageId(),
+              text: '',
+              sender: 'bot',
+              timestamp: new Date(),
+              showOutcomeOptions: false,
+              isWebsiteSnapshot: true,
+              snapshotData: snap,
+            };
+            setMessages(prev => [...prev, snapMsg]);
+          }
+        })
+        .catch(() => {});
+
       // Generate full playbook
       const genRes = await fetch(`${API_BASE}/api/v1/playbook/generate`, {
         method: 'POST',
@@ -5596,48 +6236,12 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                     {/* ── AI Playbook Result ── */}
                     {message.isPlaybook && message.playbookData && (
                       <div className="playbook-container" style={{ marginTop: '1rem' }}>
-                        {/* Playbook Header Banner — clean light design */}
-                        <div style={{
-                          background: '#fff',
-                          borderRadius: '20px', padding: '1.4rem 1.75rem', marginBottom: '1rem',
-                          border: '1px solid #e5e7eb',
-                          boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
-                              <Sparkles size={14} color="#7c3aed" />
-                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>AI Growth Playbook</span>
-                            </div>
-                            <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#111827', letterSpacing: '-0.025em', lineHeight: 1.2 }}>
-                              Your Personalised Strategy
-                            </div>
-                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
-                              {[['📋','Playbook','#7c3aed','#f3e8ff'],['🌐','Audit','#d97706','#fef3c7']].map(([ico,lbl,col,bg]) => (
-                                <span key={lbl} style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', background: bg, color: col, fontSize:'0.72rem', fontWeight:700, padding:'0.25rem 0.6rem', borderRadius:'20px' }}>
-                                  {ico} {lbl}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div style={{ fontSize: '2.8rem', lineHeight: 1, flexShrink: 0 }}>🚀</div>
+                        {/* Header */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                          <Sparkles size={14} color="#7c3aed" />
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>AI Growth Playbook — Your Personalised Strategy</span>
                         </div>
-
-                        {message.playbookData.playbook && (
-                          <PlaybookCollapsible
-                            title="10-Step Growth Playbook" icon="📋"
-                            color="#7c3aed" bg="linear-gradient(135deg, #faf5ff 0%, #f3eeff 100%)" borderColor="rgba(139, 92, 246, 0.2)"
-                            content={message.playbookData.playbook}
-                            isPlaybookSteps
-                          />
-                        )}
-                        {message.playbookData.websiteAudit && (
-                          <PlaybookCollapsible
-                            title="Website Audit & Recommendations" icon="🌐"
-                            color="#d97706" bg="linear-gradient(135deg, #fff7ed 0%, #fef3e2 100%)" borderColor="rgba(245, 158, 11, 0.2)"
-                            content={message.playbookData.websiteAudit}
-                          />
-                        )}
+                        <PlaybookPhaseContainer playbookData={message.playbookData} />
                       </div>
                     )}
 
@@ -5692,89 +6296,206 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                     )}
 
                     {/* Website Snapshot — shown while playbook generates */}
-                    {message.isWebsiteSnapshot && message.snapshotData && (
-                      <div style={{
-                        marginTop: '0.75rem',
-                        padding: '1.25rem',
-                        borderRadius: '14px',
-                        border: '1px solid rgba(124, 58, 237, 0.2)',
-                        background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
-                        boxShadow: '0 2px 12px rgba(124, 58, 237, 0.08)',
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                          <span style={{ fontSize: '1.2rem' }}>🔍</span>
-                          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#5b21b6' }}>Website Scan Results</span>
-                          <span style={{ fontSize: '0.75rem', color: '#7c3aed', background: 'rgba(124,58,237,0.1)', padding: '2px 8px', borderRadius: '12px', marginLeft: 'auto' }}>
-                            {message.snapshotData.pages_found} pages crawled
-                          </span>
-                        </div>
+                    {message.isWebsiteSnapshot && message.snapshotData && (() => {
+                      const snap = message.snapshotData;
+                      const seo = snap.seo_health || {};
+                      const seoScore = [seo.has_meta, seo.has_viewport, seo.has_sitemap].filter(Boolean).length;
+                      const socialIcons: Record<string, string> = {
+                        'instagram.com': '📸', 'facebook.com': '👥', 'twitter.com': '🐦',
+                        'x.com': '🐦', 'linkedin.com': '💼', 'youtube.com': '▶️',
+                        'tiktok.com': '🎵', 'pinterest.com': '📌', 'threads.net': '🧵',
+                      };
 
-                        {/* Homepage */}
-                        {message.snapshotData.homepage_title && (
-                          <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.8rem', background: 'rgba(255,255,255,0.7)', borderRadius: '10px', border: '1px solid rgba(124,58,237,0.1)' }}>
-                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#1e1b4b' }}>{message.snapshotData.homepage_title}</div>
-                            {message.snapshotData.homepage_description && (
-                              <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.2rem' }}>{message.snapshotData.homepage_description}</div>
+                      // Derive strengths from data
+                      const strengths: string[] = [];
+                      if (seoScore === 3) strengths.push('SEO foundations are solid — meta tags, mobile, sitemap all in place');
+                      else if (seoScore === 2) strengths.push('Basic SEO is set up — but missing ' + (!seo.has_meta ? 'meta tags' : !seo.has_viewport ? 'mobile viewport' : 'sitemap'));
+                      if (snap.social_links && snap.social_links.length >= 3) strengths.push(`Active on ${snap.social_links.length} social platforms — good distribution reach`);
+                      else if (snap.social_links && snap.social_links.length > 0) strengths.push(`Present on ${snap.social_links.length} social platform${snap.social_links.length > 1 ? 's' : ''}`);
+                      if (snap.cta_patterns && snap.cta_patterns.length >= 2) strengths.push(`${snap.cta_patterns.length} conversion points found — site is actively capturing leads`);
+                      if (snap.tech_stack && snap.tech_stack.some((t: string) => /analytics|segment|mixpanel|hotjar/i.test(t))) strengths.push('Tracking & analytics tools detected — you\'re measuring what matters');
+                      if (snap.js_rendered) strengths.push('Modern JS-rendered app — strong technical foundation');
+                      if (snap.page_types && snap.page_types.includes('blog')) strengths.push('Blog content exists — opportunity for organic traffic');
+
+                      // Derive gaps / missing things
+                      const gaps: string[] = [];
+                      const pageTypes = snap.page_types || [];
+                      const criticalPages = [
+                        { type: 'pricing', label: 'No pricing page — visitors can\'t self-qualify, you\'re losing ready-to-buy leads' },
+                        { type: 'case_studies', label: 'No case studies — prospects need social proof before they convert' },
+                        { type: 'faq', label: 'No FAQ page — unanswered objections kill conversions' },
+                      ];
+                      for (const cp of criticalPages) {
+                        if (!pageTypes.includes(cp.type)) gaps.push(cp.label);
+                      }
+                      if (seoScore < 2) gaps.push('SEO basics are weak — Google can\'t properly index your site');
+                      if (!snap.social_links || snap.social_links.length === 0) gaps.push('No social links found — missing free distribution channels');
+                      if (snap.cta_patterns && snap.cta_patterns.length <= 1) gaps.push('Only 1 CTA found — visitors have no clear next step');
+                      else if (!snap.cta_patterns || snap.cta_patterns.length === 0) gaps.push('No clear CTAs — visitors don\'t know what action to take');
+
+                      // Conversion funnel analysis from CTAs
+                      const ctaTypes: string[] = [];
+                      const ctaList = (snap.cta_patterns || []).map((c: string) => c.toLowerCase());
+                      if (ctaList.some((c: string) => /demo|call|schedule|book|consult/i.test(c))) ctaTypes.push('High-touch sales (demos/calls)');
+                      if (ctaList.some((c: string) => /free|trial|start|signup|sign up|get started/i.test(c))) ctaTypes.push('Self-serve signups');
+                      if (ctaList.some((c: string) => /contact|submit|enquir|inquiry/i.test(c))) ctaTypes.push('Contact forms');
+                      if (ctaList.some((c: string) => /download|ebook|guide|whitepaper/i.test(c))) ctaTypes.push('Lead magnets');
+
+                      return (
+                        <div style={{
+                          marginTop: '0.75rem',
+                          borderRadius: '16px',
+                          border: '1px solid rgba(124, 58, 237, 0.18)',
+                          background: 'linear-gradient(145deg, #faf5ff 0%, #f5f3ff 60%, #ede9fe 100%)',
+                          boxShadow: '0 4px 20px rgba(124, 58, 237, 0.1)',
+                          overflow: 'hidden',
+                        }}>
+                          {/* Header */}
+                          <div style={{
+                            padding: '0.85rem 1.1rem',
+                            background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                            display: 'flex', alignItems: 'center', gap: '0.6rem',
+                          }}>
+                            <span style={{ fontSize: '1rem' }}>🌐</span>
+                            <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#fff' }}>Website Intelligence</span>
+                            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                              {snap.js_rendered && (
+                                <span style={{ fontSize: '0.68rem', background: 'rgba(255,255,255,0.2)', color: '#fff', padding: '2px 7px', borderRadius: '10px' }}>⚡ JS</span>
+                              )}
+                              <span style={{ fontSize: '0.68rem', background: 'rgba(255,255,255,0.2)', color: '#fff', padding: '2px 7px', borderRadius: '10px' }}>
+                                {snap.pages_found} pages crawled
+                              </span>
+                            </div>
+                          </div>
+
+                          <div style={{ padding: '1rem 1.1rem', display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+
+                            {/* Business Identity — compact */}
+                            {snap.homepage_title && (
+                              <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.75)', borderRadius: '10px', border: '1px solid rgba(124,58,237,0.1)' }}>
+                                <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e1b4b', marginBottom: '0.15rem' }}>{snap.homepage_title}</div>
+                                {snap.homepage_h1s && snap.homepage_h1s.length > 0 && (
+                                  <div style={{ fontSize: '0.78rem', color: '#5b21b6', fontStyle: 'italic' }}>"{snap.homepage_h1s[0]}"</div>
+                                )}
+                                {snap.homepage_description && (
+                                  <div style={{ fontSize: '0.73rem', color: '#6b7280', lineHeight: 1.5, marginTop: '0.2rem' }}>{snap.homepage_description.slice(0, 160)}{snap.homepage_description.length > 160 ? '…' : ''}</div>
+                                )}
+                              </div>
                             )}
-                          </div>
-                        )}
 
-                        {/* Tech Stack */}
-                        {message.snapshotData.tech_stack && message.snapshotData.tech_stack.length > 0 && (
-                          <div style={{ marginBottom: '0.6rem' }}>
-                            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7c3aed', marginBottom: '0.3rem' }}>Tech Stack Detected</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
-                              {message.snapshotData.tech_stack.map((tech, i) => (
-                                <span key={i} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '6px', background: 'rgba(124,58,237,0.08)', color: '#5b21b6', border: '1px solid rgba(124,58,237,0.15)' }}>{tech}</span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Page Types + CTAs side by side */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.6rem' }}>
-                          {message.snapshotData.page_types && message.snapshotData.page_types.length > 0 && (
-                            <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.6)', borderRadius: '8px' }}>
-                              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6d28d9', marginBottom: '0.2rem' }}>Pages Found</div>
-                              <div style={{ fontSize: '0.72rem', color: '#4b5563' }}>{message.snapshotData.page_types.join(', ')}</div>
-                            </div>
-                          )}
-                          {message.snapshotData.cta_patterns && message.snapshotData.cta_patterns.length > 0 && (
-                            <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.6)', borderRadius: '8px' }}>
-                              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6d28d9', marginBottom: '0.2rem' }}>CTAs Detected</div>
-                              <div style={{ fontSize: '0.72rem', color: '#4b5563' }}>{message.snapshotData.cta_patterns.slice(0, 5).join(' · ')}</div>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* SEO Health */}
-                        {message.snapshotData.seo_health && (
-                          <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.72rem', color: '#6b7280' }}>
-                            <span>{message.snapshotData.seo_health.has_meta ? '✅' : '❌'} Meta tags</span>
-                            <span>{message.snapshotData.seo_health.has_viewport ? '✅' : '❌'} Viewport</span>
-                            <span>{message.snapshotData.seo_health.has_sitemap ? '✅' : '❌'} Sitemap</span>
-                            {message.snapshotData.js_rendered && <span style={{ color: '#7c3aed' }}>⚡ JS-rendered</span>}
-                          </div>
-                        )}
-
-                        {/* Summary Points */}
-                        {message.snapshotData.crawl_summary_points && message.snapshotData.crawl_summary_points.length > 0 && (
-                          <details style={{ marginTop: '0.75rem' }}>
-                            <summary style={{ fontSize: '0.78rem', color: '#7c3aed', cursor: 'pointer', fontWeight: 500 }}>
-                              AI Summary
-                            </summary>
-                            <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                              {message.snapshotData.crawl_summary_points.map((pt, i) => (
-                                <div key={i} style={{ fontSize: '0.78rem', color: '#4b5563', display: 'flex', gap: '0.4rem' }}>
-                                  <span style={{ color: '#7c3aed', flexShrink: 0 }}>•</span>
-                                  <span>{pt}</span>
+                            {/* What's Working + What's Missing — side by side */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                              {strengths.length > 0 && (
+                                <div style={{ padding: '0.7rem', background: 'rgba(16,185,129,0.06)', borderRadius: '10px', border: '1px solid rgba(16,185,129,0.2)' }}>
+                                  <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>What's Working</div>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                    {strengths.slice(0, 4).map((s, i) => (
+                                      <div key={i} style={{ fontSize: '0.72rem', color: '#374151', display: 'flex', gap: '0.4rem', lineHeight: 1.45 }}>
+                                        <span style={{ color: '#10b981', flexShrink: 0 }}>✓</span>
+                                        <span>{s}</span>
+                                      </div>
+                                    ))}
+                                  </div>
                                 </div>
-                              ))}
+                              )}
+                              {gaps.length > 0 && (
+                                <div style={{ padding: '0.7rem', background: 'rgba(239,68,68,0.04)', borderRadius: '10px', border: '1px solid rgba(239,68,68,0.18)' }}>
+                                  <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>Gaps Found</div>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                    {gaps.slice(0, 4).map((g, i) => (
+                                      <div key={i} style={{ fontSize: '0.72rem', color: '#374151', display: 'flex', gap: '0.4rem', lineHeight: 1.45 }}>
+                                        <span style={{ color: '#ef4444', flexShrink: 0 }}>✗</span>
+                                        <span>{g}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                          </details>
-                        )}
-                      </div>
-                    )}
+
+                            {/* Conversion Funnel + Tech Stack — side by side */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                              {/* Conversion Strategy */}
+                              {snap.cta_patterns && snap.cta_patterns.length > 0 && (
+                                <div style={{ padding: '0.65rem', background: 'rgba(255,255,255,0.65)', borderRadius: '9px', border: '1px solid rgba(124,58,237,0.1)' }}>
+                                  <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>🎯 Conversion Points</div>
+                                  {snap.cta_patterns.slice(0, 4).map((cta: string, i: number) => (
+                                    <div key={i} style={{ fontSize: '0.72rem', color: '#374151', padding: '2px 6px', borderRadius: '5px', background: 'rgba(124,58,237,0.06)', marginBottom: '0.2rem', display: 'inline-block', marginRight: '0.25rem' }}>"{cta}"</div>
+                                  ))}
+                                  {ctaTypes.length > 0 && (
+                                    <div style={{ fontSize: '0.66rem', color: '#7c3aed', fontWeight: 600, marginTop: '0.35rem' }}>
+                                      Strategy: {ctaTypes.join(', ')}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {/* Tech Stack */}
+                              {snap.tech_stack && snap.tech_stack.length > 0 && (
+                                <div style={{ padding: '0.65rem', background: 'rgba(255,255,255,0.65)', borderRadius: '9px', border: '1px solid rgba(124,58,237,0.1)' }}>
+                                  <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>⚙️ Tech Stack</div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                    {snap.tech_stack.map((tech: string, i: number) => (
+                                      <span key={i} style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '6px', background: 'rgba(109,40,217,0.08)', color: '#5b21b6', border: '1px solid rgba(109,40,217,0.15)', fontWeight: 500 }}>{tech}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* SEO + Social — compact row */}
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.55rem 0.7rem', background: 'rgba(255,255,255,0.5)', borderRadius: '8px', border: '1px solid rgba(124,58,237,0.08)' }}>
+                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: seoScore === 3 ? '#10b981' : seoScore >= 2 ? '#f59e0b' : '#ef4444' }}>
+                                SEO {seoScore}/3
+                              </span>
+                              <span style={{ fontSize: '0.6rem', color: '#d1d5db' }}>|</span>
+                              {seo.has_meta && <span style={{ fontSize: '0.68rem', color: '#6b7280' }}>✅ Meta</span>}
+                              {seo.has_viewport && <span style={{ fontSize: '0.68rem', color: '#6b7280' }}>✅ Mobile</span>}
+                              {seo.has_sitemap && <span style={{ fontSize: '0.68rem', color: '#6b7280' }}>✅ Sitemap</span>}
+                              {!seo.has_meta && <span style={{ fontSize: '0.68rem', color: '#ef4444' }}>❌ Meta</span>}
+                              {!seo.has_viewport && <span style={{ fontSize: '0.68rem', color: '#ef4444' }}>❌ Mobile</span>}
+                              {!seo.has_sitemap && <span style={{ fontSize: '0.68rem', color: '#ef4444' }}>❌ Sitemap</span>}
+                              {snap.social_links && snap.social_links.length > 0 && (
+                                <>
+                                  <span style={{ fontSize: '0.6rem', color: '#d1d5db' }}>|</span>
+                                  {snap.social_links.slice(0, 5).map((link: string, i: number) => {
+                                    const domain = Object.keys(socialIcons).find(d => link.includes(d));
+                                    return <span key={i} style={{ fontSize: '0.78rem' }}>{domain ? socialIcons[domain] : '🔗'}</span>;
+                                  })}
+                                </>
+                              )}
+                            </div>
+
+                            {/* AI Observations */}
+                            {snap.crawl_summary_points && snap.crawl_summary_points.length > 0 && (
+                              <div style={{ padding: '0.65rem 0.75rem', background: 'rgba(109,40,217,0.05)', borderRadius: '9px', border: '1px solid rgba(109,40,217,0.12)' }}>
+                                <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>🧠 AI Observations</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                                  {snap.crawl_summary_points.map((pt: string, i: number) => (
+                                    <div key={i} style={{ fontSize: '0.75rem', color: '#374151', display: 'flex', gap: '0.5rem', lineHeight: 1.5 }}>
+                                      <span style={{ color: '#7c3aed', flexShrink: 0, marginTop: '1px' }}>▸</span>
+                                      <span>{pt}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Generating Footer */}
+                            <div style={{
+                              display: 'flex', alignItems: 'center', gap: '0.5rem',
+                              padding: '0.6rem 0.75rem',
+                              background: 'linear-gradient(135deg, rgba(124,58,237,0.08) 0%, rgba(109,40,217,0.12) 100%)',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(124,58,237,0.15)',
+                            }}>
+                              <span style={{ fontSize: '0.85rem' }}>⚙️</span>
+                              <span style={{ fontSize: '0.75rem', color: '#5b21b6', fontWeight: 500 }}>Building your 10-step AI Growth Playbook using these insights…</span>
+                            </div>
+
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Diagnostic Section Options — in-chat */}
                     {message.diagnosticOptions && message.diagnosticOptions.length > 0 && (

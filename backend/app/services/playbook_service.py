@@ -762,9 +762,14 @@ async def _call_claude(
         "X-Title": "Ikshan Playbook Engine",
     }
 
+    OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+    OPENAI_FALLBACK_MODEL = "gpt-4o-mini"
+
     t0 = time.perf_counter()
     max_retries = 3
     async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = None
+        use_openrouter = True
         for attempt in range(max_retries):
             resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=headers)
             if resp.status_code == 429 and attempt < max_retries - 1:
@@ -772,8 +777,22 @@ async def _call_claude(
                 logger.warning("OpenRouter 429 rate limit, retrying", attempt=attempt + 1, wait_s=wait)
                 await asyncio.sleep(wait)
                 continue
-            resp.raise_for_status()
+            if resp.status_code == 402:
+                logger.warning("OpenRouter 402 (out of credits) — falling back to OpenAI direct", model=model)
+                use_openrouter = False
             break
+
+        if not use_openrouter:
+            openai_key = settings.OPENAI_API_KEY
+            openai_payload = {**payload, "model": OPENAI_FALLBACK_MODEL}
+            openai_headers = {
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type": "application/json",
+            }
+            resp = await client.post(OPENAI_CHAT_URL, json=openai_payload, headers=openai_headers)
+            resp.raise_for_status()
+        elif use_openrouter:
+            resp.raise_for_status()
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     data = resp.json()
