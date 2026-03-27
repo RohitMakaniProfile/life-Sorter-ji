@@ -10,6 +10,8 @@ import type { PipelineState as SharedPipelineState } from '../../types';
 export interface RichMessage {
   role: 'user' | 'assistant';
   content: string;
+  formId?: string;
+  options?: string[];
   createdAt?: string;
   agentId?: AgentId;
   pipeline?: SharedPipelineState;
@@ -24,6 +26,7 @@ export interface RichMessage {
 export interface ChatUIProps {
   messages: RichMessage[];
   onSend: (msg: string) => Promise<void>;
+  onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
   loading?: boolean;
   disabled?: boolean;
@@ -104,10 +107,12 @@ const PREVIEW_LINES = 6;      // lines visible when collapsed
 function PlanMessage({
   message,
   onOpenContext,
+  onOptionSelect,
   onApprovePlan,
 }: {
   message: RichMessage;
   onOpenContext: (messageId: string) => void;
+  onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(message.content);
@@ -184,23 +189,44 @@ function PlanMessage({
           >
             {editing ? 'Done editing' : 'Edit'}
           </button>
-          <button
-            type="button"
-            disabled={!onApprovePlan || saving}
-            onClick={async () => {
-              if (!onApprovePlan || !message.planId) return;
-              setSaving(true);
-              try {
-                await onApprovePlan(message.planId, draft);
-              } finally {
-                setSaving(false);
-              }
-            }}
-            className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
-          >
-            {saving ? 'Starting…' : 'Approve & run'}
-          </button>
+          {onApprovePlan && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={async () => {
+                if (!message.planId) return;
+                setSaving(true);
+                try {
+                  await onApprovePlan(message.planId, draft);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
+            >
+              {saving ? 'Starting…' : 'Approve & run'}
+            </button>
+          )}
         </div>
+
+        {Array.isArray(message.options) && message.options.length > 0 && (
+          <div className="flex justify-end gap-2 mt-3">
+            {message.options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                disabled={saving || !onOptionSelect}
+                onClick={() => {
+                  if (!onOptionSelect) return;
+                  void onOptionSelect(opt);
+                }}
+                className="px-3 py-2 rounded-lg border border-violet-300 text-violet-700 text-sm font-semibold hover:bg-violet-50 disabled:opacity-50"
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -212,6 +238,7 @@ function AssistantMessage({
   isLast,
   onOpenContext,
   onOpenLiveContext,
+  onOptionSelect,
   onApprovePlan,
 }: {
   message: RichMessage;
@@ -219,11 +246,19 @@ function AssistantMessage({
   isLast: boolean;
   onOpenContext: (messageId: string) => void;
   onOpenLiveContext: () => void;
+  onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
 }) {
   // Plan approval UI
   if (m.role === 'assistant' && m.kind === 'plan' && m.planId) {
-    return <PlanMessage message={m} onOpenContext={onOpenContext} onApprovePlan={onApprovePlan} />;
+    return (
+      <PlanMessage
+        message={m}
+        onOpenContext={onOpenContext}
+        onOptionSelect={onOptionSelect}
+        onApprovePlan={onApprovePlan}
+      />
+    );
   }
 
   // Determine if this is a long report that needs the accordion.
@@ -362,6 +397,25 @@ function AssistantMessage({
           {!isReport && m.role === 'assistant' && (
             <div className="px-5 pb-3.5" />
           )}
+
+          {m.role === 'assistant' && Array.isArray(m.options) && m.options.length > 0 && (
+            <div className="px-5 pb-4 flex flex-wrap gap-2">
+              {m.options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  disabled={loading || !onOptionSelect}
+                  onClick={() => {
+                    if (!onOptionSelect) return;
+                    void onOptionSelect(opt);
+                  }}
+                  className="px-3 py-1.5 rounded-lg border border-violet-300 text-violet-700 text-xs font-semibold hover:bg-violet-50 disabled:opacity-50"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -371,6 +425,7 @@ function AssistantMessage({
 export default function ChatUI({
   messages,
   onSend,
+  onOptionSelect,
   onApprovePlan,
   loading = false,
   disabled = false,
@@ -414,10 +469,15 @@ export default function ChatUI({
     return last?.role === 'assistant' ? (last.pipeline ?? null) : null;
   })();
 
+  const hasPendingOptions = (() => {
+    const last = messages[messages.length - 1];
+    return Boolean(last?.role === 'assistant' && Array.isArray(last.options) && last.options.length > 0);
+  })();
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const raw = inputRef.current?.value?.trim();
-    if (!raw || disabled || loading) return;
+    if (!raw || disabled || loading || hasPendingOptions) return;
     inputRef.current!.value = '';
     inputRef.current!.style.height = 'auto';
     await onSend(raw);
@@ -544,6 +604,7 @@ export default function ChatUI({
                     setContextMessageId(undefined);
                     setContextOpen(true);
                   }}
+                  onOptionSelect={onOptionSelect}
                   onOpenContext={(messageId) => {
                     setContextMessageId(messageId);
                     setContextOpen(true);
@@ -583,7 +644,7 @@ export default function ChatUI({
             ref={inputRef}
             rows={1}
             placeholder={resolvedPlaceholder}
-            disabled={disabled || loading}
+            disabled={disabled || loading || hasPendingOptions}
             onInput={(e) => {
               const t = e.target as HTMLTextAreaElement;
               t.style.height = 'auto';
@@ -599,12 +660,12 @@ export default function ChatUI({
           />
           <button
             type="submit"
-            disabled={disabled || loading}
+            disabled={disabled || loading || hasPendingOptions}
             className="flex-shrink-0 p-3.5 rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
-              backgroundColor: disabled || loading ? '#e2e8f0' : '#7c3aed',
+              backgroundColor: disabled || loading || hasPendingOptions ? '#e2e8f0' : '#7c3aed',
               border: 'none',
-              cursor: disabled || loading ? 'not-allowed' : 'pointer',
+              cursor: disabled || loading || hasPendingOptions ? 'not-allowed' : 'pointer',
               color: 'white',
             }}
           >

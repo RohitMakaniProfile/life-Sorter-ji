@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from ..config import GEMINI_API_KEY
+from app.config import GEMINI_API_KEY
 from .gemini_models import get_gemini_models
 
 _SYSTEM_PROMPT = """You extract **structured arguments** for a skill from the user's message and any **prior skill outputs** appended below.

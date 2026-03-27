@@ -13,6 +13,8 @@ export type PipelineStage =
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  formId?: string;
+  options?: string[];
   createdAt?: string;
   outputFile?: string;
   messageId?: string;

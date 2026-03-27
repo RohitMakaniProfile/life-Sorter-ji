@@ -2694,7 +2694,7 @@ const ChatBotNew = ({ onNavigate }) => {
                 const waitForCrawl = setInterval(async () => {
                   try {
                     const sid = getSessionId();
-                    const statusData = await coreApi.getAgentSessionStatus(sid);
+                    const statusData = await coreApi.getAgentSessionView(sid, 'status');
                     if (statusData.crawl_status === 'complete' || statusData.crawl_status === 'failed') {
                       setCrawlStatus(statusData.crawl_status);
                       clearInterval(waitForCrawl);
@@ -3329,7 +3329,7 @@ const ChatBotNew = ({ onNavigate }) => {
         const sid = getSessionId();
         if (!sid) return;
 
-        const data = await coreApi.getAgentSessionStatus(sid);
+        const data = await coreApi.getAgentSessionView(sid, 'status');
 
         if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
           setCrawlStatus(data.crawl_status);
@@ -3433,7 +3433,7 @@ const ChatBotNew = ({ onNavigate }) => {
       });
 
       // Fetch website snapshot (non-blocking) to show while playbook generates
-      coreApi.getWebsiteSnapshot(sid)
+      coreApi.getAgentSessionView(sid, 'website_snapshot')
         .then(snap => {
           if (snap.available) {
             setWebsiteSnapshot(snap);

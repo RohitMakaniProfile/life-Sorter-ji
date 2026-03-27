@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .ai import AiHelper
-from .config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
+from app.phase2.ai import AiHelper
+from app.config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -31,7 +31,7 @@ def _json_dumps(value: Any) -> str:
     except Exception as exc:
         try:
             print(
-                "[phase2.skills] json-dumps-failed",
+                "[skills.service] json-dumps-failed",
                 {
                     "error": str(exc),
                     "value_type": type(value).__name__,
@@ -522,7 +522,7 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
             if GEMINI_SCOUT_MODELS:
                 model_ids = [m.strip() for m in GEMINI_SCOUT_MODELS.split(",") if m.strip()]
             else:
-                from .agent.gemini_models import get_gemini_models
+                from app.phase2.agent.gemini_models import get_gemini_models
                 model_ids = get_gemini_models()
 
             client = genai.Client(api_key=GEMINI_API_KEY)

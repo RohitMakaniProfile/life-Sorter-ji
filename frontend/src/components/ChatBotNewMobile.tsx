@@ -1489,7 +1489,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
                 const waitForCrawl = setInterval(async () => {
                   try {
                     const sid = getSessionId();
-                    const statusData = await coreApi.getAgentSessionStatus(sid);
+                    const statusData = await coreApi.getAgentSessionView(sid, 'status');
                     if (statusData.crawl_status === 'complete' || statusData.crawl_status === 'failed') {
                       setCrawlStatus(statusData.crawl_status);
                       clearInterval(waitForCrawl);
@@ -2055,7 +2055,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       try {
         const sid = getSessionId();
         if (!sid) return;
-        const data = await coreApi.getAgentSessionStatus(sid);
+        const data = await coreApi.getAgentSessionView(sid, 'status');
         if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
           setCrawlStatus(data.crawl_status);
           clearInterval(crawlPollRef.current);

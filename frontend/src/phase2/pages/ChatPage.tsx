@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ChatUI from '../components/chat/ChatUI';
 import type { RichMessage } from '../components/chat/ChatUI';
-import { getMessages, createPlanStream, approvePlanStream } from '../../api';
+import { getMessages, sendMessage, sendMessageStream } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../context/UiAgentsContext';
 
@@ -93,18 +93,10 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
 
     try {
       // Plan-only: every user message generates a plan. Execution happens ONLY via approve API.
-      const lastDraftPlanId = (() => {
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const m = messages[i] as any;
-          if (m?.role === 'assistant' && m?.kind === 'plan' && typeof m?.planId === 'string') return m.planId as string;
-        }
-        return undefined;
-      })();
-      const plan = await createPlanStream({
+      const plan = await sendMessageStream({
         message: userMessage,
         conversationId,
         agentId: activeAgentId,
-        cancelPlanId: lastDraftPlanId,
         callbacks: {
           onStage: (stage, _label, _idx) => {
             setMessages((prev) => {
@@ -194,92 +186,82 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     }
   };
 
-  const handleApprovePlan = async (planId: string, planMarkdown: string) => {
+  const handleOptionSelect = async (option: string) => {
+    if (!conversationId) return;
     setLoading(true);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
     try {
-      const result = await approvePlanStream({
-        planId,
+      setMessages((prev) => [...prev, { role: 'user', content: option } as any]);
+      const ack = await sendMessage({
+        message: option,
         conversationId,
-        planMarkdown,
         agentId: activeAgentId,
-        callbacks: {
-          onStage: (stage, _label, _idx) => {
-            setMessages((prev) => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last?.role === 'assistant') {
-                updated[updated.length - 1] = {
-                  ...last,
-                  pipeline: {
-                    currentStage: stage as any,
-                    agentId: activeAgentId,
-                    stageOutputs: conversationStageOutputs,
-                    progressEvents: last.pipeline?.progressEvents ?? [],
-                    outputFile: undefined,
-                    error: undefined,
-                  },
-                };
-              }
-              return updated;
-            });
-          },
-          onProgress: (event: ApiProgressEvent) => {
-            const meta = (event as any)?.meta;
-            if (
-              meta?.kind === 'checklist-update' &&
-              typeof meta?.planId === 'string' &&
-              meta.planId === planId &&
-              typeof meta?.planMarkdown === 'string'
-            ) {
-              setMessages((prev) =>
-                prev.map((m: any) =>
-                  m?.role === 'assistant' && m?.kind === 'plan' && m?.planId === planId
-                    ? { ...m, content: meta.planMarkdown }
-                    : m
-                )
-              );
-            }
-            setMessages((prev) => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last?.role === 'assistant' && last.pipeline) {
-                updated[updated.length - 1] = {
-                  ...last,
-                  pipeline: {
-                    ...last.pipeline,
-                    progressEvents: [...(last.pipeline.progressEvents ?? []), event],
-                  },
-                };
-              }
-              return updated;
-            });
-          },
-          onToken: (token) => {
-            setMessages((prev) => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last?.role === 'assistant') {
-                updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
-              }
-              return updated;
-            });
-          },
-        },
       });
+      if (ack.conversationId) setConversationId(ack.conversationId);
 
-      if (result.conversationId) setConversationId(result.conversationId);
-      if (result.model) setModel(result.model);
-      if (result.stageOutputs) setConversationStageOutputs((prev) => ({ ...prev, ...result.stageOutputs }));
+      if (ack.status === 'cancelled') {
+        setMessages((prev) => [...prev, { role: 'assistant', content: 'Plan cancelled.' } as any]);
+        return;
+      }
 
-      setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last?.role === 'assistant' && result.messageId) {
-          updated[updated.length - 1] = { ...last, messageId: result.messageId } as any;
-        }
-        return updated;
-      });
+      if (ack.requiresStream) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
+        const result = await sendMessageStream({
+          message: option,
+          conversationId: ack.conversationId || conversationId,
+          agentId: activeAgentId,
+          callbacks: {
+            onStage: (stage, _label, _idx) => {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant') {
+                  updated[updated.length - 1] = {
+                    ...last,
+                    pipeline: {
+                      currentStage: stage as any,
+                      agentId: activeAgentId,
+                      stageOutputs: conversationStageOutputs,
+                      progressEvents: last.pipeline?.progressEvents ?? [],
+                      outputFile: undefined,
+                      error: undefined,
+                    },
+                  };
+                }
+                return updated;
+              });
+            },
+            onProgress: (event: ApiProgressEvent) => {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant' && last.pipeline) {
+                  updated[updated.length - 1] = {
+                    ...last,
+                    pipeline: {
+                      ...last.pipeline,
+                      progressEvents: [...(last.pipeline.progressEvents ?? []), event],
+                    },
+                  };
+                }
+                return updated;
+              });
+            },
+            onToken: (token) => {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                }
+                return updated;
+              });
+            },
+          },
+        });
+        if (result.conversationId) setConversationId(result.conversationId);
+        if (result.model) setModel(result.model);
+        if (result.stageOutputs) setConversationStageOutputs((prev) => ({ ...prev, ...result.stageOutputs }));
+      }
     } finally {
       setLoading(false);
     }
@@ -322,7 +304,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     <ChatUI
       messages={messages}
       onSend={handleSend}
-      onApprovePlan={handleApprovePlan}
+      onOptionSelect={handleOptionSelect}
       loading={loading}
       agentId={activeAgentId}
       subtitle={model ? `${activeAgentId} · ${model}` : undefined}

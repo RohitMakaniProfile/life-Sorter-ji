@@ -8,7 +8,8 @@ import traceback
 
 from asyncpg import UniqueViolationError
 
-from .db import get_pool
+from app.db import get_pool
+from app.services import form_flow_service
 
 
 DEFAULT_AGENT_ID = "research-orchestrator"
@@ -347,6 +348,10 @@ def _message_from_row(row: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         if isinstance(payload.get("messageId"), str):
             msg["messageId"] = payload["messageId"]
+        if isinstance(payload.get("formId"), str):
+            msg["formId"] = payload["formId"]
+        if isinstance(payload.get("options"), list):
+            msg["options"] = [str(x) for x in payload["options"] if isinstance(x, str)]
         if isinstance(payload.get("skillsCount"), int):
             msg["skillsCount"] = payload["skillsCount"]
         if payload.get("kind") in ("plan", "final"):
@@ -416,10 +421,58 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
             )
 
 
+async def _get_active_form_id(conversation_id: str) -> str | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT message
+            FROM messages
+            WHERE conversation_id = $1
+            ORDER BY message_index DESC
+            LIMIT 1
+            """,
+            conversation_id,
+        )
+    if not row:
+        return None
+    payload = _to_obj(row["message"], {})
+    if isinstance(payload, dict) and isinstance(payload.get("formId"), str):
+        return str(payload["formId"])
+    return None
+
+
+async def _get_form_messages(conversation_id: str, form_id: str) -> list[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT *
+            FROM messages
+            WHERE conversation_id = $1
+              AND (message->>'formId') = $2
+            ORDER BY message_index ASC
+            """,
+            conversation_id,
+            form_id,
+        )
+    return [_message_from_row(r) for r in rows]
+
+
 async def append_message(conversation_id: str, role: str, content: str, **extra: Any) -> str:
     message_id = str(extra.get("messageId") or uuid4())
     created_at_dt = _as_datetime(extra.get("createdAt"))
     created_at = created_at_dt.isoformat()
+    provided_form_id = str(extra.get("formId") or "").strip() or None
+    active_form_id = provided_form_id or await _get_active_form_id(conversation_id)
+    if form_flow_service.should_start_form(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        active_form_id=active_form_id,
+    ):
+        active_form_id = form_flow_service.generate_form_id()
+
     message = {
         "role": "assistant" if role == "assistant" else "user",
         "content": content,
@@ -430,10 +483,14 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
         message["outputFile"] = extra["outputFile"]
     if isinstance(extra.get("skillsCount"), int):
         message["skillsCount"] = extra["skillsCount"]
+    if isinstance(extra.get("options"), list):
+        message["options"] = [str(x) for x in extra["options"] if isinstance(x, str)]
     if extra.get("kind") in ("plan", "final"):
         message["kind"] = extra["kind"]
     if isinstance(extra.get("planId"), str):
         message["planId"] = extra["planId"]
+    if active_form_id:
+        message["formId"] = active_form_id
 
     await _insert_message(conversation_id, message)
 
@@ -447,6 +504,19 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
                     conversation_id,
                     content[:60],
                 )
+
+    if active_form_id and form_flow_service.should_end_form(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        active_form_id=active_form_id,
+    ):
+        form_messages = await _get_form_messages(conversation_id, active_form_id)
+        await form_flow_service.process_completed_form(
+            conversation_id=conversation_id,
+            form_id=active_form_id,
+            form_messages=form_messages,
+        )
 
     return message_id
 

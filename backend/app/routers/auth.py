@@ -22,7 +22,7 @@ from app.services.user_session_service import update_session_auth
 from app.services.session_store import get_session
 from app.services.jwt_service import create_access_token, decode_and_verify_access_token
 from app.phase2.stores import promote_session_conversations
-from app.phase2.db import get_pool
+from app.db import get_pool
 from app.config import get_settings
 
 logger = structlog.get_logger()

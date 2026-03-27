@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import structlog
 
-from app.phase2.db import get_pool
+from app.db import get_pool
 
 logger = structlog.get_logger()
 

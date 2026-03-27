@@ -17,8 +17,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .ai import AiHelper
 from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
-from .config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
-from .skills import first_skill_id, get_skill, list_skills, run_skill
+from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
+from app.skills.service import first_skill_id, get_skill, run_skill
 from app.services import unified_chat_service
 from .stores import (
     append_skill_streamed_text,
@@ -28,19 +28,16 @@ from .stores import (
     create_plan_run,
     create_skill_call,
     delete_agent,
-    delete_conversation,
     ensure_default_agents,
     get_agent,
     get_conversation,
     get_or_create_conversation,
     get_plan_run,
     get_skill_calls_by_message_id,
-    get_skill_calls_by_message_id_full,
     get_stage_outputs,
     get_token_usage,
     list_agents,
     save_token_usage,
-    list_conversations,
     push_skill_output,
     save_stage_outputs,
     set_skill_call_result,
@@ -342,12 +339,6 @@ async def _create_plan_draft(
     contexts = resolved.get("contexts", {})
     _log("plan-draft-conversation-resolved", conversation_id=conv.get("id"), agent_id=resolved.get("agentId"))
 
-    cancel_plan_id = str(body.get("cancelPlanId") or "").strip()
-    if cancel_plan_id:
-        existing = await get_plan_run(cancel_plan_id)
-        if existing and existing.get("conversationId") == conv["id"] and existing.get("status") == "draft":
-            await update_plan_run(cancel_plan_id, {"status": "cancelled"})
-
     user_message_id = await append_message(conv["id"], "user", message)
 
     placeholder = "\n".join([
@@ -360,7 +351,13 @@ async def _create_plan_draft(
         "",
         "*(Generating plan...)*",
     ])
-    plan_message_id = await append_message(conv["id"], "assistant", placeholder, kind="plan")
+    plan_message_id = await append_message(
+        conv["id"],
+        "assistant",
+        placeholder,
+        kind="plan",
+        options=["Approve", "Cancel"],
+    )
 
     await _emit_plan_progress(emit_progress, "Analyzing request context", event="plan-started")
     url = _extract_url_from_message(message)
@@ -735,11 +732,6 @@ def _mark_checklist_from_skill(items: list[dict[str, Any]], skill_id: str, summa
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/api/chat/skills")
-async def p2_skills_chat() -> list[dict[str, Any]]:
-    return list_skills()
-
-
 @router.get("/api/agents")
 async def p2_agents_list() -> dict[str, Any]:
     return {"agents": await list_agents()}
@@ -811,7 +803,6 @@ async def p2_files_download(path: str = Query(...)) -> FileResponse:
     return FileResponse(str(p), media_type=media, filename=p.name)
 
 
-@router.post("/api/chat/message")
 async def p2_chat_message(req: Request) -> dict[str, Any]:
     body = await req.json()
     message = str(body.get("message") or "").strip()
@@ -850,7 +841,6 @@ async def p2_chat_message(req: Request) -> dict[str, Any]:
     }
 
 
-@router.post("/api/chat/stream")
 async def p2_chat_stream(req: Request) -> StreamingResponse:
     body = await req.json()
     message = str(body.get("message") or "").strip()
@@ -998,7 +988,6 @@ async def p2_chat_stream(req: Request) -> StreamingResponse:
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
-@router.post("/api/chat/plan")
 async def p2_chat_plan(req: Request) -> dict[str, Any]:
     body = await req.json()
     message = str(body.get("message") or "").strip()
@@ -1009,7 +998,6 @@ async def p2_chat_plan(req: Request) -> dict[str, Any]:
     return await _create_plan_draft(body=body)
 
 
-@router.post("/api/chat/plan/stream")
 async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
     body = await req.json()
     message = str(body.get("message") or "").strip()
@@ -1061,9 +1049,7 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
-@router.post("/api/chat/plan/approve/stream")
-async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
-    body = await req.json()
+async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
     plan_id = str(body.get("planId") or "").strip()
     if not plan_id:
         raise HTTPException(status_code=400, detail="planId is required")
@@ -1378,57 +1364,4 @@ async def p2_approve_plan_stream(req: Request) -> StreamingResponse:
                 yield b": ping\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
-
-
-@router.get("/api/chat/messages")
-async def p2_chat_messages(
-    conversationId: str | None = None,
-    sessionId: str | None = Query(default=None),
-    userId: str | None = Query(default=None),
-) -> dict[str, Any]:
-    conv = await get_or_create_conversation(
-        conversationId,
-        session_id=sessionId,
-        user_id=userId,
-    )
-    return {
-        "messages": conv.get("messages") or [],
-        "conversationId": conv["id"],
-        "agentId": conv.get("agentId"),
-        "lastStageOutputs": conv.get("lastStageOutputs") or {},
-        "lastOutputFile": conv.get("lastOutputFile"),
-    }
-
-
-@router.get("/api/chat/skill-calls")
-async def p2_chat_skill_calls(messageId: str | None = None) -> dict[str, Any]:
-    if not messageId or not messageId.strip():
-        raise HTTPException(status_code=400, detail="messageId is required")
-    return {"skillCalls": await get_skill_calls_by_message_id_full(messageId.strip())}
-
-
-@router.get("/api/chat/token-usage")
-async def p2_chat_token_usage(messageId: str | None = None) -> dict[str, Any]:
-    if not messageId or not messageId.strip():
-        raise HTTPException(status_code=400, detail="messageId is required")
-    return await get_token_usage(messageId.strip())
-
-
-@router.get("/api/chat/conversations")
-async def p2_chat_conversations(
-    sessionId: str | None = Query(default=None),
-    userId: str | None = Query(default=None),
-) -> dict[str, Any]:
-    return {
-        "conversations": await list_conversations(
-            session_id=sessionId,
-            user_id=userId,
-        )
-    }
-
-
-@router.delete("/api/chat/conversations/{conversation_id}")
-async def p2_chat_delete_conversation(conversation_id: str) -> dict[str, bool]:
-    return {"ok": await delete_conversation(conversation_id)}
-
 

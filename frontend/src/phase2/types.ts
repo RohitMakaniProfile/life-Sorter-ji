@@ -68,6 +68,8 @@ export interface TokenUsage {
 export interface RichMessage {
   role: Role;
   content: string;
+  formId?: string;
+  options?: string[];
   createdAt?: string;
 
   // optional UI metadata
@@ -117,6 +119,8 @@ export interface SendMessageStreamResult {
 export interface BackendMessage {
   role: Role;
   content: string;
+  formId?: string;
+  options?: string[];
 }
 
 export interface GetMessagesResponse {

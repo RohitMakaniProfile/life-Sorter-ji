@@ -16,9 +16,9 @@ GET   /api/v1/agent/session/{id}/website-snapshot — Structured crawl snapshot
 import asyncio
 
 import structlog
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from app.config import get_settings
 from app.middleware.rate_limit import limiter
@@ -1017,15 +1017,12 @@ async def advance_session(request: Request, session_id: str, body: SessionAdvanc
         )
         result = result_model.model_dump()
     elif action == "scale_questions":
-        result_model = await get_scale_questions_endpoint(request, session_id)
+        result_model = await get_scale_questions_endpoint(session_id)
         result = result_model.model_dump()
     elif action == "website_analysis":
         if not body.website_url:
             raise HTTPException(status_code=400, detail="website_url is required for action=website_analysis")
-        result_model = await submit_website(
-            request,
-            SubmitWebsiteRequest(session_id=session_id, website_url=body.website_url),
-        )
+        result_model = await submit_website(SubmitWebsiteRequest(session_id=session_id, website_url=body.website_url))
         result = result_model.model_dump()
     elif action == "start_diagnostic":
         result_model = await start_diagnostic(request, StartDiagnosticRequest(session_id=session_id))
@@ -1055,9 +1052,7 @@ async def advance_session(request: Request, session_id: str, body: SessionAdvanc
     )
 
 
-@router.get("/session/{session_id}/status", response_model=SessionStatusResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_session_status(request: Request, session_id: str):
+def _build_session_status(session_id: str) -> SessionStatusResponse:
     session = _get_session_or_404(session_id)
     return SessionStatusResponse(
         session_id=session_id,
@@ -1070,23 +1065,7 @@ async def get_session_status(request: Request, session_id: str):
     )
 
 
-@router.get("/session/{session_id}", response_model=SessionContextResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_session_context(request: Request, session_id: str):
-    """Get the full session context (for debugging or UI state recovery)."""
-    summary = session_store.get_session_summary(session_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return SessionContextResponse(**summary)
-
-
-# ── Context Pool — LLM Transparency Panel ──────────────────────
-
-
-@router.get("/session/{session_id}/context-pool")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_context_pool(request: Request, session_id: str):
+def _build_context_pool(session_id: str) -> dict[str, Any]:
     """
     Return the full context pool for this session:
     - Session profile (outcome, domain, task, stage)
@@ -1094,9 +1073,7 @@ async def get_context_pool(request: Request, session_id: str):
     - All LLM call logs with prompts, responses, and metadata
     - RCA history
     """
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
 
     return {
         "session_id": session.session_id,
@@ -1391,10 +1368,6 @@ def _get_scale_questions(domain: str = "", **_kwargs) -> list[dict]:
     ]
 
 
-# Backward compat: static list for the submit endpoint validation
-SCALE_QUESTIONS = _get_scale_questions()
-
-
 class ScaleQuestionItem(BaseModel):
     id: str
     question: str
@@ -1409,7 +1382,7 @@ class ScaleQuestionsResponse(BaseModel):
     total: int
 
 
-async def get_scale_questions_endpoint(request: Request, session_id: str):
+async def get_scale_questions_endpoint(session_id: str):
     """
     Return the business scale / context classification questions.
 
@@ -1466,18 +1439,14 @@ class WebsiteSnapshotResponse(BaseModel):
     crawl_summary_points: list[str] = [] # 5-bullet summary from LLM
 
 
-@router.get("/session/{session_id}/website-snapshot", response_model=WebsiteSnapshotResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_website_snapshot(request: Request, session_id: str):
+def _build_website_snapshot(session_id: str) -> WebsiteSnapshotResponse:
     """
     Return structured website insights from crawl_raw.
     No LLM call — instant response. Frontend shows this while playbook generates.
 
     Available as soon as crawl_status == "complete".
     """
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
 
     if session.crawl_status != "complete" or not session.crawl_raw:
         return WebsiteSnapshotResponse(session_id=session_id, available=False)
@@ -1512,7 +1481,28 @@ async def get_website_snapshot(request: Request, session_id: str):
     )
 
 
-async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...)):
+@router.get("/session/{session_id}")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_session_context(
+    request: Request,
+    session_id: str,
+    view: Literal["summary", "status", "context_pool", "website_snapshot"] = Query(default="summary"),
+):
+    """Fetch session data by view: summary|status|context_pool|website_snapshot."""
+    if view == "status":
+        return _build_session_status(session_id).model_dump()
+    if view == "context_pool":
+        return _build_context_pool(session_id)
+    if view == "website_snapshot":
+        return _build_website_snapshot(session_id).model_dump()
+
+    summary = session_store.get_session_summary(session_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionContextResponse(**summary).model_dump()
+
+
+async def submit_website(body: SubmitWebsiteRequest = Body(...)):
     session = session_store.get_session(body.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

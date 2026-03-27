@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
-from .config import OPENAI_MODEL
-from app.config import get_settings
+from app.config import OPENAI_MODEL, get_settings
 from app.services import openrouter_service
 
 TokenCb = Callable[[str], Awaitable[None] | None]

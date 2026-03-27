@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 from ..ai import AiHelper
-from ..config import GEMINI_API_KEY
-from ..skills import SkillManifest, SkillRunResult, get_skill, list_skills, run_skill
+from app.config import GEMINI_API_KEY
+from app.skills.service import SkillManifest, SkillRunResult, get_skill, list_skills, run_skill
 from ..stores import (
     create_skill_call,
     get_skill_calls_by_message_id,

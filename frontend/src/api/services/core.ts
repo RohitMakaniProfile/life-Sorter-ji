@@ -5,7 +5,6 @@ import type {
   AgentId,
   ChatMessage,
   ConversationSummary,
-  CreatePlanResponse,
   PipelineStage,
   ProgressEvent,
   SendMessageStreamOptions,
@@ -30,7 +29,9 @@ export const coreApi = {
     ),
 
   createAgentSession: () => apiPost<{ session_id: string }>(API_ROUTES.agent.session, {}),
-  getAgentSession: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionById(sessionId)),
+  getAgentSession: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionById(sessionId, 'summary')),
+  getAgentSessionView: (sessionId: string, view: 'summary' | 'status' | 'context_pool' | 'website_snapshot') =>
+    apiGet<any>(API_ROUTES.agent.sessionById(sessionId, view)),
   patchAgentSession: (sessionId: string, payload: Record<string, unknown>) =>
     apiFetch(API_ROUTES.agent.patchSession(sessionId), {
       method: 'PATCH',
@@ -44,9 +45,6 @@ export const coreApi = {
     payload: { action?: string; task?: string; question_index?: number; answer?: string },
   ) =>
     apiPost<any>(API_ROUTES.agent.advanceSession(sessionId), payload),
-  getAgentSessionStatus: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionStatus(sessionId)),
-  getWebsiteSnapshot: (sessionId: string) => apiGet<any>(API_ROUTES.agent.websiteSnapshot(sessionId)),
-  getContextPool: (sessionId: string) => apiGet<any>(API_ROUTES.agent.contextPool(sessionId)),
 
   playbookStart: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.start, payload),
   playbookGenerate: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.generate, payload),
@@ -118,56 +116,6 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function apiJsonPost<T>(path: string, payload: unknown): Promise<T> {
   return apiJson<T>(path, { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export async function createPlan(opts: {
-  message: string;
-  conversationId?: string;
-  agentId?: AgentId;
-  cancelPlanId?: string;
-}): Promise<CreatePlanResponse> {
-  return apiJsonPost<CreatePlanResponse>(API_ROUTES.aiChat.plan, opts);
-}
-
-export async function createPlanStream(opts: {
-  message: string;
-  conversationId?: string;
-  agentId?: AgentId;
-  cancelPlanId?: string;
-  callbacks: StreamCallbacks;
-}): Promise<StreamResult> {
-  const response = await apiRequest(`${getApiBase()}${API_ROUTES.aiChat.planStream}`, {
-    method: 'POST',
-    credentials: 'include',
-    body: JSON.stringify({
-      message: opts.message,
-      conversationId: opts.conversationId,
-      agentId: opts.agentId,
-      cancelPlanId: opts.cancelPlanId,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(await extractApiError(response));
-  }
-  return readSseStream(response, opts.callbacks);
-}
-
-export async function approvePlanStream(opts: {
-  planId: string;
-  conversationId?: string;
-  planMarkdown?: string;
-  agentId?: AgentId;
-  callbacks: StreamCallbacks;
-}): Promise<StreamResult> {
-  const response = await apiRequest(`${getApiBase()}${API_ROUTES.aiChat.planApproveStream}`, {
-    method: 'POST',
-    credentials: 'include',
-    body: JSON.stringify(opts),
-  });
-  if (!response.ok) {
-    throw new Error(await extractApiError(response));
-  }
-  return readSseStream(response, opts.callbacks);
 }
 
 export async function getSkillCalls(messageId: string): Promise<{ skillCalls: SkillCallFull[] }> {
@@ -268,8 +216,32 @@ export async function sendMessageStream(opts: SendMessageStreamOptions): Promise
   return readSseStream(response, callbacks);
 }
 
-export async function sendMessage(message: string, conversationId?: string): Promise<{ message: string; conversationId: string }> {
-  return apiJsonPost<{ message: string; conversationId: string }>(API_ROUTES.aiChat.message, { message, conversationId });
+export async function sendMessage(opts: {
+  message: string;
+  conversationId?: string;
+  agentId?: AgentId;
+}): Promise<{
+  message?: string;
+  conversationId: string;
+  mode?: string;
+  status?: string;
+  optionSelected?: string;
+  requiresStream?: boolean;
+  planId?: string;
+  planMessageId?: string;
+  planMarkdown?: string;
+}> {
+  return apiJsonPost<{
+    message?: string;
+    conversationId: string;
+    mode?: string;
+    status?: string;
+    optionSelected?: string;
+    requiresStream?: boolean;
+    planId?: string;
+    planMessageId?: string;
+    planMarkdown?: string;
+  }>(API_ROUTES.aiChat.message, opts);
 }
 
 export async function getMessages(conversationId?: string): Promise<{

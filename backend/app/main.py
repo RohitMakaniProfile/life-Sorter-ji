@@ -15,10 +15,10 @@ from fastapi.responses import ORJSONResponse, JSONResponse
 from app.config import get_settings
 from app.middleware.rate_limit import setup_rate_limiter
 
-from app.phase2.db import connect_db as p2_connect_db
-from app.phase2.skills import load_skills as p2_load_skills
+from app.db import connect_db as p2_connect_db
+from app.skills.service import load_skills as p2_load_skills
 from app.phase2.stores import ensure_default_agents as p2_ensure_agents
-from app.phase2.db import close_db as p2_close_db
+from app.db import close_db as p2_close_db
 
 # ── Structured Logging ─────────────────────────────────────────
 structlog.configure(
@@ -138,6 +138,7 @@ def create_app() -> FastAPI:
     # ── Routers ────────────────────────────────────────────────
     from app.routers import (
         auth,
+        ai_chat,
         chat,
         companies,
         payments,
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     ChatResponse.model_rebuild()
 
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
+    app.include_router(ai_chat.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])

@@ -304,7 +304,7 @@ export default function ContextPoolPanel({ sessionId, isOpen, onClose }) {
   const fetchContextPool = useCallback(async () => {
     if (!sessionId) return;
     try {
-      const json = await coreApi.getContextPool(sessionId);
+      const json = await coreApi.getAgentSessionView(sessionId, 'context_pool');
       setData(json);
       setError(null);
     } catch (err) {
