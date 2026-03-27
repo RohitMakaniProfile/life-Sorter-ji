@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "parent": "88329ced32f77547c44f85db37e5c0ab096cab97c83e63bcf12bc2e297a9e657",
+  "sourceCommit": "16d9f64713d29bfb4f784530ddadd156ab72305b",
+  "message": "openrouter",
+  "createdAt": "2026-03-27T06:17:01.377Z",
+  "files": {
+    "backend/.env": {
+      "objectId": "b8e1e23ff570ac696dfce9bbc5f31df6df020134c88caabf383206f4438d9da2",
+      "hash": "b8e1e23ff570ac696dfce9bbc5f31df6df020134c88caabf383206f4438d9da2"
+    },
+    "frontend/.env": {
+      "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+      "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    }
+  },
+  "id": "b2104df7f6556e4c2e1c2d89b02fe93be299528af24c2412e3d112f45557b434"
+}
