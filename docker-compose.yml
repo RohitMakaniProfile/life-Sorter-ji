@@ -10,6 +10,17 @@ services:
     depends_on:
       - backend
 
+  scraper:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+    shm_size: "1gb"
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -18,6 +29,7 @@ services:
       - "8000:8000"
     environment:
       - PORT=8000
+      - SCRAPER_BASE_URL=http://scraper:8081
     env_file:
       - ./backend/.env
     restart: unless-stopped

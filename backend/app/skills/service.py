@@ -5,12 +5,14 @@ import json
 import re
 import time
 import traceback
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.phase2.ai import AiHelper
 from app.config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
+import httpx
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -652,6 +654,10 @@ async def run_skill(
     if skill_id == "platform-scout":
         return await _run_platform_scout(message, args, on_progress)
 
+    # Offload Playwright-heavy crawling to dedicated scraper microservice.
+    if skill_id == "scrape-playwright":
+        return await _run_scrape_playwright_remote(message=message, args=args or {}, on_progress=on_progress)
+
     script_path = manifest.directory / manifest.entry
     if not script_path.exists():
         return SkillRunResult(status="error", text="", error=f"Skill entry not found: {script_path}", data=None, duration_ms=0)
@@ -724,6 +730,115 @@ async def run_skill(
                 text = await _summarize_single(skill_id=skill_id, data=data, fallback_text=text, on_progress=on_progress)
         except Exception:
             pass
+
+    return SkillRunResult(
+        status=status,
+        text=text,
+        error=err,
+        data=data,
+        duration_ms=int((time.time() - started) * 1000),
+    )
+
+
+async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], on_progress: ProgressCb | None) -> SkillRunResult:
+    started = time.time()
+    base = os.getenv("SCRAPER_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        return SkillRunResult(
+            status="error",
+            text="",
+            error="SCRAPER_BASE_URL not configured",
+            data=None,
+            duration_ms=0,
+        )
+
+    url = str(args.get("url") or "").strip() or _extract_url(message)
+    if not url:
+        return SkillRunResult(
+            status="error",
+            text="scrape-playwright: missing url",
+            error="missing_url",
+            data=None,
+            duration_ms=int((time.time() - started) * 1000),
+        )
+
+    payload: dict[str, Any] = {"url": url}
+    for k in ("maxPages", "maxDepth", "deep", "parallel"):
+        if k in args and args[k] is not None:
+            payload[k] = args[k]
+
+    done_result: dict[str, Any] | None = None
+    err: str | None = None
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            f"{base}/v1/scrape-playwright/stream",
+            json=payload,
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            if resp.status_code >= 400:
+                err_text = (await resp.aread()).decode("utf-8", errors="replace")
+                return SkillRunResult(
+                    status="error",
+                    text="",
+                    error=f"scraper_http_{resp.status_code}: {err_text.strip() or 'request failed'}",
+                    data=None,
+                    duration_ms=int((time.time() - started) * 1000),
+                )
+
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                raw = line[len("data:") :].strip()
+                if not raw:
+                    continue
+                try:
+                    meta = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+
+                # done event: {event:"done", result:{text,data,error?}}
+                if str(meta.get("event") or "").strip().lower() == "done" and isinstance(meta.get("result"), dict):
+                    done_result = meta["result"]
+                    continue
+
+                # Forward progress into existing pipeline shape.
+                meta["streamKind"] = _progress_stream_kind(meta)
+                event_name = str(meta.get("event", "info"))
+                message_text = str(meta.get("url") or meta.get("message") or event_name)
+                await _emit(
+                    on_progress,
+                    {
+                        "stage": "running",
+                        "type": "info",
+                        "message": message_text,
+                        "meta": meta,
+                    },
+                )
+
+    if done_result is None:
+        err = "scraper_stream_ended_without_done"
+        return SkillRunResult(
+            status="error",
+            text="",
+            error=err,
+            data=None,
+            duration_ms=int((time.time() - started) * 1000),
+        )
+
+    if done_result.get("error"):
+        err = str(done_result.get("error"))
+
+    text = str(done_result.get("text") or "")
+    data = done_result.get("data")
+    status = "error" if err else "ok"
 
     return SkillRunResult(
         status=status,
