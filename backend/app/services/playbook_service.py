@@ -1367,6 +1367,73 @@ async def run_agent_e_standalone(
     }
 
 
+async def run_agent_c_stream(
+    agent_a_output: str,
+    gap_answers: str = "",
+    recommended_tools: str = "",
+    task: str = "",
+    on_token=None,
+) -> dict[str, Any]:
+    """
+    Streaming version of run_agent_c.
+    Calls on_token(token: str) for each token as it arrives.
+    Returns same dict shape as run_agent_c.
+    """
+    t0 = time.perf_counter()
+    settings = get_settings()
+
+    task_lock = (
+        f"⚠️ PLAYBOOK TASK (NON-NEGOTIABLE — every step must directly serve this specific task): {task}\n"
+        f"Every step title, action, tool, and example must be about '{task}'. "
+        f"If the context brief mentions other topics (GBP, website, SEO, etc.), ignore them — they are background only.\n\n"
+    ) if task else ""
+
+    agent_c_msg = (
+        f"{task_lock}"
+        "═══ CONTEXT BRIEF + ICP CARD (Agent A) ═══\n"
+        f"{agent_a_output}\n\n"
+    )
+    if gap_answers:
+        agent_c_msg += f"═══ GAP QUESTION ANSWERS ═══\n{gap_answers}\n\n"
+    if recommended_tools:
+        agent_c_msg += (
+            f"═══ PROVIDED TOOL LIST (already recommended to this user — use these in TOOL + AI SHORTCUT where relevant) ═══\n"
+            f"{recommended_tools}\n\n"
+        )
+    agent_c_msg += (
+        "Build the 10-step playbook now. Follow the exact output format. "
+        "Every step must be specific to THIS company — nothing generic. "
+        "For TOOL + AI SHORTCUT: use tools from the PROVIDED TOOL LIST above where they fit, "
+        "and your own knowledge for the rest — always name the real tool, never use placeholders. "
+        "You MUST include all 10 steps — do NOT stop early. Exactly 10 numbered steps."
+    )
+
+    result = await openrouter_service.chat_completion_stream(
+        model=settings.OPENROUTER_CLAUDE_MODEL,
+        messages=[
+            {"role": "system", "content": AGENT3_PROMPT},
+            {"role": "user", "content": agent_c_msg},
+        ],
+        temperature=0.7,
+        max_tokens=10000,
+        on_token=on_token,
+    )
+
+    total_ms = int((time.perf_counter() - t0) * 1000)
+
+    logger.info(
+        "Agent C stream (Playbook Architect) completed — Sonnet",
+        latency_ms=total_ms,
+    )
+
+    return {
+        "agent_c_playbook": result["message"],
+        "agent_c_latency_ms": total_ms,
+        "total_latency_ms": total_ms,
+        "usage": result.get("usage", {}),
+    }
+
+
 async def run_agent_c(
     agent_a_output: str,
     gap_answers: str = "",

@@ -9,10 +9,12 @@ Endpoints for the 5-agent playbook pipeline:
 """
 
 import asyncio
+import json
 import re
 import traceback
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 
@@ -23,6 +25,7 @@ from app.services.playbook_service import (
     run_agent_a_merged,
     run_agent_e_standalone,
     run_agent_c,
+    run_agent_c_stream,
     build_tools_toon,
 )
 
@@ -155,8 +158,14 @@ async def start_playbook(request: Request, body: StartPlaybookRequest = Body(...
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Auto-complete RCA if frontend reached /start without going through the Claude RCA path
+    # (e.g. fallback static questions, or website-analysis path)
     if not session.rca_complete:
-        raise HTTPException(status_code=400, detail="RCA diagnostic must be completed before generating playbook")
+        logger.info(
+            "rca_complete not set — auto-completing before playbook start",
+            session_id=body.session_id,
+        )
+        session_store.set_rca_complete(body.session_id, summary="")
 
     try:
         # Mark playbook as starting
@@ -322,7 +331,7 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
         raise HTTPException(status_code=404, detail="Session not found")
 
     if not session.rca_complete:
-        raise HTTPException(status_code=400, detail="RCA diagnostic must be completed first")
+        session_store.set_rca_complete(body.session_id, summary="")
 
     try:
         session_store.set_playbook_stage(body.session_id, "generating")
@@ -440,6 +449,123 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             traceback=traceback.format_exc(),
         )
         raise HTTPException(status_code=500, detail=f"Playbook generation failed: {str(exc)}")
+
+
+@router.post("/generate-stream")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def generate_playbook_stream(request: Request, body: GenerateFullPlaybookRequest = Body(...)):
+    """
+    SSE endpoint — streams Agent C tokens word-by-word as the playbook is generated.
+
+    Event types emitted:
+      data: {"type": "stage",  "stage": "generating", "label": "..."}
+      data: {"type": "token",  "token": "..."}
+      data: {"type": "done",   "playbook": "...", "website_audit": "...", "context_brief": "...", "icp_card": "..."}
+      data: {"type": "error",  "message": "..."}
+    """
+    session = session_store.get_session(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not session.rca_complete:
+        session_store.set_rca_complete(body.session_id, summary="")
+
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def _send(obj: dict) -> None:
+        await queue.put(f"data: {json.dumps(obj)}\n\n")
+
+    async def _run() -> None:
+        try:
+            gap_answers = body.gap_answers or getattr(session, "playbook_gap_answers", "") or ""
+            agent_a_output = getattr(session, "playbook_agent1_output", "") or ""
+
+            # Re-run Agent A if somehow missing (edge case)
+            if not agent_a_output:
+                await _send({"type": "stage", "stage": "context", "label": "Building context..."})
+                a_result = await run_agent_a_merged(
+                    outcome_label=session.outcome_label or "",
+                    domain=session.domain or "",
+                    task=session.task or "",
+                    business_profile=session.business_profile or {},
+                    rca_history=session.rca_history or [],
+                    rca_summary=session.rca_summary or "",
+                    crawl_summary=session.crawl_summary or {},
+                    gap_answers=gap_answers,
+                    rca_handoff=session.rca_handoff or "",
+                )
+                agent_a_output = a_result["output"]
+
+            recommended_tools = _build_recommended_tools_context(session)
+
+            await _send({"type": "stage", "stage": "generating", "label": "Writing your playbook..."})
+
+            async def on_token(token: str) -> None:
+                await _send({"type": "token", "token": token})
+
+            cd_result = await run_agent_c_stream(
+                agent_a_output=agent_a_output,
+                gap_answers=gap_answers,
+                recommended_tools=recommended_tools,
+                task=session.task or "",
+                on_token=on_token,
+            )
+
+            agent_e_output = getattr(session, "playbook_agent5_output", "") or ""
+
+            # Store results in session
+            session_store.set_playbook_results(
+                session_id=body.session_id,
+                agent1_output=agent_a_output,
+                agent2_output=getattr(session, "playbook_agent2_output", "") or "",
+                agent3_output=cd_result["agent_c_playbook"],
+                agent4_output="",
+                agent5_output=agent_e_output,
+                latencies={"agent_c": cd_result["agent_c_latency_ms"]},
+            )
+
+            await _send({
+                "type": "done",
+                "playbook": cd_result["agent_c_playbook"],
+                "website_audit": agent_e_output,
+                "context_brief": agent_a_output,
+                "icp_card": getattr(session, "playbook_agent2_output", "") or "",
+            })
+
+            logger.info(
+                "Playbook stream completed",
+                session_id=body.session_id,
+                latency_ms=cd_result["agent_c_latency_ms"],
+            )
+
+        except Exception as exc:
+            logger.error(
+                "Playbook stream failed",
+                session_id=body.session_id,
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
+            await _send({"type": "error", "message": str(exc)})
+        finally:
+            await queue.put(None)  # sentinel — close the stream
+
+    async def event_generator():
+        asyncio.create_task(_run())
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────

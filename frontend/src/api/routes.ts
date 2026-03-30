@@ -17,6 +17,7 @@ export const API_ROUTES = {
   playbook: {
     start: '/api/v1/playbook/start',
     generate: '/api/v1/playbook/generate',
+    generateStream: '/api/v1/playbook/generate-stream',
     gapAnswers: '/api/v1/playbook/gap-answers',
   },
   payments: {

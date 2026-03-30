@@ -36,7 +36,6 @@ _OUTCOME_LABEL_TO_ID = {
     "save time (automation workflow , extract pdf, bulk task)": "save-time",
 }
 
-
 @lru_cache(maxsize=1)
 def _load_data() -> dict:
     """Load the pre-mapped JSON once and cache in memory."""

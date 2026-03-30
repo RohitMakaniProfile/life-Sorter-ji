@@ -6,6 +6,8 @@ import './ChatBotNew.css';
 import { coreApi } from '../api';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 import ContextPoolPanel from './ContextPoolPanel';
+import { getFirstQuestion, getNextFromTree, getTaskFilter, preloadRcaTree } from '../data/rcaTree';
+import { getToolsForQ1Q2Q3, preloadToolsData } from '../data/toolsService';
 
 
 // ── Markdown normaliser — ensures consistent heading levels across LLM output ──
@@ -2248,6 +2250,12 @@ const ChatBotNew = ({ onNavigate }) => {
     document.documentElement.setAttribute('data-font-size', userPreferences.fontSize);
   }, [userPreferences]);
 
+  // Pre-warm static JSON caches so first task-click is instant
+  useEffect(() => {
+    preloadRcaTree();
+    preloadToolsData();
+  }, []);
+
   // Language options
   const languageOptions = [
     { code: 'en', name: 'English' },
@@ -2971,14 +2979,60 @@ const ChatBotNew = ({ onNavigate }) => {
     setMessages(prev => [...prev, userMessage]);
     saveToSheet(`Selected Task: ${task}`, '', '', '');
 
-    // Load diagnostic questions (Claude RCA or fallback)
+    // Load diagnostic questions (local JSON first, backend fallback for custom tasks)
     setIsTyping(true);
     setLoadingPhase('tools');
     try {
       const sid = await ensureSession();
       if (sid) {
         setLoadingPhase('diagnostic');
-        const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'task_setup', task });
+
+        const outcomeId = selectedGoal || '';
+        const domainName = selectedDomain?.name || '';
+
+        // ── Try local JSON tree + tools (zero backend call, ~0ms) ──
+        const [q1Local, toolsLocal] = await Promise.all([
+          getFirstQuestion(outcomeId, domainName, task),
+          getToolsForQ1Q2Q3(outcomeId, domainName, task),
+        ]);
+
+        let data: any;
+
+        if (q1Local) {
+          // Tree hit — serve entirely from local JSON
+          // Still PATCH session so backend has task for playbook generation
+          coreApi.patchAgentSession(sid, { task }).catch(() => {/* non-blocking */});
+
+          data = {
+            questions: [{
+              question: q1Local.question,
+              options: q1Local.options ?? [],
+              allows_free_text: true,
+              section: q1Local.section ?? 'rca',
+              section_label: q1Local.section_label ?? 'Diagnostic',
+              insight: q1Local.insight ?? '',
+            }],
+            rca_mode: false,
+            persona_loaded: 'local',
+            task_matched: task,
+            early_recommendations: (toolsLocal.tools ?? []).map((t: any) => ({
+              name: t.name,
+              description: t.description,
+              url: t.url,
+              category: t.category,
+              rating: t.rating != null ? String(t.rating) : undefined,
+              why_relevant: t.best_use_case ?? t.why_relevant ?? '',
+              implementation_stage: '',
+              issue_solved: '',
+              ease_of_use: '',
+            })),
+            early_recommendations_message: toolsLocal.message,
+          };
+        } else {
+          // Custom task — fall back to backend (LLM generates question)
+          const { result: backendData } = await coreApi.advanceAgentSession(sid, { action: 'task_setup', task });
+          data = backendData;
+        }
 
         if (data.questions && data.questions.length > 0) {
           const isRca = data.rca_mode === true;
@@ -3014,7 +3068,7 @@ const ChatBotNew = ({ onNavigate }) => {
             text: `Great — here are tools that match your space.\nNow let's look at **YOUR business** specifically.`,
             sender: 'bot',
             timestamp: new Date(),
-            showBusinessUrlInput: true, // new flag for the URL input component
+            showBusinessUrlInput: true,
           };
           setMessages(prev => [...prev, urlPromptMsg]);
           setFlowStage('url-input');
@@ -3598,10 +3652,58 @@ const ChatBotNew = ({ onNavigate }) => {
 
       try {
         if (sid) {
+          const outcomeId = selectedGoal || '';
+          const domainName = selectedDomain?.name || '';
+          const currentTask = selectedCategory || pendingDiagnosticDataRef.current?.task || '';
+
+          // ── Try local tree first (instant, no backend) ──
+          const [q1Local, filterLocal] = await Promise.all([
+            getFirstQuestion(outcomeId, domainName, currentTask),
+            getTaskFilter(outcomeId, domainName, currentTask),
+          ]);
+
+          if (q1Local) {
+            // Served from local tree — 0ms
+            const firstQ = {
+              question: q1Local.question,
+              options: q1Local.options ?? [],
+              allows_free_text: true,
+              section: q1Local.section ?? 'rca',
+              section_label: q1Local.section_label ?? 'Diagnostic',
+              insight: q1Local.insight ?? '',
+            };
+            setRcaMode(false);
+            setDynamicQuestions([firstQ]);
+            setCurrentDynamicQIndex(0);
+            setDynamicAnswers({});
+
+            const insight = firstQ.insight;
+            const parts: string[] = [];
+            if (insight) parts.push(`💡 *${insight}*`);
+            parts.push(firstQ.question);
+
+            const botMsg = {
+              id: getNextMessageId(),
+              text: parts.join('\n\n'),
+              sender: 'bot',
+              timestamp: new Date(),
+              diagnosticOptions: firstQ.options,
+              sectionIndex: 0,
+              sectionKey: firstQ.section,
+              allowsFreeText: true,
+              isRcaQuestion: true,
+              insightText: insight,
+            };
+            setMessages(prev => [...prev, botMsg]);
+            setIsTyping(false);
+            pendingDiagnosticDataRef.current = null;
+            return;
+          }
+
+          // ── No local tree entry — fall back to backend (LLM with full context) ──
           const { result: diagData } = await coreApi.advanceAgentSession(sid, { action: 'start_diagnostic' });
 
           if (diagData.question && diagData.rca_mode) {
-            // Got context-aware first question — use it instead of stashed
             const firstQ = diagData.question;
             setRcaMode(true);
             setDynamicQuestions([firstQ]);
@@ -3609,7 +3711,7 @@ const ChatBotNew = ({ onNavigate }) => {
             setDynamicAnswers({});
 
             const insight = firstQ.insight || diagData.insight || '';
-            const parts = [];
+            const parts: string[] = [];
             if (insight) parts.push(`💡 *${insight}*`);
             parts.push(firstQ.question);
 
@@ -3627,7 +3729,7 @@ const ChatBotNew = ({ onNavigate }) => {
             };
             setMessages(prev => [...prev, botMsg]);
             setIsTyping(false);
-            pendingDiagnosticDataRef.current = null; // Clear stashed — no longer needed
+            pendingDiagnosticDataRef.current = null;
             return;
           }
         }
@@ -3919,26 +4021,57 @@ const ChatBotNew = ({ onNavigate }) => {
         })
         .catch(() => {}); // silently skip if snapshot not available
 
-      // Step 2: Call /playbook/generate
-      const genData = await coreApi.playbookGenerate({ session_id: sid });
-
-      setPlaybookStage('complete');
-      setIsTyping(false);
-
-      const playbookMsg = {
-        id: getNextMessageId(),
+      // Step 2: Stream playbook generation — words appear live
+      const streamId = getNextMessageId();
+      setMessages(prev => [...prev, {
+        id: streamId,
         text: '',
         sender: 'bot',
         timestamp: new Date(),
-        isPlaybook: true,
-        playbookData: {
-          contextBrief: genData.context_brief || '',
-          icpCard: genData.icp_card || '',
-          playbook: genData.playbook || '',
-          websiteAudit: genData.website_audit || '',
-        },
-      };
-      setMessages(prev => [...prev, playbookMsg]);
+        isStreamingPlaybook: true,
+        streamingText: '',
+      }]);
+
+      let fullText = '';
+      await coreApi.playbookGenerateStream(
+        { session_id: sid },
+        {
+          onToken: (token) => {
+            fullText += token;
+            const snapshot = fullText;
+            setMessages(prev => prev.map(m => m.id === streamId ? { ...m, streamingText: snapshot } : m));
+          },
+          onDone: (result) => {
+            setPlaybookStage('complete');
+            setIsTyping(false);
+            setMessages(prev => prev.map(m =>
+              m.id === streamId
+                ? {
+                    ...m,
+                    isStreamingPlaybook: false,
+                    isPlaybook: true,
+                    streamingText: '',
+                    playbookData: {
+                      contextBrief: result.context_brief || '',
+                      icpCard: result.icp_card || '',
+                      playbook: result.playbook || '',
+                      websiteAudit: result.website_audit || '',
+                    },
+                  }
+                : m
+            ));
+          },
+          onError: (errMsg) => {
+            setIsTyping(false);
+            setPlaybookStage('');
+            setMessages(prev => prev.map(m =>
+              m.id === streamId
+                ? { ...m, isStreamingPlaybook: false, text: `Sorry, something went wrong generating your playbook: ${errMsg}. Please try again.` }
+                : m
+            ));
+          },
+        }
+      );
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
@@ -3991,26 +4124,57 @@ const ChatBotNew = ({ onNavigate }) => {
       // Submit gap answers
       await coreApi.playbookGapAnswers({ session_id: sid, answers: answerText });
 
-      // Generate full playbook
-      const genData = await coreApi.playbookGenerate({ session_id: sid, gap_answers: answerText });
-
-      setPlaybookStage('complete');
-      setIsTyping(false);
-
-      const playbookMsg = {
-        id: getNextMessageId(),
+      // Stream full playbook generation
+      const streamId = getNextMessageId();
+      setMessages(prev => [...prev, {
+        id: streamId,
         text: '',
         sender: 'bot',
         timestamp: new Date(),
-        isPlaybook: true,
-        playbookData: {
-          contextBrief: genData.context_brief || '',
-          icpCard: genData.icp_card || '',
-          playbook: genData.playbook || '',
-          websiteAudit: genData.website_audit || '',
-        },
-      };
-      setMessages(prev => [...prev, playbookMsg]);
+        isStreamingPlaybook: true,
+        streamingText: '',
+      }]);
+
+      let fullText = '';
+      await coreApi.playbookGenerateStream(
+        { session_id: sid, gap_answers: answerText },
+        {
+          onToken: (token) => {
+            fullText += token;
+            const snapshot = fullText;
+            setMessages(prev => prev.map(m => m.id === streamId ? { ...m, streamingText: snapshot } : m));
+          },
+          onDone: (result) => {
+            setPlaybookStage('complete');
+            setIsTyping(false);
+            setMessages(prev => prev.map(m =>
+              m.id === streamId
+                ? {
+                    ...m,
+                    isStreamingPlaybook: false,
+                    isPlaybook: true,
+                    streamingText: '',
+                    playbookData: {
+                      contextBrief: result.context_brief || '',
+                      icpCard: result.icp_card || '',
+                      playbook: result.playbook || '',
+                      websiteAudit: result.website_audit || '',
+                    },
+                  }
+                : m
+            ));
+          },
+          onError: (errMsg) => {
+            setIsTyping(false);
+            setPlaybookStage('');
+            setMessages(prev => prev.map(m =>
+              m.id === streamId
+                ? { ...m, isStreamingPlaybook: false, text: `Sorry, something went wrong generating your playbook: ${errMsg}. Please try again.` }
+                : m
+            ));
+          },
+        }
+      );
 
     } catch (error) {
       console.error('Playbook generation failed:', error);
@@ -5912,6 +6076,30 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                         setPlaybookGapAnswer={setPlaybookGapAnswer}
                         handlePlaybookGapSubmit={handlePlaybookGapSubmit}
                       />
+                    )}
+
+                    {/* ── AI Playbook — live streaming text ── */}
+                    {message.isStreamingPlaybook && (
+                      <div style={{
+                        marginTop: '0.75rem',
+                        background: '#faf5ff',
+                        border: '1px solid #ddd6fe',
+                        borderRadius: 14,
+                        padding: '1rem 1.2rem',
+                        fontFamily: 'inherit',
+                        fontSize: '0.84rem',
+                        color: '#1e293b',
+                        lineHeight: 1.75,
+                        whiteSpace: 'pre-wrap',
+                        maxHeight: 420,
+                        overflowY: 'auto',
+                      }}>
+                        <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+                          ✦ Writing your playbook...
+                        </div>
+                        {message.streamingText || ''}
+                        <span style={{ display: 'inline-block', width: 2, height: '1em', background: '#7c3aed', marginLeft: 2, animation: 'blink 1s step-end infinite', verticalAlign: 'text-bottom' }} />
+                      </div>
                     )}
 
                     {/* ── AI Playbook Result ── */}
