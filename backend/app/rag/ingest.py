@@ -49,6 +49,7 @@ def _build_embedding_text(tool: ToolRecord) -> str:
     # Always include the tool name
     parts.append(f"Tool: {tool.name}")
 
+
     # Include persona context for domain relevance
     if tool.persona:
         parts.append(f"Domain: {tool.persona}")

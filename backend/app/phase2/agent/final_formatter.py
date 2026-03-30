@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 from ..ai import AiHelper
-from ..config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
+from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
 
 TokenCb = Callable[[str], Awaitable[None] | None]
 

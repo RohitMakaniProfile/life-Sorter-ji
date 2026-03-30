@@ -2,39 +2,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 import traceback
 
 from asyncpg import UniqueViolationError
-from asyncpg.exceptions import UndefinedTableError
 
-from .db import get_pool
+from app.db import get_pool
+from app.services import form_flow_service
 
 
 DEFAULT_AGENT_ID = "research-orchestrator"
-
-
-@lru_cache(maxsize=1)
-def _load_default_phase2_contexts() -> dict[str, str]:
-    """
-    Keep default contexts in DB for newly-created system agents.
-    (We only populate when the DB value is empty to avoid overwriting edits.)
-    """
-    cfg_dir = Path(__file__).resolve().parents[2] / "config"
-    processing = cfg_dir / "phase2_processing.context.md"
-    output = cfg_dir / "phase2_output.context.md"
-    try:
-        processing_text = processing.read_text(encoding="utf-8").strip()
-    except Exception:
-        processing_text = ""
-    try:
-        output_text = output.read_text(encoding="utf-8").strip()
-    except Exception:
-        output_text = ""
-    return {"skillSelectorContext": processing_text, "finalOutputFormattingContext": output_text}
 
 DEFAULT_AGENTS = [
     {
@@ -42,33 +20,6 @@ DEFAULT_AGENTS = [
         "name": "Business Research",
         "emoji": "🕵️",
         "description": "Agentic research using website scrapers, social and sentiment skills",
-        "is_locked": True,
-        "visibility": "private",
-        "allowed_skill_ids": [
-            "business-scan",
-            "scrape-bs4",
-            "scrape-playwright",
-            "scrape-googlebusiness",
-            "platform-scout",
-            "web-search",
-            "platform-taxonomy",
-            "classify-links",
-            "instagram-sentiment",
-            "youtube-sentiment",
-            "playstore-sentiment",
-            "quora-search",
-            "find-platform-handles",
-        ],
-        "skill_selector_context": "",
-        "final_output_formatting_context": "",
-    },
-    {
-        "id": "admin-shared-orchestrator",
-        "name": "Admin Shared",
-        "emoji": "🧩",
-        "description": "Shared system agent; internal admins can edit, outside users can read/use",
-        "is_locked": False,
-        "visibility": "public",
         "allowed_skill_ids": [
             "business-scan",
             "scrape-bs4",
@@ -152,45 +103,18 @@ def _json_dumps(value: Any) -> str:
         raise
 
 
-async def _ensure_insight_feedback_table(conn) -> None:
-    # Safe to run multiple times.
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS insight_feedback (
-            id BIGSERIAL PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-            message_id TEXT NOT NULL,
-            insight_index INTEGER NOT NULL,
-            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            rating SMALLINT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE (user_id, message_id, insight_index)
-        )
-        """
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_insight_feedback_message_id ON insight_feedback (message_id)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_insight_feedback_conversation_id ON insight_feedback (conversation_id)"
-    )
-
-
 async def ensure_default_agents() -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
         now = now_dt()
-        default_contexts = _load_default_phase2_contexts()
         for a in DEFAULT_AGENTS:
             await conn.execute(
                 """
                 INSERT INTO agents (
                     id, name, emoji, description,
                     allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-                    created_by_user_id, visibility, is_locked,
                     created_at, updated_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 a["id"],
@@ -200,77 +124,24 @@ async def ensure_default_agents() -> None:
                 a["allowed_skill_ids"],
                 a["skill_selector_context"],
                 a["final_output_formatting_context"],
-                None,
-                a.get("visibility") or "private",
-                bool(a.get("is_locked")),
                 now,
                 now,
             )
 
-        # For already-existing rows, ensure lock/visibility match the defaults.
-        # We intentionally do NOT overwrite allowed skills/contexts.
-        for a in DEFAULT_AGENTS:
-            desired_is_locked = bool(a.get("is_locked"))
-            desired_visibility = a.get("visibility") or "private"
-            try:
-                await conn.execute(
-                    "UPDATE agents SET is_locked = $1, visibility = $2 WHERE id = $3",
-                    desired_is_locked,
-                    desired_visibility,
-                    a["id"],
-                )
-            except Exception:
-                # If schema isn't ready yet, or other transient issues, don't crash startup.
-                pass
 
-            # Populate default contexts for system agents if they are empty.
-            # (Do not overwrite non-empty values, so admins can edit these.)
-            try:
-                await conn.execute(
-                    """
-                    UPDATE agents
-                    SET
-                      skill_selector_context = CASE
-                        WHEN skill_selector_context IS NULL OR skill_selector_context = '' THEN $1
-                        ELSE skill_selector_context
-                      END,
-                      final_output_formatting_context = CASE
-                        WHEN final_output_formatting_context IS NULL OR final_output_formatting_context = '' THEN $2
-                        ELSE final_output_formatting_context
-                      END
-                    WHERE id = $3
-                    AND created_by_user_id IS NULL
-                    """,
-                    default_contexts["skillSelectorContext"],
-                    default_contexts["finalOutputFormattingContext"],
-                    a["id"],
-                )
-            except Exception:
-                pass
-
-
-async def list_agents(
-    *,
-    user_id: str | None = None,
-    is_admin: bool = False,
-) -> list[dict[str, Any]]:
+async def list_agents() -> list[dict[str, Any]]:
     await ensure_default_agents()
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM agents ORDER BY updated_at DESC")
-
     out: list[dict[str, Any]] = []
     for r in rows:
-        is_locked = bool(r["is_locked"] or False)
         out.append(
             {
                 "id": r["id"],
                 "name": r["name"],
                 "emoji": r["emoji"] or "🤖",
                 "description": r["description"] or "",
-                "isLocked": is_locked,
-                "visibility": (r["visibility"] or "private"),
-                "createdByUserId": (str(r["created_by_user_id"]) if r["created_by_user_id"] else None),
                 "allowedSkillIds": list(r["allowed_skill_ids"] or []),
                 "skillSelectorContext": r["skill_selector_context"] or "",
                 "finalOutputFormattingContext": r["final_output_formatting_context"] or "",
@@ -279,44 +150,24 @@ async def list_agents(
     return out
 
 
-async def get_agent(
-    agent_id: str,
-    *,
-    user_id: str | None = None,
-    is_admin: bool = False,
-    for_execution: bool = False,
-) -> dict[str, Any] | None:
+async def get_agent(agent_id: str) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
     if not r:
         return None
-
-    is_locked = bool(r["is_locked"] or False)
-    agent = {
+    return {
         "id": r["id"],
         "name": r["name"],
         "emoji": r["emoji"] or "🤖",
         "description": r["description"] or "",
-        "isLocked": is_locked,
-        "visibility": (r["visibility"] or "private"),
-        "createdByUserId": (str(r["created_by_user_id"]) if r["created_by_user_id"] else None),
         "allowedSkillIds": list(r["allowed_skill_ids"] or []),
         "skillSelectorContext": r["skill_selector_context"] or "",
         "finalOutputFormattingContext": r["final_output_formatting_context"] or "",
     }
-    return agent
 
 
-async def create_agent(
-    payload: dict[str, Any],
-    *,
-    created_by_user_id: str,
-    is_admin: bool,
-    is_super_admin: bool,
-) -> dict[str, Any]:
-    if not (is_admin or is_super_admin):
-        raise ValueError("Only admins can create agents")
+async def create_agent(payload: dict[str, Any]) -> dict[str, Any]:
     now = now_dt()
     pool = get_pool()
     try:
@@ -326,9 +177,8 @@ async def create_agent(
                 INSERT INTO agents (
                     id, name, emoji, description,
                     allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-                    created_by_user_id, visibility, is_locked,
                     created_at, updated_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 RETURNING *
                 """,
                 payload["id"],
@@ -338,10 +188,6 @@ async def create_agent(
                 payload.get("allowedSkillIds") or [],
                 payload.get("skillSelectorContext") or "",
                 payload.get("finalOutputFormattingContext") or "",
-                created_by_user_id,
-                (str(payload.get("visibility") or "").strip() or "private"),
-                # Only super-admins can create locked agents (case 1).
-                True if (is_super_admin and bool(payload.get("isLocked"))) else False,
                 now,
                 now,
             )
@@ -354,50 +200,14 @@ async def create_agent(
         "name": row["name"],
         "emoji": row["emoji"],
         "description": row["description"],
-        "isLocked": bool(row["is_locked"] or False),
-        "visibility": (row["visibility"] or "private"),
-        "createdByUserId": (str(row["created_by_user_id"]) if row["created_by_user_id"] else None),
         "allowedSkillIds": list(row["allowed_skill_ids"] or []),
         "skillSelectorContext": row["skill_selector_context"] or "",
         "finalOutputFormattingContext": row["final_output_formatting_context"] or "",
     }
 
 
-async def update_agent(
-    agent_id: str,
-    patch: dict[str, Any],
-    *,
-    user_id: str,
-    is_admin: bool,
-    is_super_admin: bool,
-) -> dict[str, Any] | None:
+async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     print("[update_agent] called", {"agent_id": agent_id, "patch_keys": sorted(list(patch.keys()))})
-
-    # Ownership + locked checks
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        r = await conn.fetchrow(
-            "SELECT created_by_user_id, is_locked FROM agents WHERE id = $1",
-            agent_id,
-        )
-    if not r:
-        return None
-    owner_user_id = r["created_by_user_id"]
-    is_locked = bool(r["is_locked"] or False)
-    is_system_agent = owner_user_id is None
-
-    # Permission model (3 cases):
-    # 1) Super-admin locked system group: super-admin writes only, internal admins read only.
-    # 2) Admin-shared system group (not locked): super-admin + internal admin writes, outside users read.
-    # 3) User-created agents: only creator writes; outside users read only if agent is public.
-    if is_system_agent:
-        # Predefined/system agents are editable only by super-admin.
-        if not is_super_admin:
-            return None
-    else:
-        # Non-system agents are editable by any admin/super-admin.
-        if not (is_admin or is_super_admin):
-            return None
 
     fields: list[str] = []
     values: list[Any] = []
@@ -409,7 +219,6 @@ async def update_agent(
         "allowedSkillIds": "allowed_skill_ids",
         "skillSelectorContext": "skill_selector_context",
         "finalOutputFormattingContext": "final_output_formatting_context",
-        "visibility": "visibility",
     }
 
     for key, col in mapping.items():
@@ -419,7 +228,7 @@ async def update_agent(
 
     if not fields:
         print("[update_agent] no mutable fields in patch", {"agent_id": agent_id})
-        return await get_agent(agent_id, user_id=user_id, is_admin=is_admin, for_execution=True)
+        return await get_agent(agent_id)
 
     fields.append(f"updated_at = ${len(values) + 1}")
     values.append(now_dt())
@@ -443,79 +252,75 @@ async def update_agent(
         "name": row["name"],
         "emoji": row["emoji"],
         "description": row["description"],
-        "isLocked": bool(row["is_locked"] or False),
-        "visibility": (row["visibility"] or "private"),
-        "createdByUserId": (str(row["created_by_user_id"]) if row["created_by_user_id"] else None),
         "allowedSkillIds": list(row["allowed_skill_ids"] or []),
         "skillSelectorContext": row["skill_selector_context"] or "",
         "finalOutputFormattingContext": row["final_output_formatting_context"] or "",
     }
 
 
-async def delete_agent(
-    agent_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-    is_super_admin: bool,
-) -> bool:
+async def delete_agent(agent_id: str) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("SELECT created_by_user_id, is_locked FROM agents WHERE id = $1", agent_id)
-        if not r:
-            return False
-        owner_user_id = r["created_by_user_id"]
-        is_locked = bool(r["is_locked"] or False)
-        is_system_agent = owner_user_id is None
-
-        if is_system_agent:
-            if not is_super_admin:
-                return False
-        else:
-            if not (is_admin or is_super_admin):
-                return False
         result = await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
-        return result.endswith("1")
+    return result.endswith("1")
 
 
 async def get_or_create_conversation(
     conversation_id: str | None,
     agent_id: str | None = None,
     *,
-    user_id: str,
-    is_admin: bool,
-    is_super_admin: bool = False,
-) -> dict[str, Any] | None:
-    existing = (
-        await get_conversation(conversation_id, user_id=user_id, is_super_admin=False)
-        if conversation_id
-        else None
-    )
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    existing = await get_conversation(conversation_id) if conversation_id else None
     if existing:
         return existing
-    if conversation_id and not existing:
-        # Prevent cross-user conversation access.
-        return None
 
     await ensure_default_agents()
     selected_agent = (agent_id or DEFAULT_AGENT_ID).strip() or DEFAULT_AGENT_ID
-    a = await get_agent(selected_agent, user_id=user_id, is_admin=is_admin, for_execution=True)
+    a = await get_agent(selected_agent)
     if not a:
-        all_agents = await list_agents(user_id=user_id, is_admin=is_admin)
+        all_agents = await list_agents()
         selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
+
+    sid = (session_id or "").strip() or None
+    uid = (user_id or "").strip() or None
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if uid:
+            existing_for_user = await conn.fetchrow(
+                "SELECT id FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+                uid,
+            )
+            if existing_for_user:
+                return await get_conversation(str(existing_for_user["id"])) or {}
+        elif sid:
+            existing_for_session = await conn.fetchrow(
+                """
+                SELECT id
+                FROM conversations
+                WHERE session_id = $1 AND user_id IS NULL
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                sid,
+            )
+            if existing_for_session:
+                return await get_conversation(str(existing_for_session["id"])) or {}
 
     cid = str(uuid4())
     now = now_dt()
-    pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
             """,
             cid,
             selected_agent,
-            user_id,
+            sid,
+            uid,
             now,
             now,
         )
@@ -543,6 +348,10 @@ def _message_from_row(row: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         if isinstance(payload.get("messageId"), str):
             msg["messageId"] = payload["messageId"]
+        if isinstance(payload.get("formId"), str):
+            msg["formId"] = payload["formId"]
+        if isinstance(payload.get("options"), list):
+            msg["options"] = [str(x) for x in payload["options"] if isinstance(x, str)]
         if isinstance(payload.get("skillsCount"), int):
             msg["skillsCount"] = payload["skillsCount"]
         if payload.get("kind") in ("plan", "final"):
@@ -552,21 +361,12 @@ def _message_from_row(row: Any) -> dict[str, Any]:
     return msg
 
 
-async def get_conversation(
-    conversation_id: str | None,
-    *,
-    user_id: str | None = None,
-    is_super_admin: bool = False,
-) -> dict[str, Any] | None:
+async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None:
     if not conversation_id:
         return None
     pool = get_pool()
     async with pool.acquire() as conn:
-        conv = await conn.fetchrow(
-            "SELECT * FROM conversations WHERE id = $1 AND user_id = $2",
-            conversation_id,
-            user_id,
-        )
+        conv = await conn.fetchrow("SELECT * FROM conversations WHERE id = $1", conversation_id)
         if not conv:
             return None
         messages = await conn.fetch(
@@ -580,6 +380,8 @@ async def get_conversation(
     return {
         "id": conv["id"],
         "agentId": conv["agent_id"] or DEFAULT_AGENT_ID,
+        "sessionId": conv["session_id"],
+        "userId": conv["user_id"],
         "title": conv["title"] or None,
         "messages": [_message_from_row(m) for m in messages],
         "lastStageOutputs": {str(k): str(v) for k, v in stage_outputs.items() if isinstance(v, str)},
@@ -619,10 +421,58 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
             )
 
 
+async def _get_active_form_id(conversation_id: str) -> str | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT message
+            FROM messages
+            WHERE conversation_id = $1
+            ORDER BY message_index DESC
+            LIMIT 1
+            """,
+            conversation_id,
+        )
+    if not row:
+        return None
+    payload = _to_obj(row["message"], {})
+    if isinstance(payload, dict) and isinstance(payload.get("formId"), str):
+        return str(payload["formId"])
+    return None
+
+
+async def _get_form_messages(conversation_id: str, form_id: str) -> list[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT *
+            FROM messages
+            WHERE conversation_id = $1
+              AND (message->>'formId') = $2
+            ORDER BY message_index ASC
+            """,
+            conversation_id,
+            form_id,
+        )
+    return [_message_from_row(r) for r in rows]
+
+
 async def append_message(conversation_id: str, role: str, content: str, **extra: Any) -> str:
     message_id = str(extra.get("messageId") or uuid4())
     created_at_dt = _as_datetime(extra.get("createdAt"))
     created_at = created_at_dt.isoformat()
+    provided_form_id = str(extra.get("formId") or "").strip() or None
+    active_form_id = provided_form_id or await _get_active_form_id(conversation_id)
+    if form_flow_service.should_start_form(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        active_form_id=active_form_id,
+    ):
+        active_form_id = form_flow_service.generate_form_id()
+
     message = {
         "role": "assistant" if role == "assistant" else "user",
         "content": content,
@@ -633,10 +483,14 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
         message["outputFile"] = extra["outputFile"]
     if isinstance(extra.get("skillsCount"), int):
         message["skillsCount"] = extra["skillsCount"]
+    if isinstance(extra.get("options"), list):
+        message["options"] = [str(x) for x in extra["options"] if isinstance(x, str)]
     if extra.get("kind") in ("plan", "final"):
         message["kind"] = extra["kind"]
     if isinstance(extra.get("planId"), str):
         message["planId"] = extra["planId"]
+    if active_form_id:
+        message["formId"] = active_form_id
 
     await _insert_message(conversation_id, message)
 
@@ -650,6 +504,19 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
                     conversation_id,
                     content[:60],
                 )
+
+    if active_form_id and form_flow_service.should_end_form(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        active_form_id=active_form_id,
+    ):
+        form_messages = await _get_form_messages(conversation_id, active_form_id)
+        await form_flow_service.process_completed_form(
+            conversation_id=conversation_id,
+            form_id=active_form_id,
+            form_messages=form_messages,
+        )
 
     return message_id
 
@@ -759,13 +626,32 @@ async def get_stage_outputs(conversation_id: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in obj.items() if isinstance(v, str)}
 
 
-async def list_conversations(*, user_id: str, is_super_admin: bool = False) -> list[dict[str, Any]]:
+async def list_conversations(
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
     pool = get_pool()
+    sid = (session_id or "").strip()
+    uid = (user_id or "").strip()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
-            user_id,
-        )
+        if uid:
+            rows = await conn.fetch(
+                "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
+                uid,
+            )
+        elif sid:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM conversations
+                WHERE session_id = $1 OR (session_id = $1 AND user_id IS NULL)
+                ORDER BY updated_at DESC
+                """,
+                sid,
+            )
+        else:
+            rows = await conn.fetch("SELECT * FROM conversations ORDER BY updated_at DESC")
     out: list[dict[str, Any]] = []
     for r in rows:
         count = 0
@@ -775,6 +661,8 @@ async def list_conversations(*, user_id: str, is_super_admin: bool = False) -> l
             {
                 "id": r["id"],
                 "agentId": r["agent_id"] or DEFAULT_AGENT_ID,
+                "sessionId": r["session_id"],
+                "userId": r["user_id"],
                 "title": r["title"] or "New conversation",
                 "messageCount": count,
                 "createdAt": r["created_at"],
@@ -784,14 +672,10 @@ async def list_conversations(*, user_id: str, is_super_admin: bool = False) -> l
     return out
 
 
-async def delete_conversation(conversation_id: str, *, user_id: str, is_super_admin: bool = False) -> bool:
+async def delete_conversation(conversation_id: str) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
-            conversation_id,
-            user_id,
-        )
+        result = await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
     return result.endswith("1")
 
 
@@ -922,23 +806,12 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         )
 
 
-async def get_skill_calls_by_message_id_full(
-    message_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> list[dict[str, Any]]:
+async def get_skill_calls_by_message_id_full(message_id: str) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT sc.* FROM skill_calls sc
-            JOIN conversations c ON c.id = sc.conversation_id
-            WHERE sc.message_id = $1 AND c.user_id = $2
-            ORDER BY sc.created_at ASC
-            """,
+            "SELECT * FROM skill_calls WHERE message_id = $1 ORDER BY created_at ASC",
             message_id,
-            user_id,
         )
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -965,13 +838,8 @@ async def get_skill_calls_by_message_id_full(
     return out
 
 
-async def get_skill_calls_by_message_id(
-    message_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> list[dict[str, Any]]:
-    full = await get_skill_calls_by_message_id_full(message_id, user_id=user_id, is_admin=is_admin)
+async def get_skill_calls_by_message_id(message_id: str) -> list[dict[str, Any]]:
+    full = await get_skill_calls_by_message_id_full(message_id)
     out: list[dict[str, Any]] = []
     for c in full:
         last_result = None
@@ -1041,23 +909,10 @@ async def create_plan_run(
     }
 
 
-async def get_plan_run(
-    plan_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> dict[str, Any] | None:
+async def get_plan_run(plan_id: str) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT pr.* FROM plan_runs pr
-            JOIN conversations c ON c.id = pr.conversation_id
-            WHERE pr.id = $1 AND c.user_id = $2
-            """,
-            plan_id,
-            user_id,
-        )
+        row = await conn.fetchrow("SELECT * FROM plan_runs WHERE id = $1", plan_id)
     if not row:
         return None
     return {
@@ -1073,13 +928,25 @@ async def get_plan_run(
     }
 
 
-async def update_plan_run(
-    plan_id: str,
-    patch: dict[str, Any],
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> None:
+async def claim_plan_run_for_execution(plan_id: str) -> bool:
+    """Atomically move draft/approved → executing. Returns False if already started or invalid."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE plan_runs
+            SET status = 'executing', updated_at = $2
+            WHERE id = $1
+              AND status IN ('draft', 'approved')
+            RETURNING id
+            """,
+            plan_id,
+            now_dt(),
+        )
+    return row is not None
+
+
+async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     fields: list[str] = []
     values: list[Any] = []
     if "status" in patch:
@@ -1096,17 +963,7 @@ async def update_plan_run(
     values.append(now_dt())
     values.append(plan_id)
 
-    plan_param_idx = len(values)
-    user_param_idx = len(values) + 1
-    q = f"""
-    UPDATE plan_runs SET {', '.join(fields)}
-    WHERE id = ${plan_param_idx}
-      AND EXISTS (
-        SELECT 1 FROM conversations c
-        WHERE c.id = plan_runs.conversation_id AND c.user_id = ${user_param_idx}
-      )
-    """
-    values.append(user_id)
+    q = f"UPDATE plan_runs SET {', '.join(fields)} WHERE id = ${len(values)}"
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(q, *values)
@@ -1142,43 +999,67 @@ async def save_token_usage(
     *,
     stage: str | None = None,
     provider: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     pool = get_pool()
     encoded_model = _encode_token_usage_model(model, stage, provider)
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO token_usage (message_id, model, input_tokens, output_tokens)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO token_usage (message_id, session_id, model, input_tokens, output_tokens)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             message_id,
+            (session_id or "").strip() or None,
             encoded_model,
             input_tokens,
             output_tokens,
         )
 
 
-async def get_token_usage(
-    message_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> dict[str, Any]:
+async def promote_session_conversations(session_id: str, user_id: str) -> dict[str, Any]:
+    sid = (session_id or "").strip()
+    uid = (user_id or "").strip()
+    if not sid or not uid:
+        return {"updatedConversations": 0}
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Do not use `user_id = ''`: if user_id is UUID, Postgres coerces '' and raises
+            # InvalidTextRepresentationError. Treat "unset" via text cast + NULLIF.
+            updated = await conn.execute(
+                """
+                UPDATE conversations
+                SET user_id = $2, updated_at = NOW()
+                WHERE session_id = $1
+                  AND (user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL)
+                """,
+                sid,
+                uid,
+            )
+            await conn.execute(
+                """
+                INSERT INTO session_user_links (session_id, user_id, linked_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (session_id, user_id) DO NOTHING
+                """,
+                sid,
+                uid,
+            )
+    try:
+        count = int((updated or "UPDATE 0").split()[-1])
+    except Exception:
+        count = 0
+    return {"updatedConversations": count}
+
+
+async def get_token_usage(message_id: str) -> dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.created_at
-            FROM token_usage tu
-            JOIN messages m
-              ON (m.message->>'messageId') = tu.message_id
-            JOIN conversations c
-              ON c.id = m.conversation_id
-            WHERE tu.message_id = $1 AND c.user_id = $2
-            ORDER BY tu.created_at ASC
-            """,
+            "SELECT model, input_tokens, output_tokens, created_at FROM token_usage WHERE message_id = $1 ORDER BY created_at ASC",
             message_id,
-            user_id,
         )
     entries = [
         (
@@ -1198,113 +1079,3 @@ async def get_token_usage(
         "totalInputTokens": sum(e["inputTokens"] for e in entries),
         "totalOutputTokens": sum(e["outputTokens"] for e in entries),
     }
-
-
-async def list_insight_feedback(
-    message_id: str,
-    *,
-    user_id: str,
-    is_admin: bool,
-) -> list[dict[str, Any]]:
-    """
-    Returns feedback entries for this message that the current user is allowed to view.
-    For now, we return only the current user's feedback (and for admins, still only their own),
-    so the UI can show selected thumbs state per insight.
-    """
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        try:
-            rows = await conn.fetch(
-                """
-                SELECT f.insight_index, f.rating, f.updated_at
-                FROM insight_feedback f
-                JOIN messages m
-                  ON (m.message->>'messageId') = f.message_id
-                JOIN conversations c
-                  ON c.id = m.conversation_id
-                WHERE f.message_id = $1 AND f.user_id = $2 AND c.user_id = $2
-                ORDER BY f.insight_index ASC
-                """,
-                message_id,
-                user_id,
-            )
-        except UndefinedTableError:
-            await _ensure_insight_feedback_table(conn)
-            return await list_insight_feedback(message_id, user_id=user_id, is_admin=is_admin)
-    return [
-        {"insightIndex": int(r["insight_index"]), "rating": int(r["rating"]), "updatedAt": str(r["updated_at"])}
-        for r in rows
-    ]
-
-
-async def set_insight_feedback(
-    message_id: str,
-    *,
-    insight_index: int,
-    rating: int,
-    user_id: str,
-    is_admin: bool,
-) -> dict[str, Any]:
-    """
-    Upsert thumbs feedback for a specific insight within a specific output message.
-    rating: 1 (up) or -1 (down)
-    """
-    idx = int(insight_index)
-    r = int(rating)
-    if idx <= 0:
-        raise ValueError("insightIndex must be >= 1")
-    if r not in (-1, 1):
-        raise ValueError("rating must be 1 or -1")
-
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        # Resolve conversation_id for messageId and enforce access (non-admin: must own conversation)
-        row = await conn.fetchrow(
-            """
-            SELECT m.conversation_id AS conversation_id, c.user_id AS owner_user_id
-            FROM messages m
-            JOIN conversations c ON c.id = m.conversation_id
-            WHERE (m.message->>'messageId') = $1
-            LIMIT 1
-            """,
-            message_id,
-        )
-        if not row:
-            raise ValueError("message not found")
-        if str(row["owner_user_id"]) != str(user_id):
-            raise ValueError("message not accessible")
-        conversation_id = str(row["conversation_id"])
-
-        try:
-            saved = await conn.fetchrow(
-                """
-                INSERT INTO insight_feedback (conversation_id, message_id, insight_index, user_id, rating, created_at, updated_at)
-                VALUES ($1, $2, $3, $4::uuid, $5, NOW(), NOW())
-                ON CONFLICT (user_id, message_id, insight_index)
-                DO UPDATE SET rating = EXCLUDED.rating, updated_at = NOW()
-                RETURNING insight_index, rating, updated_at
-                """,
-                conversation_id,
-                message_id,
-                idx,
-                user_id,
-                r,
-            )
-        except UndefinedTableError:
-            await _ensure_insight_feedback_table(conn)
-            saved = await conn.fetchrow(
-                """
-                INSERT INTO insight_feedback (conversation_id, message_id, insight_index, user_id, rating, created_at, updated_at)
-                VALUES ($1, $2, $3, $4::uuid, $5, NOW(), NOW())
-                ON CONFLICT (user_id, message_id, insight_index)
-                DO UPDATE SET rating = EXCLUDED.rating, updated_at = NOW()
-                RETURNING insight_index, rating, updated_at
-                """,
-                conversation_id,
-                message_id,
-                idx,
-                user_id,
-                r,
-            )
-    assert saved is not None
-    return {"insightIndex": int(saved["insight_index"]), "rating": int(saved["rating"]), "updatedAt": str(saved["updated_at"])}

@@ -25,10 +25,39 @@ import json
 
 import re
 from app.config import get_settings
+from app.services import openrouter_service
 
 logger = structlog.get_logger()
 
-OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+async def _call_openrouter_with_retry(
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    temperature: float,
+    max_tokens: int,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await openrouter_service.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code == 429 and attempt < 2:
+                await asyncio.sleep(2 ** attempt + 1)
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("OpenRouter call failed")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -186,7 +215,7 @@ async def generate_task_alignment_filter(
     """
     settings = get_settings()
     api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL  # GLM-4 Plus
+    model = settings.OPENROUTER_CLAUDE_MODEL  # Sonnet — faster + reliable JSON
 
     if not api_key:
         logger.warning("OpenRouter API key not configured — skipping task filter")
@@ -198,52 +227,35 @@ async def generate_task_alignment_filter(
 
     user_content = _build_filter_user_message(task, diagnostic_context)
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": TASK_FILTER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 800,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Task Filter",
-    }
-
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=TASK_FILTER_SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.3,
+            max_tokens=800,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            content = data["choices"][0]["message"].get("reasoning", "")
+        content = str(result.get("message") or "")
         logger.info("Task filter raw response", raw_content=content[:500] if content else "<empty>")
 
         if not content or not content.strip():
             logger.error("Task filter returned empty content")
             return None
 
+        # Strip markdown code fences if present (```json ... ```)
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r'^```(?:json)?\s*', '', stripped)
+            stripped = re.sub(r'\s*```\s*$', '', stripped)
+
         # Parse JSON (with fallback extraction)
         try:
-            result = json.loads(content)
+            result = json.loads(stripped)
         except json.JSONDecodeError:
-            json_match = re.search(r'\{[\s\S]*\}', content)
+            json_match = re.search(r'\{[\s\S]*\}', stripped)
             if json_match:
                 try:
                     result = json.loads(json_match.group())
@@ -515,14 +527,16 @@ When asking a question:
   "options": ["Specific scenario A", "Specific scenario B", "Specific scenario C", "Something else"],
   "diagnostic_intent": "internal: what root-cause dimension this probes",
   "section": "problems|rca_bridge|opportunities|deepdive",
-  "section_label": "Crisp, specific label (e.g., 'Lead Response Speed')"
+  "section_label": "Crisp, specific label (e.g., 'Lead Response Speed')",
+  "cumulative_insight": "2-3 sentence compressed summary of ALL diagnostic findings so far (including this question's answer context). This is a RUNNING SUMMARY — each turn, rewrite it to capture the full diagnostic picture up to this point. Include: confirmed root causes, eliminated hypotheses, key data points from user answers. This replaces sending full Q&A history in the next turn."
 }
 
 When diagnostic is complete:
 {
   "status": "complete",
   "acknowledgment": "1 sentence power insight — their 'aha' moment",
-  "summary": "1 crisp sentence only: state the root cause in under 20 words. No preamble, no teaching — just the core issue."
+  "summary": "1 crisp sentence only: state the root cause in under 20 words. No preamble, no teaching — just the core issue.",
+  "handoff": "Structured handoff for downstream agents. 5-7 bullet points capturing: (1) confirmed root cause, (2) key constraints/blockers from user answers, (3) current tools/process gaps, (4) business stage signals, (5) what the user explicitly said matters most. This replaces raw Q&A history — downstream agents will ONLY see this, so include every insight that would change a playbook step."
 }
 
 ### Field-Level Rules:
@@ -640,6 +654,7 @@ def _build_user_context(
     gbp_data: dict[str, Any] | None = None,
     filtered_context: dict[str, Any] | None = None,
     task_execution_summary: str | None = None,
+    rca_running_summary: str | None = None,
 ) -> str:
     """Build the rich user-context message sent alongside the system prompt."""
     parts = [
@@ -803,24 +818,38 @@ def _build_user_context(
             parts.append("When you reference a framework by name, users feel they're learning from an expert.")
             parts.append(strategies[:2000])
 
-    # ── Previous Q&A history ───────────────────────────────────
+    # ── Previous diagnostic context (compressed) ───────────────
     if rca_history:
-        parts.append(f"\n═══ DIAGNOSTIC CONVERSATION SO FAR ({len(rca_history)} of your questions asked) ═══")
-        for i, qa in enumerate(rca_history, 1):
-            parts.append(f"  RCA-Q{i}: {qa['question']}")
-            parts.append(f"  RCA-A{i}: {qa['answer']}")
-        remaining = max(0, 3 - len(rca_history))
+        num_asked = len(rca_history)
+        parts.append(f"\n═══ DIAGNOSTIC PROGRESS ({num_asked} question(s) asked) ═══")
+
+        # Use running summary if available (compressed context), else fall back to raw history
+        if rca_running_summary:
+            parts.append(f"CUMULATIVE FINDINGS SO FAR:\n{rca_running_summary}")
+            # Only send the LATEST Q&A raw — everything else is in the summary
+            latest = rca_history[-1]
+            parts.append(f"\nLATEST EXCHANGE (just answered):")
+            parts.append(f"  Q{num_asked}: {latest['question']}")
+            parts.append(f"  A{num_asked}: {latest['answer']}")
+        else:
+            # First question answered — no summary yet, send raw
+            for i, qa in enumerate(rca_history, 1):
+                parts.append(f"  RCA-Q{i}: {qa['question']}")
+                parts.append(f"  RCA-A{i}: {qa['answer']}")
+
+        remaining = max(0, 3 - num_asked)
         if remaining > 0:
             parts.append(
-                f"\n→ You have asked {len(rca_history)} diagnostic question(s). "
+                f"\n→ You have asked {num_asked} diagnostic question(s). "
                 f"You MUST ask at least {remaining} more before you can signal 'complete'. "
-                "Generate the NEXT question. Build on their answers. Drill deeper. "
-                "REMEMBER: The 'insight' field is MANDATORY — teach them something from the knowledge base above."
+                "Generate the NEXT question. Build on the cumulative findings above. Drill deeper. "
+                "REMEMBER: The 'insight' field is MANDATORY — teach them something from the knowledge base above. "
+                "The 'cumulative_insight' field is MANDATORY — rewrite the running summary to include this turn's findings."
             )
-        elif len(rca_history) == 3:
+        elif num_asked == 3:
             parts.append(
                 "\n→ You have asked 3 questions — that is the TARGET number. "
-                "You SHOULD now signal 'complete' with a strong summary. "
+                "You SHOULD now signal 'complete' with a strong summary + handoff. "
                 "ONLY ask a 4th question if the answers were genuinely ambiguous "
                 "and you cannot pinpoint the root cause without one more question. "
                 "The 'insight' field is still MANDATORY for any question you ask."
@@ -828,7 +857,7 @@ def _build_user_context(
         else:
             parts.append(
                 "\n→ You have asked 4 questions — that is the ABSOLUTE MAXIMUM. "
-                "You MUST signal 'complete' NOW with a powerful summary. "
+                "You MUST signal 'complete' NOW with a powerful summary + handoff. "
                 "Do NOT ask another question."
             )
     else:
@@ -837,7 +866,8 @@ def _build_user_context(
             "a stat or pattern from the knowledge base that immediately "
             "makes the user think 'huh, I didn't know that.' Then ask "
             "your diagnostic question. The 'insight' field MUST contain "
-            "a specific, educational teaching moment."
+            "a specific, educational teaching moment. "
+            "The 'cumulative_insight' field MUST capture what Q1/Q2/Q3 already tell you about this business."
         )
 
     return "\n".join(parts)
@@ -855,18 +885,19 @@ async def generate_next_rca_question(
     gbp_data: dict[str, Any] | None = None,
     filtered_context: dict[str, Any] | None = None,
     task_execution_summary: str | None = None,
+    rca_running_summary: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """
     Call Claude via OpenRouter to get the next adaptive RCA question.
 
     Returns a dict with either:
-      {"status": "question", "question": ..., "options": [...], ...}
-      {"status": "complete", "summary": ...}
+      {"status": "question", "question": ..., "options": [...], "cumulative_insight": ..., ...}
+      {"status": "complete", "summary": ..., "handoff": ...}
       None on failure (caller should fall back to static questions)
     """
     settings = get_settings()
     api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL
+    model = settings.OPENROUTER_CLAUDE_MODEL  # Sonnet — faster + reliable JSON
 
     if not api_key:
         logger.warning("OpenRouter API key not configured — falling back")
@@ -879,46 +910,22 @@ async def generate_next_rca_question(
         gbp_data=gbp_data,
         filtered_context=filtered_context,
         task_execution_summary=task_execution_summary,
+        rca_running_summary=rca_running_summary,
     )
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan RCA Engine",
-    }
 
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.7,
+            max_tokens=4000,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        # GLM-5 reasoning models may return reasoning separately
-        if not content or not content.strip():
-            # Try reasoning field as fallback
-            content = data["choices"][0]["message"].get("reasoning", "")
-        logger.info("RCA raw response", raw_content=content[:500] if content else "<empty>", finish_reason=data["choices"][0].get("finish_reason", "?"))
+        content = str(result.get("message") or "")
+        logger.info("RCA raw response", raw_content=content[:500] if content else "<empty>")
 
         if not content or not content.strip():
             logger.error("RCA model returned empty content")
@@ -1155,7 +1162,7 @@ async def generate_precision_questions(
     """
     settings = get_settings()
     api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL
+    model = settings.OPENROUTER_CLAUDE_MODEL  # Sonnet — faster + reliable JSON
 
     if not api_key:
         logger.warning("OpenRouter API key not configured — skipping precision questions")
@@ -1173,41 +1180,18 @@ async def generate_precision_questions(
         business_profile=business_profile,
     )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://ikshan.ai",
-        "X-Title": "Ikshan Precision Questions",
-    }
-
     try:
         t0 = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for _attempt in range(3):
-                resp = await client.post(
-                    OPENROUTER_CHAT_URL, json=payload, headers=headers
-                )
-                if resp.status_code == 429 and _attempt < 2:
-                    await asyncio.sleep(2 ** _attempt + 1)
-                    continue
-                resp.raise_for_status()
-                break
-            data = resp.json()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=0.7,
+            max_tokens=4000,
+        )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        content = data["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            content = data["choices"][0]["message"].get("reasoning", "")
+        content = str(result.get("message") or "")
 
         if not content or not content.strip():
             logger.error("Precision questions: empty response")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..config import GEMINI_MODELS
+from app.config import GEMINI_MODELS
 
 _DEFAULT_GEMINI_MODELS = [
     "gemini-2.5-flash",

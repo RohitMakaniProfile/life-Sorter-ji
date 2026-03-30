@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from app.config import get_settings
 from app.middleware.rate_limit import limiter
 from app.models.chat import ChatRequest, ChatResponse
-from app.services import openai_service, juspay_service
+from app.services import juspay_service, unified_chat_service
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -55,17 +55,12 @@ async def chat(request: Request, body: ChatRequest = Body(...)):
                 },
             )
 
-    # ── Build context and history ──────────────────────────────
-    context = body.context.model_dump() if body.context else None
-    history = [msg.model_dump() for msg in body.conversationHistory] if body.conversationHistory else None
-
-    # ── Call OpenAI ────────────────────────────────────────────
     try:
-        result = await openai_service.chat_completion(
+        result = await unified_chat_service.run_standard_chat(
             message=body.message,
             persona=body.persona.value,
-            context=context,
-            conversation_history=history,
+            context=body.context.model_dump() if body.context else None,
+            conversation_history=[msg.model_dump() for msg in body.conversationHistory] if body.conversationHistory else None,
         )
 
         return ChatResponse(

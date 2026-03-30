@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 from app.config import get_settings
-from app.services import openai_service, sheets_service
+from app.services import sheets_service, unified_chat_service
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -22,6 +22,9 @@ class LegacyChatRequest(BaseModel):
     persona: str = "assistant"
     context: Optional[Dict[str, Any]] = None
     conversationHistory: Optional[List[Dict[str, Any]]] = None
+    conversationId: Optional[str] = None
+    sessionId: Optional[str] = None
+    userId: Optional[str] = None
 
 class LegacySearchRequest(BaseModel):
     domain: str = ""
@@ -57,13 +60,20 @@ async def legacy_chat(request: Request, body: LegacyChatRequest = Body(...)):
         raise HTTPException(status_code=500, detail="API key not configured")
 
     try:
-        result = await openai_service.chat_completion(
+        result = await unified_chat_service.run_standard_chat(
             message=body.message,
             persona=body.persona,
             context=body.context,
             conversation_history=body.conversationHistory,
+            conversation_id=body.conversationId,
+            session_id=body.sessionId,
+            user_id=body.userId,
         )
-        return {"message": result["message"], "usage": result.get("usage")}
+        return {
+            "message": result["message"],
+            "usage": result.get("usage"),
+            "conversationId": result.get("conversationId"),
+        }
     except Exception as e:
         logger.error("Legacy chat error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

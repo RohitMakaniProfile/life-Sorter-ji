@@ -13,9 +13,6 @@ openai==1.82.0
 # HTTP Client (async)
 httpx==0.28.1
 
-# Database
-supabase==2.15.2
-
 # Environment
 python-dotenv==1.1.0
 
@@ -41,6 +38,9 @@ beautifulsoup4==4.13.3
 
 # ── Phase 2: Research Agent ────────────────────────────────────────────────────
 anthropic>=0.30.0
+
+# Browser automation (used by scraper + backend image installs chromium)
+playwright==1.52.0
 google-genai>=1.0.0
 asyncpg>=0.30.0
 playwright

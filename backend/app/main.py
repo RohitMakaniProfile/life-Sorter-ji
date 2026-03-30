@@ -15,10 +15,10 @@ from fastapi.responses import ORJSONResponse, JSONResponse
 from app.config import get_settings
 from app.middleware.rate_limit import setup_rate_limiter
 
-from app.phase2.db import connect_db as p2_connect_db
-from app.phase2.skills import load_skills as p2_load_skills
+from app.db import connect_db as p2_connect_db
+from app.skills.service import load_skills as p2_load_skills
 from app.phase2.stores import ensure_default_agents as p2_ensure_agents
-from app.phase2.db import close_db as p2_close_db
+from app.db import close_db as p2_close_db
 
 # ── Structured Logging ─────────────────────────────────────────
 structlog.configure(
@@ -59,6 +59,10 @@ async def lifespan(app: FastAPI):
     # Pre-load all persona documents so task lookups are instant
     from app.services.persona_doc_service import preload_all_docs
     preload_all_docs()
+
+    # Pre-load RCA decision tree for instant question serving
+    from app.services.rca_tree_service import load_tree
+    load_tree()
 
     # Auto-ingest RAG tools if API key is available
     if settings.openai_api_key_active:
@@ -134,17 +138,12 @@ def create_app() -> FastAPI:
     # ── Routers ────────────────────────────────────────────────
     from app.routers import (
         auth,
+        ai_chat,
         chat,
         companies,
-        speak,
-        leads,
         payments,
-        recommendations,
-        ideas,
         legacy,
         agent,
-        rag,
-        sandbox,
         playbook,
     )
 
@@ -154,16 +153,11 @@ def create_app() -> FastAPI:
     ChatResponse.model_rebuild()
 
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
+    app.include_router(ai_chat.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
-    app.include_router(speak.router, prefix="/api/v1", tags=["Text-to-Speech"])
-    app.include_router(leads.router, prefix="/api/v1", tags=["Leads"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
-    app.include_router(recommendations.router, prefix="/api/v1", tags=["Recommendations"])
-    app.include_router(ideas.router, prefix="/api/v1", tags=["Ideas"])
-    app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
-    app.include_router(rag.router, prefix="/api/v1", tags=["RAG"])
-    app.include_router(sandbox.router, prefix="/api/v1", tags=["Sandbox"])
+    app.include_router(agent.router, prefix="/api/v1")
     app.include_router(playbook.router, tags=["Playbook"])
 
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)

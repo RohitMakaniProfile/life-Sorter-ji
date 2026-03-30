@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { PIPELINE_STAGES, STAGE_LABELS } from '../../api/client';
-import type { AgentId, PipelineStage, ProgressEvent } from '../../api/client';
+import { PIPELINE_STAGES, STAGE_LABELS } from '../../../api';
+import type { AgentId, PipelineStage, ProgressEvent } from '../../../api';
 import ActivityLog from './ActivityLog';
 import { downloadReportAsPdf } from '../../utils/downloadPdf';
 
