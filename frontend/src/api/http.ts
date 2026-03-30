@@ -1,13 +1,12 @@
 import { getApiBaseRequired } from '../config/apiBase';
-
-const AUTH_TOKEN_KEY = 'ikshan-auth-token';
+import { IKSHAN_AUTH_TOKEN_KEY } from '../config/authStorage';
 
 type Primitive = string | number | boolean | null;
 type JsonValue = Primitive | JsonValue[] | { [k: string]: JsonValue };
 
 function getAuthToken(): string | null {
   try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
+    return localStorage.getItem(IKSHAN_AUTH_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -19,12 +18,55 @@ function withBase(pathOrUrl: string): string {
   return `${base}${pathOrUrl}`;
 }
 
-function buildHeaders(headers?: HeadersInit, includeJsonContentType = false): Headers {
+/** Pathname only, for choosing Bearer token and auth error handling. */
+function pathForAuth(pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    try {
+      return new URL(pathOrUrl).pathname;
+    } catch {
+      return pathOrUrl;
+    }
+  }
+  return pathOrUrl.split('?')[0];
+}
+
+function bearerTokenForPath(_path: string): string | null {
+  return getAuthToken();
+}
+
+let phase2Redirect401Lock = false;
+
+function maybeRedirectPhase2On401(pathOrUrl: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const path = pathForAuth(pathOrUrl);
+    const phase2Api =
+      path.startsWith('/api/v1/ai-chat') ||
+      path.startsWith('/api/agents') ||
+      path.startsWith('/api/files/download') ||
+      path.startsWith('/api/phase2/');
+    if (!phase2Api) return;
+    const p = window.location.pathname || '';
+    if (p.includes('/phase2/login-internal') || p.includes('/phase2/login-admin')) return;
+    if (phase2Redirect401Lock) return;
+    phase2Redirect401Lock = true;
+    window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
+    window.location.href = '/phase2/login-internal';
+  } catch {
+    // ignore
+  }
+  window.setTimeout(() => {
+    phase2Redirect401Lock = false;
+  }, 3000);
+}
+
+function buildHeaders(pathOrUrl: string, headers?: HeadersInit, includeJsonContentType = false): Headers {
   const merged = new Headers(headers || {});
   if (includeJsonContentType && !merged.has('Content-Type')) {
     merged.set('Content-Type', 'application/json');
   }
-  const token = getAuthToken();
+  const path = pathForAuth(pathOrUrl);
+  const token = bearerTokenForPath(path);
   if (token && !merged.has('Authorization')) {
     merged.set('Authorization', `Bearer ${token}`);
   }
@@ -33,12 +75,16 @@ function buildHeaders(headers?: HeadersInit, includeJsonContentType = false): He
 
 export async function apiRequest(pathOrUrl: string, init: RequestInit = {}): Promise<Response> {
   const hasBody = typeof init.body !== 'undefined' && init.body !== null;
-  const headers = buildHeaders(init.headers, hasBody && typeof init.body === 'string');
-  return fetch(withBase(pathOrUrl), {
+  const headers = buildHeaders(pathOrUrl, init.headers, hasBody && typeof init.body === 'string');
+  const res = await fetch(withBase(pathOrUrl), {
     ...init,
     headers,
     credentials: init.credentials ?? 'include',
   });
+  if (res.status === 401) {
+    maybeRedirectPhase2On401(pathOrUrl);
+  }
+  return res;
 }
 
 export async function apiGet<T>(pathOrUrl: string, init: RequestInit = {}): Promise<T> {

@@ -928,6 +928,24 @@ async def get_plan_run(plan_id: str) -> dict[str, Any] | None:
     }
 
 
+async def claim_plan_run_for_execution(plan_id: str) -> bool:
+    """Atomically move draft/approved → executing. Returns False if already started or invalid."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE plan_runs
+            SET status = 'executing', updated_at = $2
+            WHERE id = $1
+              AND status IN ('draft', 'approved')
+            RETURNING id
+            """,
+            plan_id,
+            now_dt(),
+        )
+    return row is not None
+
+
 async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     fields: list[str] = []
     values: list[Any] = []
@@ -1008,11 +1026,14 @@ async def promote_session_conversations(session_id: str, user_id: str) -> dict[s
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Do not use `user_id = ''`: if user_id is UUID, Postgres coerces '' and raises
+            # InvalidTextRepresentationError. Treat "unset" via text cast + NULLIF.
             updated = await conn.execute(
                 """
                 UPDATE conversations
                 SET user_id = $2, updated_at = NOW()
-                WHERE session_id = $1 AND (user_id IS NULL OR user_id = '')
+                WHERE session_id = $1
+                  AND (user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL)
                 """,
                 sid,
                 uid,

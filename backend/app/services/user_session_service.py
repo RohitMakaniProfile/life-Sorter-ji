@@ -98,6 +98,14 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
     return dict(record)
 
 
+def _strip_or_none(value: Optional[str]) -> Optional[str]:
+    """Non-empty stripped string, or None (skip column update). Blank must not be sent to UUID/TEXT columns."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
+
+
 async def upsert_session(session) -> dict:
     """
     Insert or update the user_sessions row for this session.
@@ -220,20 +228,26 @@ async def update_session_auth(
             values.append(value)
             updates.append(f"{column} = ${len(values)}")
 
-        if google_id is not None:
-            add_update("google_id", google_id)
-        if google_email is not None:
-            add_update("google_email", google_email)
-        if google_name is not None:
-            add_update("google_name", google_name)
-        if google_avatar_url is not None:
-            add_update("google_avatar_url", google_avatar_url)
-        if mobile_number is not None:
-            add_update("mobile_number", mobile_number)
+        gid = _strip_or_none(google_id) if google_id is not None else None
+        if gid is not None:
+            add_update("google_id", gid)
+        gemail = _strip_or_none(google_email) if google_email is not None else None
+        if gemail is not None:
+            add_update("google_email", gemail)
+        gname = _strip_or_none(google_name) if google_name is not None else None
+        if gname is not None:
+            add_update("google_name", gname)
+        gavatar = _strip_or_none(google_avatar_url) if google_avatar_url is not None else None
+        if gavatar is not None:
+            add_update("google_avatar_url", gavatar)
+        mobile = _strip_or_none(mobile_number) if mobile_number is not None else None
+        if mobile is not None:
+            add_update("mobile_number", mobile)
         if otp_verified:
             add_update("otp_verified", True)
-        if auth_provider is not None:
-            add_update("auth_provider", auth_provider)
+        ap = _strip_or_none(auth_provider) if auth_provider is not None else None
+        if ap is not None:
+            add_update("auth_provider", ap)
 
         if not updates:
             return {"success": True, "data": {}}

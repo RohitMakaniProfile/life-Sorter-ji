@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUiAgents } from '../context/UiAgentsContext';
+import { phase2Path } from '../constants';
 
 export default function AgentsPage() {
   const navigate = useNavigate();
@@ -147,7 +148,7 @@ export default function AgentsPage() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate(`/agents/${encodeURIComponent(agent.id)}/contexts`);
+                        navigate(phase2Path(`agents/${encodeURIComponent(agent.id)}/contexts`));
                       }}
                       className={`px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors pointer-events-auto ${
                         isActive
@@ -248,7 +249,7 @@ export default function AgentsPage() {
                   </p>
                   {skills.length === 0 ? (
                     <p className="text-xs text-slate-400">
-                      No skills loaded yet. Ensure backend is running and `/api/chat/skills` is reachable.
+                      No skills loaded yet. Ensure backend is running and `/api/v1/ai-chat/skills` is reachable.
                     </p>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

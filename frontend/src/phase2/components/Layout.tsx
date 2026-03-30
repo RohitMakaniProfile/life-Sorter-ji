@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useUiAgents } from '../context/UiAgentsContext';
+import {
+  IKSHAN_AUTH_TOKEN_KEY,
+  IKSHAN_USER_EMAIL_KEY,
+  IKSHAN_USER_NAME_KEY,
+} from '../../config/authStorage';
+import { phase2Path } from '../constants';
+import { clearLegacyPhase1ChatPersistence } from '../legacyPhase1Storage';
+
+const ACTIVE_AGENT_STORAGE_KEY = 'ikshan-active-agent-id';
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -21,7 +30,7 @@ export default function Layout() {
     }`;
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 overflow-hidden">
+    <div className="phase2-root relative flex h-screen w-full bg-slate-50 overflow-hidden text-slate-900">
       {/* Sidebar */}
       <aside
         className={`${sidebarOpen ? 'w-72' : 'w-0 overflow-hidden'} bg-white border-r border-slate-200 flex flex-col z-20 transition-all duration-300 flex-shrink-0`}
@@ -41,19 +50,19 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="px-3 pt-3 space-y-1">
-          <NavLink to="/chat" className={navLinkClass} end>
+          <NavLink to={phase2Path('chat')} className={navLinkClass} end>
             <span className="text-lg">💬</span>
             <span className="text-sm">Chat</span>
           </NavLink>
-          <NavLink to="/conversations" className={navLinkClass}>
+          <NavLink to={phase2Path('conversations')} className={navLinkClass}>
             <span className="text-lg">🕒</span>
             <span className="text-sm">History</span>
           </NavLink>
-          <NavLink to="/agents" className={navLinkClass}>
+          <NavLink to={phase2Path('agents')} className={navLinkClass}>
             <span className="text-lg">🧩</span>
             <span className="text-sm">Agents</span>
           </NavLink>
-          <NavLink to="/new" className={navLinkClass}>
+          <NavLink to={phase2Path('new')} className={navLinkClass}>
             <span className="text-lg">✨</span>
             <span className="text-sm">New Chat</span>
           </NavLink>
@@ -71,6 +80,26 @@ export default function Layout() {
               <p className="text-[10px] text-slate-400">Local agent active</p>
             </div>
             <span className="ml-auto w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+          </div>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
+                  window.localStorage.removeItem(IKSHAN_USER_EMAIL_KEY);
+                  window.localStorage.removeItem(IKSHAN_USER_NAME_KEY);
+                  window.localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY);
+                  clearLegacyPhase1ChatPersistence();
+                } catch {
+                  // ignore
+                }
+                window.location.href = phase2Path('login-internal');
+              }}
+              className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </aside>

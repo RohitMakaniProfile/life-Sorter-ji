@@ -1,12 +1,26 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, MessageSquare, ShoppingCart, Scale, Users, Sparkles, Youtube, History, X, Menu, Edit3, Chrome, Zap, Brain, Copy, PanelLeftClose, PanelLeftOpen, ExternalLink, Star, Settings, FileText, BarChart3, ScanLine, Video, Calendar, Sun, Moon, Type, Globe, TrendingUp, Lock, Shield, CreditCard, Code, Activity } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNew.css';
 import { coreApi } from '../api';
+import { IKSHAN_AUTH_TOKEN_KEY } from '../config/authStorage';
+import { phase2Path } from '../phase2/constants';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
 import ContextPoolPanel from './ContextPoolPanel';
 
+/** Default Phase 2 / ai-chat agent for deep research (matches backend `DEFAULT_AGENT_ID`). */
+const RESEARCH_ORCHESTRATOR_AGENT_ID = 'research-orchestrator';
+
+/** Same Sign in with Google widget as Phase 2 (`InternalGoogleLoginPage`). */
+const PHASE1_GOOGLE_BUTTON_OPTIONS = {
+  theme: 'filled_black',
+  size: 'large',
+  shape: 'rectangular',
+  text: 'continue_with',
+  width: 320,
+} as const;
 
 // ── Markdown normaliser — ensures consistent heading levels across LLM output ──
 const formatSectionMarkdown = (text) => {
@@ -1474,7 +1488,7 @@ const STORAGE_KEYS = {
   CURRENT_CHAT: 'ikshan-current-chat',
   USER_NAME: 'ikshan-user-name',
   USER_EMAIL: 'ikshan-user-email',
-  AUTH_TOKEN: 'ikshan-auth-token'
+  AUTH_TOKEN: IKSHAN_AUTH_TOKEN_KEY,
 };
 
 // Helper to safely parse JSON from localStorage
@@ -1576,6 +1590,7 @@ const IdentityForm = ({ onSubmit }) => {
 };
 
 const ChatBotNew = ({ onNavigate }) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([
     {
       id: 'welcome-msg',
@@ -1585,6 +1600,11 @@ const ChatBotNew = ({ onNavigate }) => {
       showOutcomeOptions: true
     }
   ]);
+  const phase1LastAuthGateIndex = useMemo(
+    () =>
+      messages.reduce((last, m, i) => ((m as { showAuthGate?: boolean }).showAuthGate ? i : last), -1),
+    [messages],
+  );
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [taskClickProcessing, setTaskClickProcessing] = useState(false);
@@ -1715,6 +1735,9 @@ const ChatBotNew = ({ onNavigate }) => {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isGoogleLoaded, setIsGoogleLoaded] = useState(false);
+  const authModalGoogleBtnHostRef = useRef(null);
+  const authGateGoogleBtnHostRef = useRef(null);
+  const googlePhase1CallbackRef = useRef(null);
   const [showChatHistory, setShowChatHistory] = useState(false);
   const [speechError, setSpeechError] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -2089,7 +2112,7 @@ const ChatBotNew = ({ onNavigate }) => {
     }
   }, []);
 
-  // Initialize Google Sign-In
+  // Initialize Google Sign-In (script load detection)
   useEffect(() => {
     const checkGoogleLoaded = setInterval(() => {
       if (window.google?.accounts?.id) {
@@ -2103,47 +2126,36 @@ const ChatBotNew = ({ onNavigate }) => {
     return () => clearInterval(checkGoogleLoaded);
   }, []);
 
-  const handleGoogleSignIn = () => {
-    if (!isGoogleLoaded || !window.google?.accounts?.id) {
-      // Show error message instead of causing infinite reload loop
-      const errorMessage = {
-        id: generateUniqueId(),
-        text: '⚠️ Google Sign-In is not available right now. Please try again in a moment.',
-        sender: 'bot',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-      setShowAuthModal(false);
-      return;
-    }
-
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-
-    if (!clientId) {
-      // Show configuration error instead of reloading
-      const errorMessage = {
-        id: generateUniqueId(),
-        text: '⚠️ Sign-in is not configured. Please contact support.',
-        sender: 'bot',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-      setShowAuthModal(false);
-      return;
-    }
-
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: handleGoogleCallback,
-    });
-
-    window.google.accounts.id.prompt();
-  };
+  // FedCM / GIS noise in console (same as Phase 2 `InternalGoogleLoginPage`)
+  useEffect(() => {
+    const onUnhandledRejection = (event) => {
+      const msg = String((event?.reason && (event.reason.message || event.reason)) || '');
+      if (msg.includes('identity-credentials-get') || msg.includes('failedWithIframeGetPermission')) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => window.removeEventListener('unhandledrejection', onUnhandledRejection);
+  }, []);
 
   const handleGoogleCallback = async (response) => {
+    const idToken = String(response?.credential || '').trim();
+    if (!idToken) {
+      const errorMessage = {
+        id: generateUniqueId(),
+        text: '⚠️ Google sign-in did not return a credential. Please try again.',
+        sender: 'bot',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
     let payload;
     try {
-      payload = JSON.parse(atob(response.credential.split('.')[1]));
+      const b64 = idToken.split('.')[1];
+      const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+      payload = JSON.parse(atob(b64.replace(/-/g, '+').replace(/_/g, '/') + pad));
     } catch {
       const errorMessage = {
         id: generateUniqueId(),
@@ -2234,6 +2246,62 @@ const ChatBotNew = ({ onNavigate }) => {
     };
     setMessages(prev => [...prev, botMessage]);
   };
+
+  googlePhase1CallbackRef.current = handleGoogleCallback;
+
+  // Phase 2–parity: `renderButton` + `use_fedcm_for_prompt: true` (not One Tap `prompt()`)
+  useEffect(() => {
+    if (!showAuthModal) {
+      if (authModalGoogleBtnHostRef.current) {
+        authModalGoogleBtnHostRef.current.innerHTML = '';
+      }
+      return;
+    }
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId || !isGoogleLoaded || !window.google?.accounts?.id) return;
+    const host = authModalGoogleBtnHostRef.current;
+    if (!host) return;
+    host.innerHTML = '';
+    try {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        use_fedcm_for_prompt: true,
+        callback: (res) => {
+          void googlePhase1CallbackRef.current?.(res);
+        },
+      });
+      window.google.accounts.id.renderButton(host, { ...PHASE1_GOOGLE_BUTTON_OPTIONS });
+    } catch (e) {
+      console.error('Google Sign-In (modal):', e);
+    }
+  }, [showAuthModal, isGoogleLoaded]);
+
+  useEffect(() => {
+    const gateActive = messages.some((m) => Boolean((m as { showAuthGate?: boolean }).showAuthGate));
+    if (!gateActive || userEmail) {
+      if (authGateGoogleBtnHostRef.current) {
+        authGateGoogleBtnHostRef.current.innerHTML = '';
+      }
+      return;
+    }
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId || !isGoogleLoaded || !window.google?.accounts?.id) return;
+    const host = authGateGoogleBtnHostRef.current;
+    if (!host) return;
+    if (host.childElementCount > 0) return;
+    try {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        use_fedcm_for_prompt: true,
+        callback: (res) => {
+          void googlePhase1CallbackRef.current?.(res);
+        },
+      });
+      window.google.accounts.id.renderButton(host, { ...PHASE1_GOOGLE_BUTTON_OPTIONS });
+    } catch (e) {
+      console.error('Google Sign-In (auth gate):', e);
+    }
+  }, [messages, userEmail, isGoogleLoaded]);
 
   // ── OTP Handlers ───────────────────────────────────────────
   const handleSendOtp = async () => {
@@ -3555,6 +3623,35 @@ const ChatBotNew = ({ onNavigate }) => {
       };
       setMessages(prev => [...prev, errMsg]);
     }
+  };
+
+  const extractWebsiteUrlFromChat = () => {
+    const re = /(https?:\/\/[^\s<>"']+)|\b((?:www\.)?[a-z0-9][-a-z0-9]*\.[a-z]{2,}\b)/gi;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const row = messages[i];
+      if (row?.sender !== 'user' || typeof row?.text !== 'string') continue;
+      re.lastIndex = 0;
+      const hit = re.exec(row.text);
+      if (hit) {
+        let u = (hit[1] || hit[2] || '').trim();
+        if (!u) continue;
+        if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+        return u;
+      }
+    }
+    return '';
+  };
+
+  /** Phase 2 uses JWT for identity; Phase 1 agent session is not required. URL comes from chat only. */
+  const handleDeepAnalysis = () => {
+    const url = extractWebsiteUrlFromChat().trim();
+    const userLine = url ? `${url}\n\nDo deep analysis.` : '';
+    navigate(phase2Path('new'), {
+      state: {
+        agentId: RESEARCH_ORCHESTRATOR_AGENT_ID,
+        ...(userLine ? { initialMessage: userLine } : {}),
+      },
+    });
   };
 
   // Get personalized recommendations from backend
@@ -5138,7 +5235,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
           ) : (
             /* Chat Message List */
             <div className="messages-wrapper">
-              {messages.map((message) => (
+              {messages.map((message, msgIndex) => (
                 <div key={message.id} className={`message ${message.sender === 'user' ? 'user' : 'bot'}`}>
                   <div className="avatar">
                     {message.sender === 'user' ? <User size={18} /> : <img src="/android-chrome-192x192.png" alt="bot" style={{ width: 18, height: 18, objectFit: 'contain', borderRadius: '2px' }} />}
@@ -5634,6 +5731,43 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             content={message.playbookData.websiteAudit}
                           />
                         )}
+
+                        <div
+                          style={{
+                            marginTop: '1.25rem',
+                            padding: '1rem 1.1rem',
+                            borderRadius: '14px',
+                            border: '1px solid rgba(124, 58, 237, 0.2)',
+                            background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
+                          }}
+                        >
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#5b21b6', marginBottom: '0.35rem' }}>
+                            Go deeper
+                          </div>
+                          <p style={{ fontSize: '0.78rem', color: '#6b7280', margin: '0 0 0.75rem 0', lineHeight: 1.45 }}>
+                            Run the research agent with skills (site scan, platform scout, web search). Uses your session and website URL when available.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleDeepAnalysis}
+                            style={{
+                              padding: '0.55rem 1.15rem',
+                              borderRadius: '10px',
+                              border: 'none',
+                              fontWeight: 700,
+                              fontSize: '0.82rem',
+                              cursor: 'pointer',
+                              background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                              color: '#fff',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                            }}
+                          >
+                            <Brain size={16} />
+                            Do deep analysis
+                          </button>
+                        </div>
                       </div>
                     )}
 
@@ -5953,12 +6087,13 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                             <span>Signed in as <strong>{userName}</strong></span>
                           </div>
                         ) : (
-                          <>
-                            <button onClick={handleGoogleSignIn} className="auth-gate-google-btn">
-                              <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                              Sign in with Google
-                            </button>
-                          </>
+                          <div
+                            ref={
+                              msgIndex === phase1LastAuthGateIndex ? authGateGoogleBtnHostRef : undefined
+                            }
+                            className="auth-gate-google-btn-host"
+                            style={{ display: 'flex', justifyContent: 'center', width: '100%' }}
+                          />
                         )}
                       </div>
                     )}
@@ -6203,10 +6338,16 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
             <h2 style={{ marginBottom: '0.5rem' }}>Verify to Continue</h2>
             <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>Sign in with Google or verify your phone number</p>
 
-            {/* Google Sign-In */}
-            <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.75rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.95rem', marginBottom: '1.25rem' }}>
-              <span style={{ fontWeight: 600 }}>Continue with Google</span>
-            </button>
+            {/* Google Sign-In — same hosted button as Phase 2 (`renderButton`) */}
+            <div
+              ref={authModalGoogleBtnHostRef}
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                marginBottom: '1.25rem',
+                minHeight: '44px',
+              }}
+            />
 
             {/* Divider */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>

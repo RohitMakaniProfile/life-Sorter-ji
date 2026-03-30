@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
 import type { AgentId, UiAgent } from '../../api';
 import { getAgent, updateAgent } from '../../api';
+import { phase2Path } from '../constants';
 
 type TabId = 'selector' | 'final';
 
@@ -91,7 +92,7 @@ export default function AgentContextsPage() {
         </div>
         <div className="flex items-center gap-2">
           <NavLink
-            to="/agents"
+            to={phase2Path('agents')}
             className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
           >
             Back
@@ -152,7 +153,7 @@ export default function AgentContextsPage() {
                 onClick={async () => {
                   // Save current contexts, then go back to Agents list
                   await handleSave();
-                  navigate('/agents');
+                  navigate(phase2Path('agents'));
                 }}
                 disabled={saving}
                 className="text-xs text-slate-500 hover:text-slate-800 disabled:opacity-60"

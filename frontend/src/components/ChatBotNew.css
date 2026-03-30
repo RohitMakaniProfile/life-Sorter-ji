@@ -2837,6 +2837,12 @@ details[open] > .bi-funnel-header::after {
   flex-shrink: 0;
 }
 
+/* Hosted Google `renderButton` mount (Phase 2 parity) */
+.auth-gate-google-btn-host {
+  min-height: 44px;
+  align-items: center;
+}
+
 .auth-gate-skip-btn {
   background: none;
   border: none;

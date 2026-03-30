@@ -16,6 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -206,6 +207,11 @@ def _resolve_python_bin() -> str:
             return found
     return sys.executable
 
+
+# BaseSettings reads .env for model fields only; it does not populate os.environ.
+# DATABASE_URL is resolved with os.getenv below — load .env first or .env is ignored
+# and we fall back to postgresql://localhost:5432/ikshan (no user → asyncpg uses OS username).
+load_dotenv(_BACKEND_DIR / ".env", override=False)
 
 DATABASE_URL = _resolve_database_url()
 PYTHON_BIN = _resolve_python_bin()

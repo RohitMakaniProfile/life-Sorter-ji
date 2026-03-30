@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.phase2 import router as phase2_router
-from app.phase2.stores import append_message, get_conversation, update_plan_run
+from app.phase2.stores import append_message, get_conversation, get_plan_run, update_plan_run
 from app.repositories import chat_repository
 from app.services import central_chat_service
 
@@ -86,13 +86,33 @@ async def send_message(req: Request) -> dict[str, Any]:
                 "optionSelected": selected,
                 "status": "cancelled",
             }
+        if lower == "approve" and str(body.get("agentId") or "").strip() and plan_id:
+            approve_body = {
+                "planId": plan_id,
+                "conversationId": conversation_id,
+                "planMarkdown": str(last_assistant.get("content") or ""),
+                "agentId": body.get("agentId"),
+                "sessionId": body.get("sessionId"),
+                "userId": body.get("userId"),
+            }
+            started = await phase2_router.schedule_plan_approval_background(approve_body)
+            return {
+                "mode": "option",
+                "conversationId": conversation_id,
+                "optionSelected": selected,
+                "status": "accepted",
+                "planId": plan_id,
+                "requiresStream": False,
+                "backgroundExecution": True,
+                **started,
+            }
         return {
             "mode": "option",
             "conversationId": conversation_id,
             "optionSelected": selected,
             "status": "accepted",
             "planId": plan_id,
-            "requiresStream": lower == "approve",
+            "requiresStream": False,
         }
 
     if str(body.get("agentId") or "").strip():
@@ -125,7 +145,20 @@ async def send_message_stream(req: Request) -> StreamingResponse:
                 "sessionId": body.get("sessionId"),
                 "userId": body.get("userId"),
             }
-            return await phase2_router._approve_plan_stream_body(approve_body)
+            started = await phase2_router.schedule_plan_approval_background(approve_body)
+
+            async def approve_background_sse():
+                yield _sse(
+                    {
+                        "stage": "thinking",
+                        "label": "Executing in background",
+                        "stageIndex": 0,
+                        "agentId": started.get("agentId"),
+                    }
+                )
+                yield _sse({"done": True, "backgroundExecution": True, **started})
+
+            return StreamingResponse(approve_background_sse(), media_type="text/event-stream")
         if lower == "cancel":
             plan_id = str(last_assistant.get("planId") or "").strip()
             if plan_id:
@@ -156,6 +189,14 @@ async def send_message_stream(req: Request) -> StreamingResponse:
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
+@router.get("/plan-status")
+async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, Any]:
+    row = await get_plan_run(plan_id.strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return {"planId": plan_id.strip(), "status": row.get("status")}
+
+
 @router.get("/messages")
 async def get_messages(
     conversationId: str | None = None,
@@ -174,7 +215,8 @@ async def get_conversations(
 
 
 @router.get("/skills")
-async def get_skills() -> dict[str, Any]:
+async def get_skills() -> list[dict[str, Any]]:
+    """Returns a JSON array of skill metadata (matches frontend `fetchSkills()`)."""
     return await chat_repository.get_skills()
 
 

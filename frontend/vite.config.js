@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react()],
+  /* Same order as `development`: React first, then Tailwind (content scan + transforms). */
+  plugins: [react(), tailwindcss()],
 
   server: {
     watch: {

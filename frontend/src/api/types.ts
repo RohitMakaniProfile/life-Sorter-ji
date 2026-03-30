@@ -102,6 +102,8 @@ export interface StreamResult {
   planMessageId?: string;
   planMarkdown?: string;
   errorAtStage?: PipelineStage;
+  backgroundExecution?: boolean;
+  assistantMessageId?: string;
 }
 
 export interface SendMessageStreamOptions {

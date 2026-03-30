@@ -581,6 +581,63 @@ async def _emit(on_progress: ProgressCb | None, event: dict[str, Any]) -> None:
     await on_progress(event)
 
 
+async def _stream_skill_subprocess_stdout(
+    proc: asyncio.subprocess.Process,
+    on_progress: ProgressCb | None,
+) -> tuple[str, bytes, str, int]:
+    """
+    Read skill runner stdout line-by-line so PROGRESS: events reach on_progress immediately.
+
+    Using proc.communicate() buffers all stdout until the subprocess exits, which breaks
+    live discovery/page updates for long-running skills (e.g. scrape-playwright).
+    """
+    assert proc.stdout is not None
+    stdout_parts: list[str] = []
+    result_line = ""
+
+    async def _drain_stderr() -> bytes:
+        if proc.stderr:
+            return await proc.stderr.read()
+        return b""
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+
+    try:
+        while True:
+            line_b = await proc.stdout.readline()
+            if not line_b:
+                break
+            chunk = line_b.decode("utf-8", errors="replace")
+            stdout_parts.append(chunk)
+            for raw in chunk.splitlines():
+                t = raw.strip()
+                if not t:
+                    continue
+                if t.startswith("PROGRESS:"):
+                    raw_json = t[len("PROGRESS:") :].strip()
+                    meta = _parse_progress_meta(raw_json)
+                    meta["streamKind"] = _progress_stream_kind(meta)
+                    event_name = str(meta.get("event", "info"))
+                    message_text = str(meta.get("url") or meta.get("message") or event_name)
+                    await _emit(
+                        on_progress,
+                        {
+                            "stage": "running",
+                            "type": "info",
+                            "message": message_text,
+                            "meta": meta,
+                        },
+                    )
+                else:
+                    result_line = t
+    finally:
+        pass
+
+    stderr_data = await stderr_task
+    exit_code = await proc.wait()
+    return "".join(stdout_parts), stderr_data, result_line, exit_code
+
+
 async def run_skill(
     skill_id: str,
     message: str,
@@ -611,6 +668,7 @@ async def run_skill(
 
     proc = await asyncio.create_subprocess_exec(
         PYTHON_BIN,
+        "-u",
         str(script_path),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -622,32 +680,8 @@ async def run_skill(
     await proc.stdin.drain()
     proc.stdin.close()
 
-    stdout_data, stderr_data = await proc.communicate()
-    stdout_text = stdout_data.decode("utf-8", errors="replace")
+    stdout_text, stderr_data, result_line, exit_code = await _stream_skill_subprocess_stdout(proc, on_progress)
     stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
-
-    result_line = ""
-    for line in stdout_text.splitlines():
-        t = line.strip()
-        if not t:
-            continue
-        if t.startswith("PROGRESS:"):
-            raw_json = t[len("PROGRESS:"):].strip()
-            meta = _parse_progress_meta(raw_json)
-            meta["streamKind"] = _progress_stream_kind(meta)
-            event_name = str(meta.get("event", "info"))
-            message_text = str(meta.get("url") or meta.get("message") or event_name)
-            await _emit(
-                on_progress,
-                {
-                    "stage": "running",
-                    "type": "info",
-                    "message": message_text,
-                    "meta": meta,
-                },
-            )
-            continue
-        result_line = t
 
     text = stdout_text.strip()
     err: str | None = None
@@ -667,8 +701,8 @@ async def run_skill(
         except Exception:
             pass
 
-    if proc.returncode != 0 and not err:
-        err = stderr_text or f"Skill exited with code {proc.returncode}"
+    if exit_code != 0 and not err:
+        err = stderr_text or f"Skill exited with code {exit_code}"
 
     status = "error" if err else "ok"
     if not text and err:

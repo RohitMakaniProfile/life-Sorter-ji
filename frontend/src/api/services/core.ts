@@ -1,5 +1,6 @@
 import { API_ROUTES } from '../routes';
 import { apiGet, apiPost, apiRequest } from '../http';
+import { getPhase2ActorFields } from '../phase2Session';
 import { getApiBaseRequired } from '../../config/apiBase';
 import type {
   AgentId,
@@ -86,6 +87,12 @@ function getApiBase(): string {
   return getApiBaseRequired();
 }
 
+function withPhase2Actor<T extends Record<string, unknown>>(payload: T): T {
+  const actor = getPhase2ActorFields();
+  if (!actor.userId && !actor.sessionId) return payload;
+  return { ...payload, ...actor };
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   return apiRequest(`${getApiBase()}${path}`, { ...options, credentials: 'include' });
 }
@@ -165,6 +172,8 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
           errorAtStage?: PipelineStage;
           agentId?: string;
           progress?: ProgressEvent;
+          backgroundExecution?: boolean;
+          assistantMessageId?: string;
         };
 
         if (data.error && !data.stage) throw new Error(data.error);
@@ -193,6 +202,8 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
             planId: data.planId,
             planMessageId: data.planMessageId,
             planMarkdown: data.planMarkdown,
+            backgroundExecution: data.backgroundExecution,
+            assistantMessageId: data.assistantMessageId,
           };
         }
       } catch (e) {
@@ -208,12 +219,26 @@ export async function sendMessageStream(opts: SendMessageStreamOptions): Promise
   const response = await apiRequest(`${getApiBase()}${API_ROUTES.aiChat.stream}`, {
     method: 'POST',
     credentials: 'include',
-    body: JSON.stringify({ message, conversationId, agentId, retryFromStage, stageOutputs }),
+    body: JSON.stringify(
+      withPhase2Actor({
+        message,
+        conversationId,
+        agentId,
+        retryFromStage,
+        stageOutputs,
+      }),
+    ),
   });
   if (!response.ok) {
     throw new Error(await extractApiError(response));
   }
   return readSseStream(response, callbacks);
+}
+
+export async function getPlanStatus(planId: string): Promise<{ planId: string; status: string }> {
+  return apiJson<{ planId: string; status: string }>(
+    `${API_ROUTES.aiChat.planStatus}?planId=${encodeURIComponent(planId)}`,
+  );
 }
 
 export async function sendMessage(opts: {
@@ -227,9 +252,12 @@ export async function sendMessage(opts: {
   status?: string;
   optionSelected?: string;
   requiresStream?: boolean;
+  backgroundExecution?: boolean;
   planId?: string;
   planMessageId?: string;
   planMarkdown?: string;
+  assistantMessageId?: string;
+  agentId?: AgentId;
 }> {
   return apiJsonPost<{
     message?: string;
@@ -238,10 +266,20 @@ export async function sendMessage(opts: {
     status?: string;
     optionSelected?: string;
     requiresStream?: boolean;
+    backgroundExecution?: boolean;
     planId?: string;
     planMessageId?: string;
     planMarkdown?: string;
-  }>(API_ROUTES.aiChat.message, opts);
+    assistantMessageId?: string;
+    agentId?: AgentId;
+  }>(
+    API_ROUTES.aiChat.message,
+    withPhase2Actor({
+      message: opts.message,
+      conversationId: opts.conversationId,
+      agentId: opts.agentId,
+    }),
+  );
 }
 
 export async function getMessages(conversationId?: string): Promise<{
@@ -251,7 +289,12 @@ export async function getMessages(conversationId?: string): Promise<{
   lastStageOutputs?: Record<string, string>;
   lastOutputFile?: string;
 }> {
-  const q = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : '';
+  const params = new URLSearchParams();
+  if (conversationId) params.set('conversationId', conversationId);
+  const actor = getPhase2ActorFields();
+  if (actor.userId) params.set('userId', actor.userId);
+  if (actor.sessionId) params.set('sessionId', actor.sessionId);
+  const q = params.toString() ? `?${params}` : '';
   return apiJson<{
     messages: ChatMessage[];
     conversationId: string;
@@ -262,7 +305,12 @@ export async function getMessages(conversationId?: string): Promise<{
 }
 
 export async function getConversations(): Promise<{ conversations: ConversationSummary[] }> {
-  return apiJson<{ conversations: ConversationSummary[] }>(API_ROUTES.aiChat.conversations);
+  const params = new URLSearchParams();
+  const actor = getPhase2ActorFields();
+  if (actor.userId) params.set('userId', actor.userId);
+  if (actor.sessionId) params.set('sessionId', actor.sessionId);
+  const q = params.toString() ? `?${params}` : '';
+  return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
 }
 
 export async function fetchSkills(): Promise<SkillMeta[]> {

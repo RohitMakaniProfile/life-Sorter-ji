@@ -104,13 +104,33 @@ const mdComponentsUser: React.ComponentProps<typeof ReactMarkdown>['components']
 const REPORT_THRESHOLD = 500; // chars — above this, show accordion
 const PREVIEW_LINES = 6;      // lines visible when collapsed
 
+function normChoice(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+/** True once the user sent a following message that matches one of `options` (e.g. Approve / Cancel). */
+function isAssistantChoiceResolved(
+  m: RichMessage,
+  messages: RichMessage[],
+  index: number,
+): boolean {
+  if (m.role !== 'assistant' || !m.options?.length) return false;
+  const next = messages[index + 1];
+  if (!next || next.role !== 'user') return false;
+  const userContent = normChoice(next.content);
+  return m.options.some((opt) => normChoice(opt) === userContent);
+}
+
 function PlanMessage({
   message,
+  choiceResolved,
   onOpenContext,
   onOptionSelect,
   onApprovePlan,
 }: {
   message: RichMessage;
+  /** User already picked Approve/Cancel (or another option) — hide plan actions + option buttons. */
+  choiceResolved: boolean;
   onOpenContext: (messageId: string) => void;
   onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
@@ -168,7 +188,7 @@ function PlanMessage({
         </div>
 
         {/* Editor (optional) */}
-        {editing && (
+        {editing && !choiceResolved && (
           <div className="mt-3">
             <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
               Editor
@@ -181,51 +201,55 @@ function PlanMessage({
             />
           </div>
         )}
-        <div className="flex justify-end gap-2 mt-3">
-          <button
-            type="button"
-            onClick={() => setEditing((v) => !v)}
-            className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            {editing ? 'Done editing' : 'Edit'}
-          </button>
-          {onApprovePlan && (
-            <button
-              type="button"
-              disabled={saving}
-              onClick={async () => {
-                if (!message.planId) return;
-                setSaving(true);
-                try {
-                  await onApprovePlan(message.planId, draft);
-                } finally {
-                  setSaving(false);
-                }
-              }}
-              className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
-            >
-              {saving ? 'Starting…' : 'Approve & run'}
-            </button>
-          )}
-        </div>
-
-        {Array.isArray(message.options) && message.options.length > 0 && (
-          <div className="flex justify-end gap-2 mt-3">
-            {message.options.map((opt) => (
+        {!choiceResolved && (
+          <>
+            <div className="flex justify-end gap-2 mt-3">
               <button
-                key={opt}
                 type="button"
-                disabled={saving || !onOptionSelect}
-                onClick={() => {
-                  if (!onOptionSelect) return;
-                  void onOptionSelect(opt);
-                }}
-                className="px-3 py-2 rounded-lg border border-violet-300 text-violet-700 text-sm font-semibold hover:bg-violet-50 disabled:opacity-50"
+                onClick={() => setEditing((v) => !v)}
+                className="px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
-                {opt}
+                {editing ? 'Done editing' : 'Edit'}
               </button>
-            ))}
-          </div>
+              {onApprovePlan && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={async () => {
+                    if (!message.planId) return;
+                    setSaving(true);
+                    try {
+                      await onApprovePlan(message.planId, draft);
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50"
+                >
+                  {saving ? 'Starting…' : 'Approve & run'}
+                </button>
+              )}
+            </div>
+
+            {Array.isArray(message.options) && message.options.length > 0 && (
+              <div className="flex justify-end gap-2 mt-3">
+                {message.options.map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    disabled={saving || !onOptionSelect}
+                    onClick={() => {
+                      if (!onOptionSelect) return;
+                      void onOptionSelect(opt);
+                    }}
+                    className="px-3 py-2 rounded-lg border border-violet-300 text-violet-700 text-sm font-semibold hover:bg-violet-50 disabled:opacity-50"
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -234,6 +258,8 @@ function PlanMessage({
 
 function AssistantMessage({
   message: m,
+  messages,
+  messageIndex,
   loading,
   isLast,
   onOpenContext,
@@ -242,6 +268,8 @@ function AssistantMessage({
   onApprovePlan,
 }: {
   message: RichMessage;
+  messages: RichMessage[];
+  messageIndex: number;
   loading: boolean;
   isLast: boolean;
   onOpenContext: (messageId: string) => void;
@@ -249,11 +277,14 @@ function AssistantMessage({
   onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
 }) {
+  const choiceResolved = isAssistantChoiceResolved(m, messages, messageIndex);
+
   // Plan approval UI
   if (m.role === 'assistant' && m.kind === 'plan' && m.planId) {
     return (
       <PlanMessage
         message={m}
+        choiceResolved={choiceResolved}
         onOpenContext={onOpenContext}
         onOptionSelect={onOptionSelect}
         onApprovePlan={onApprovePlan}
@@ -398,7 +429,10 @@ function AssistantMessage({
             <div className="px-5 pb-3.5" />
           )}
 
-          {m.role === 'assistant' && Array.isArray(m.options) && m.options.length > 0 && (
+          {m.role === 'assistant' &&
+            Array.isArray(m.options) &&
+            m.options.length > 0 &&
+            !choiceResolved && (
             <div className="px-5 pb-4 flex flex-wrap gap-2">
               {m.options.map((opt) => (
                 <button
@@ -470,8 +504,10 @@ export default function ChatUI({
   })();
 
   const hasPendingOptions = (() => {
-    const last = messages[messages.length - 1];
-    return Boolean(last?.role === 'assistant' && Array.isArray(last.options) && last.options.length > 0);
+    const lastIdx = messages.length - 1;
+    const last = messages[lastIdx];
+    if (last?.role !== 'assistant' || !Array.isArray(last.options) || !last.options.length) return false;
+    return !isAssistantChoiceResolved(last, messages, lastIdx);
   })();
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -597,6 +633,8 @@ export default function ChatUI({
               {m.role === 'assistant' && (
                 <AssistantMessage
                   message={m}
+                  messages={messages}
+                  messageIndex={i}
                   loading={loading}
                   isLast={i === messages.length - 1}
                   onApprovePlan={onApprovePlan}

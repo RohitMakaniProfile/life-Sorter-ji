@@ -36,6 +36,7 @@ export const API_ROUTES = {
     skills: '/api/v1/ai-chat/skills',
     skillCalls: '/api/v1/ai-chat/skill-calls',
     tokenUsage: '/api/v1/ai-chat/token-usage',
+    planStatus: '/api/v1/ai-chat/plan-status',
   },
   agents: {
     base: '/api/agents',

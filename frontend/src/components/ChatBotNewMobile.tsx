@@ -1,10 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Send, Bot, User, Mic, MicOff, Package, Box, Gift, ArrowLeft, Plus, MessageSquare, ShoppingCart, Scale, Users, Sparkles, Youtube, History, X, Menu, Edit3, Chrome, Zap, Brain, Copy, TrendingUp, FileText, Lock, Shield, CreditCard, BarChart3, Code } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ChatBotNewMobile.css';
-import { coreApi } from '../api';
+import { coreApi, getMessages, getPlanStatus, sendMessage, sendMessageStream } from '../api';
+import { phase2Path } from '../phase2/constants';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
+
+/** Default Phase 2 / ai-chat agent for deep research (matches backend `DEFAULT_AGENT_ID`). */
+const RESEARCH_ORCHESTRATOR_AGENT_ID = 'research-orchestrator';
+
+function findLastChatMessageIndex(messages, predicate) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (predicate(messages[i])) return i;
+  }
+  return -1;
+}
 
 // ── Markdown normaliser — ensures consistent heading levels across LLM output ──
 const formatSectionMarkdown = (text) => {
@@ -540,6 +552,7 @@ const THINKING_PHRASES = [
 ];
 
 const ChatBotNewMobile = ({ onNavigate }) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([
     {
       id: 'welcome-msg',
@@ -612,6 +625,18 @@ const ChatBotNewMobile = ({ onNavigate }) => {
   const [playbookGapQuestions, setPlaybookGapQuestions] = useState('');
   const [playbookGapAnswer, setPlaybookGapAnswer] = useState('');
   const [playbookGapSelections, setPlaybookGapSelections] = useState({});
+  const [deepAnalysisLoading, setDeepAnalysisLoading] = useState(false);
+  const phase2ConversationRef = useRef(null);
+  const phase2PlanPollRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (phase2PlanPollRef.current) {
+        clearInterval(phase2PlanPollRef.current);
+        phase2PlanPollRef.current = null;
+      }
+    };
+  }, []);
 
   // Helper: always get the latest session id (ref > state avoid React async gap)
   const getSessionId = () => sessionIdRef.current;
@@ -1158,6 +1183,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     setRequirement(null);
     setUserName(null);
     setUserEmail(null);
+    setDeepAnalysisLoading(false);
+    phase2ConversationRef.current = null;
     setCustomRole('');
     setSelectedCategory(null);
     setCustomCategoryInput('');
@@ -2136,7 +2163,7 @@ const ChatBotNewMobile = ({ onNavigate }) => {
       setPlaybookStage('generating');
       setMessages(prev => {
         const updated = [...prev];
-        const lastBot = updated.findLastIndex(m => m.sender === 'bot');
+        const lastBot = findLastChatMessageIndex(updated, (m) => m.sender === 'bot');
         if (lastBot >= 0) {
           updated[lastBot] = { ...updated[lastBot], text: '🚀 Building your **AI Growth Playbook**...\n\nContext parsed ✓ ICP built ✓\n\nGenerating 10-step playbook, tool matrix & website audit...' };
         }
@@ -2245,6 +2272,190 @@ const ChatBotNewMobile = ({ onNavigate }) => {
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errMsg]);
+    }
+  };
+
+  const extractWebsiteUrlFromChat = () => {
+    const re = /(https?:\/\/[^\s<>"']+)|\b((?:www\.)?[a-z0-9][-a-z0-9]*\.[a-z]{2,}\b)/gi;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const row = messages[i];
+      if (row?.sender !== 'user' || typeof row?.text !== 'string') continue;
+      re.lastIndex = 0;
+      const hit = re.exec(row.text);
+      if (hit) {
+        let u = (hit[1] || hit[2] || '').trim();
+        if (!u) continue;
+        if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+        return u;
+      }
+    }
+    return '';
+  };
+
+  /** Phase 2 uses JWT for identity; Phase 1 agent session is not required. URL comes from chat only. */
+  const handleDeepAnalysis = () => {
+    if (deepAnalysisLoading) return;
+    const url = extractWebsiteUrlFromChat().trim();
+    const userLine = url ? `${url}\n\nDo deep analysis.` : '';
+    navigate(phase2Path('new'), {
+      state: {
+        agentId: RESEARCH_ORCHESTRATOR_AGENT_ID,
+        ...(userLine ? { initialMessage: userLine } : {}),
+      },
+    });
+  };
+
+  const handlePhase2PlanOption = async (option, planMessage) => {
+    if (planMessage.phase2Resolved || deepAnalysisLoading) return;
+    const convId = planMessage.phase2ConversationId;
+    const agentId = planMessage.phase2AgentId || RESEARCH_ORCHESTRATOR_AGENT_ID;
+    if (!convId) return;
+
+    setDeepAnalysisLoading(true);
+    try {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: getNextMessageId(),
+          text: option,
+          sender: 'user',
+          timestamp: new Date(),
+        },
+      ]);
+
+      const ack = await sendMessage({
+        message: option,
+        conversationId: convId,
+        agentId,
+      });
+
+      if (ack.conversationId) {
+        phase2ConversationRef.current = ack.conversationId;
+      }
+
+      const markPlanResolved = (prev) =>
+        prev.map((m) => (m.id === planMessage.id ? { ...m, phase2Resolved: true } : m));
+
+      if (ack.status === 'cancelled') {
+        setMessages((prev) =>
+          markPlanResolved([
+            ...prev,
+            {
+              id: getNextMessageId(),
+              text: 'Plan cancelled.',
+              sender: 'bot',
+              timestamp: new Date(),
+            },
+          ])
+        );
+        return;
+      }
+
+      if (ack.backgroundExecution && ack.planId) {
+        if (phase2PlanPollRef.current) {
+          clearInterval(phase2PlanPollRef.current);
+          phase2PlanPollRef.current = null;
+        }
+        const execBot = {
+          id: getNextMessageId(),
+          text: '_Running in background — results appear when ready._',
+          sender: 'bot',
+          timestamp: new Date(),
+          isPhase2Execution: true,
+        };
+        setMessages((prev) => [...prev, execBot]);
+        const cid = ack.conversationId || convId;
+        const pid = ack.planId;
+        const pollOnce = async () => {
+          try {
+            const { status } = await getPlanStatus(pid);
+            if (status !== 'done' && status !== 'error') return;
+            if (phase2PlanPollRef.current) {
+              clearInterval(phase2PlanPollRef.current);
+              phase2PlanPollRef.current = null;
+            }
+            const data = await getMessages(cid);
+            const lastAssistant = [...(data.messages ?? [])].reverse().find((m) => m.role === 'assistant');
+            setMessages((prev) => {
+              const u = markPlanResolved(prev);
+              const idx = findLastChatMessageIndex(u, (m) => m.isPhase2Execution);
+              if (idx >= 0 && lastAssistant) {
+                u[idx] = {
+                  ...u[idx],
+                  text: lastAssistant.content || u[idx].text || '',
+                  isPhase2Execution: false,
+                };
+              }
+              return u;
+            });
+          } catch {
+            // retry on next tick
+          }
+        };
+        phase2PlanPollRef.current = setInterval(() => void pollOnce(), 2500);
+        void pollOnce();
+      } else if (ack.requiresStream) {
+        const execBot = {
+          id: getNextMessageId(),
+          text: '',
+          sender: 'bot',
+          timestamp: new Date(),
+          isPhase2Execution: true,
+        };
+        setMessages((prev) => [...prev, execBot]);
+
+        await sendMessageStream({
+          message: option,
+          conversationId: ack.conversationId || convId,
+          agentId,
+          callbacks: {
+            onToken: (token) => {
+              setMessages((prev) => {
+                const u = [...prev];
+                const idx = findLastChatMessageIndex(u, (m) => m.isPhase2Execution);
+                if (idx >= 0) {
+                  u[idx] = { ...u[idx], text: (u[idx].text || '') + token };
+                }
+                return u;
+              });
+            },
+            onProgress: (ev) => {
+              setMessages((prev) => {
+                const u = [...prev];
+                const idx = findLastChatMessageIndex(u, (m) => m.isPhase2Execution);
+                if (idx >= 0 && !(u[idx].text || '').trim()) {
+                  u[idx] = { ...u[idx], text: `_${ev.message || 'Running…'}_` };
+                }
+                return u;
+              });
+            },
+          },
+        });
+
+        setMessages((prev) => {
+          const u = [...prev];
+          const idx = findLastChatMessageIndex(u, (m) => m.isPhase2Execution);
+          if (idx >= 0) {
+            u[idx] = { ...u[idx], isPhase2Execution: false };
+          }
+          return markPlanResolved(u);
+        });
+      } else {
+        setMessages((prev) => markPlanResolved(prev));
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Request failed';
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: getNextMessageId(),
+          text: `⚠️ ${msg}`,
+          sender: 'bot',
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setDeepAnalysisLoading(false);
     }
   };
 
@@ -3517,7 +3728,54 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                 </div>
                 <div className="message-content">
                   {message.sender === 'bot' ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text || ''}</ReactMarkdown>
+                    <>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text || ''}</ReactMarkdown>
+                      {message.isPhase2Plan && !message.phase2Resolved && (
+                        <div
+                          style={{
+                            marginTop: '0.85rem',
+                            display: 'flex',
+                            gap: '0.5rem',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handlePhase2PlanOption('Approve', message)}
+                            disabled={deepAnalysisLoading}
+                            style={{
+                              padding: '0.45rem 1rem',
+                              borderRadius: '10px',
+                              border: 'none',
+                              fontWeight: 700,
+                              fontSize: '0.8rem',
+                              cursor: deepAnalysisLoading ? 'not-allowed' : 'pointer',
+                              background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                              color: '#fff',
+                            }}
+                          >
+                            Approve & run
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handlePhase2PlanOption('Cancel', message)}
+                            disabled={deepAnalysisLoading}
+                            style={{
+                              padding: '0.45rem 1rem',
+                              borderRadius: '10px',
+                              border: '1px solid #d1d5db',
+                              fontWeight: 600,
+                              fontSize: '0.8rem',
+                              cursor: deepAnalysisLoading ? 'not-allowed' : 'pointer',
+                              background: '#fff',
+                              color: '#374151',
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     message.text
                   )}
@@ -4065,6 +4323,45 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                           </div>
                         </div>
                       )}
+
+                      <div
+                        style={{
+                          marginTop: '0.5rem',
+                          marginBottom: '0.75rem',
+                          padding: '1rem 1.1rem',
+                          borderRadius: '14px',
+                          border: '1px solid rgba(124, 58, 237, 0.2)',
+                          background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
+                        }}
+                      >
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#5b21b6', marginBottom: '0.35rem' }}>
+                          Go deeper
+                        </div>
+                        <p style={{ fontSize: '0.76rem', color: '#6b7280', margin: '0 0 0.75rem 0', lineHeight: 1.45 }}>
+                          Run the research agent with skills (site scan, platform scout, web search). Uses your session and website URL when available.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleDeepAnalysis}
+                          disabled={deepAnalysisLoading}
+                          style={{
+                            padding: '0.55rem 1.15rem',
+                            borderRadius: '10px',
+                            border: 'none',
+                            fontWeight: 700,
+                            fontSize: '0.8rem',
+                            cursor: deepAnalysisLoading ? 'wait' : 'pointer',
+                            background: deepAnalysisLoading ? '#c4b5fd' : 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                            color: '#fff',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                          }}
+                        >
+                          <Brain size={16} />
+                          {deepAnalysisLoading ? 'Starting…' : 'Do deep analysis'}
+                        </button>
+                      </div>
 
                       {message.playbookData.latencies && Object.keys(message.playbookData.latencies).length > 0 && (
                         <div style={{

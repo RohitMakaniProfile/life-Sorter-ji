@@ -8,6 +8,7 @@ import traceback
 from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from .stores import (
     append_assistant_placeholder,
     append_message,
     create_agent,
+    claim_plan_run_for_execution,
     create_plan_run,
     create_skill_call,
     delete_agent,
@@ -1049,7 +1051,9 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
     return StreamingResponse(generator(), media_type="text/event-stream")
 
 
-async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
+
+async def _prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str | None]:
+    """Load conversation, apply markdown patch, claim plan (draft/approved → executing)."""
     plan_id = str(body.get("planId") or "").strip()
     if not plan_id:
         raise HTTPException(status_code=400, detail="planId is required")
@@ -1075,8 +1079,324 @@ async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
 
     if isinstance(body.get("planMarkdown"), str) and body.get("planMarkdown").strip():
         await update_plan_run(plan_id, {"planMarkdown": body.get("planMarkdown")})
-    await update_plan_run(plan_id, {"status": "approved"})
 
+    if not await claim_plan_run_for_execution(plan_id):
+        raise HTTPException(status_code=409, detail="plan already started or cannot be executed")
+
+    plan = await get_plan_run(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return conv, plan, resolved, plan_id, session_id
+
+
+async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, Any]:
+    """Start plan execution in a detached asyncio task (survives client disconnect)."""
+    conv, plan, resolved, plan_id, session_id = await _prepare_plan_approval(body)
+    assistant_message_id = await append_assistant_placeholder(conv["id"])
+
+    async def _noop(_: dict[str, Any]) -> None:
+        return None
+
+    async def _bg() -> None:
+        try:
+            await execute_plan_approval_work(
+                plan_id=plan_id,
+                conv=conv,
+                plan=plan,
+                resolved=resolved,
+                assistant_message_id=assistant_message_id,
+                session_id=session_id,
+                emit=_noop,
+                emit_progress=_noop,
+            )
+        except Exception as exc:  # pragma: no cover
+            _log("plan-bg-unhandled", error=str(exc), traceback=traceback.format_exc())
+            await update_plan_run(plan_id, {"status": "error"})
+
+    asyncio.create_task(_bg())
+    return {
+        "conversationId": conv["id"],
+        "planId": plan_id,
+        "assistantMessageId": assistant_message_id,
+        "agentId": resolved["agentId"],
+    }
+
+
+
+async def execute_plan_approval_work(
+    *,
+    plan_id: str,
+    conv: dict[str, Any],
+    plan: dict[str, Any],
+    resolved: dict[str, Any],
+    assistant_message_id: str,
+    session_id: str | None,
+    emit: Callable[[dict[str, Any]], Awaitable[None]],
+    emit_progress: Callable[[dict[str, Any]], Awaitable[None]],
+) -> None:
+    try:
+        exec_start_ms = _time.time() * 1000
+        tokens_emitted = 0
+        await emit({"stage": "thinking", "label": "Executing plan", "stageIndex": 0, "agentId": resolved["agentId"]})
+    
+        steps = plan.get("planJson", {}).get("steps", []) if isinstance(plan.get("planJson"), dict) else []
+        plan_markdown_live = str(plan.get("planMarkdown") or "")
+        checklist_items = _parse_checklist_items(plan_markdown_live)
+        user_message = ""
+        for msg in reversed(conv.get("messages") or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                candidate = str(msg.get("content") or "").strip()
+                if candidate:
+                    user_message = candidate
+                    break
+        stage_outputs: dict[str, str] = {}
+        step_results: dict[str, Any] = {}
+    
+        for idx, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            sid = str(step.get("skillId") or "").strip()
+            step_id = str(step.get("stepId") or f"step-{idx + 1}")
+            if not sid:
+                continue
+            if resolved.get("allowedSkillIds") and sid not in (resolved.get("allowedSkillIds") or []):
+                continue
+    
+            step_args: dict[str, Any] = dict(step.get("args") or {})
+            if sid == "web-search":
+                scout = (step_results.get("scout") or {}).get("data") or {}
+                result_block = scout.get("result") or scout
+                structured_qs = [
+                    str(q.get("query", "")).strip()
+                    for q in (result_block.get("searchQueries") or [])
+                    if isinstance(q, dict) and q.get("query")
+                ]
+                legacy_qs = [
+                    str(q).strip()
+                    for q in (result_block.get("queries") or [])
+                    if str(q).strip()
+                ]
+                chosen_qs = structured_qs if structured_qs else legacy_qs
+                if chosen_qs and (not step_args.get("queries") or "(from platform-scout" in str(step_args.get("queries"))):
+                    step_args["queries"] = "\n".join(chosen_qs)
+                scope = str(result_block.get("scope") or "").strip().lower()
+                step_args.setdefault("market", str(result_block.get("marketGuess") or ""))
+                step_args.setdefault("businessType", str(result_block.get("businessTypeGuess") or ""))
+                step_args.setdefault("operationType", scope if scope in ("local", "global") else "")
+                step_args.setdefault("coveredRegion", str(result_block.get("coveredRegion") or ""))
+    
+            await emit({"stage": "running", "label": f"Running {sid}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
+    
+            run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
+            call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
+            page_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            page_worker_task: asyncio.Task | None = None
+            if _should_stream_page_nl(sid):
+                async def _page_worker() -> None:
+                    ai = AiHelper(provider="openai", temperature=0.2)
+                    while True:
+                        meta = await page_queue.get()
+                        if meta is None:
+                            break
+                        try:
+                            prompt = _build_page_nl_prompt(sid, meta)
+                            r = await ai.chat(
+                                message=prompt,
+                                system_prompt="You convert web extraction objects into compact factual notes.",
+                            )
+                            page_url = str(meta.get("url") or "").strip()
+                            note = (r.message or "").strip()
+                            if note:
+                                chunk = f"page: {page_url}\ncontent: {note}\n\n"
+                                await append_skill_streamed_text(call_id, chunk)
+                            await save_token_usage(
+                                assistant_message_id,
+                                OPENAI_MODEL,
+                                r.input_tokens,
+                                r.output_tokens,
+                                stage=f"page-nl.{sid}",
+                                provider="openai",
+                                session_id=session_id,
+                            )
+                        except Exception:
+                            pass
+                page_worker_task = asyncio.create_task(_page_worker())
+            await emit_progress(
+                {
+                    "stage": "thinking",
+                    "type": "task",
+                    "message": f"Running skill: {sid}",
+                    "meta": {
+                        "kind": "skill-call",
+                        "id": run_id,
+                        "skillId": sid,
+                        "status": "running",
+                        "input": {"args": step_args},
+                    },
+                }
+            )
+    
+            async def on_progress(event: dict[str, Any]) -> None:
+                meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+                if (
+                    _should_stream_page_nl(sid)
+                    and str(meta.get("event") or "").strip().lower() == "page_data"
+                    and isinstance(meta, dict)
+                ):
+                    await page_queue.put(meta)
+                if str(meta.get("kind") or "") == "token-usage":
+                    await save_token_usage(
+                        assistant_message_id,
+                        str(meta.get("model") or (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL)),
+                        int(meta.get("inputTokens") or 0),
+                        int(meta.get("outputTokens") or 0),
+                        stage=str(meta.get("stage") or f"plan-execution.{sid}"),
+                        provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
+                        session_id=session_id,
+                    )
+                stream_kind = str(meta.get("streamKind") or "info").strip().lower()
+                if stream_kind == "data":
+                    await push_skill_output(
+                        call_id,
+                        {"type": "progress", "event": str(meta.get("event")) if meta.get("event") else None, "payload": meta},
+                    )
+                evt = str(meta.get("event") or "")
+                page_url = str(meta.get("url") or "").strip()
+                if evt in ("started", "discovered", "page", "page_data") and page_url:
+                    await emit_progress(
+                        {
+                            "stage": "running",
+                            "type": "task",
+                            "message": f"Reading page: {page_url}",
+                            "meta": {
+                                "kind": "page-read",
+                                "event": evt,
+                                "url": page_url,
+                            },
+                        }
+                    )
+                await emit_progress(event)
+    
+            result = await run_skill(
+                sid,
+                plan.get("planMarkdown") or "",
+                history=conv.get("messages") or [],
+                args=step_args,
+                on_progress=on_progress,
+            )
+            if page_worker_task is not None:
+                await page_queue.put(None)
+                await page_worker_task
+            step_results[step_id] = {"text": result.text, "data": result.data}
+    
+            await set_skill_call_result(call_id, "error" if result.status == "error" else "done", result.text, result.data, result.error)
+            await emit_progress(
+                {
+                    "stage": "error" if result.status == "error" else "thinking",
+                    "type": "task",
+                    "message": f"Skill {sid} {'failed' if result.status == 'error' else 'completed'}",
+                    "meta": {
+                        "kind": "skill-call",
+                        "id": run_id,
+                        "skillId": sid,
+                        "status": "error" if result.status == "error" else "done",
+                        "input": {"args": step_args},
+                        "outputSummary": (result.text or "")[:600],
+                    },
+                }
+            )
+            if checklist_items and result.status != "error":
+                changed_items = _mark_checklist_from_skill(checklist_items, sid, result.text or "")
+                if changed_items:
+                    plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
+                    await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
+                    if plan.get("planMessageId"):
+                        await update_message_content(
+                            conv["id"],
+                            str(plan.get("planMessageId")),
+                            plan_markdown_live,
+                        )
+                    await emit_progress(
+                        {
+                            "stage": "thinking",
+                            "type": "task",
+                            "message": f"Checklist updated from {sid}",
+                            "meta": {
+                                "kind": "checklist-update",
+                                "planId": plan_id,
+                                "planMarkdown": plan_markdown_live,
+                                "checkedItems": changed_items,
+                            },
+                        }
+                    )
+    
+            if result.text:
+                stage_outputs[sid] = result.text
+    
+        formatter_calls = await get_skill_calls_by_message_id(assistant_message_id)
+        async def _on_final_token(token: str) -> None:
+            nonlocal tokens_emitted
+            tokens_emitted += len(token)
+            await emit_progress(
+                {
+                    "stage": "thinking",
+                    "type": "task",
+                    "message": "Generating final report",
+                    "meta": {
+                        "kind": "token-usage",
+                        "outputChars": tokens_emitted,
+                        "outputTokensEstimated": max(1, tokens_emitted // 4),
+                    },
+                }
+            )
+            await emit({"token": token})
+        fmt = await format_final_answer(
+            message=user_message or (plan.get("planMarkdown") or ""),
+            start_ms=exec_start_ms,
+            skill_calls=formatter_calls,
+            last_skill_result=None,
+            contexts=resolved.get("contexts") or {},
+            on_token=_on_final_token,
+        )
+        await save_token_usage(
+            assistant_message_id,
+            fmt.model,
+            fmt.input_tokens,
+            fmt.output_tokens,
+            stage="plan-execution.final-formatting",
+            provider=fmt.provider,
+            session_id=session_id,
+        )
+        final_text = (fmt.text or "").strip()
+        if final_text and tokens_emitted == 0:
+            await emit({"token": final_text})
+    
+        skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
+        await update_message_content(conv["id"], assistant_message_id, final_text, None, skills_count)
+        await save_stage_outputs(conv["id"], stage_outputs, None)
+    
+        await update_plan_run(plan_id, {"status": "done"})
+        token_usage = await get_token_usage(assistant_message_id)
+        await emit(
+            {
+                "done": True,
+                "conversationId": conv["id"],
+                "messageId": assistant_message_id,
+                "runId": fmt.run_id,
+                "model": CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
+                "durationMs": fmt.duration_ms,
+                "stageOutputs": stage_outputs,
+                "outputFile": None,
+                "agentId": resolved["agentId"],
+                "tokenUsage": token_usage,
+            }
+        )
+    except Exception as exc:
+        await update_plan_run(plan_id, {"status": "error"})
+        await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
+
+async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
+    conv, plan, resolved, plan_id, session_id = await _prepare_plan_approval(body)
     assistant_message_id = await append_assistant_placeholder(conv["id"])
 
     async def generator():
@@ -1091,266 +1411,16 @@ async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
 
         async def worker() -> None:
             try:
-                exec_start_ms = _time.time() * 1000
-                tokens_emitted = 0
-                await update_plan_run(plan_id, {"status": "executing"})
-                await emit({"stage": "thinking", "label": "Executing plan", "stageIndex": 0, "agentId": resolved["agentId"]})
-
-                steps = plan.get("planJson", {}).get("steps", []) if isinstance(plan.get("planJson"), dict) else []
-                plan_markdown_live = str(plan.get("planMarkdown") or "")
-                checklist_items = _parse_checklist_items(plan_markdown_live)
-                user_message = ""
-                for msg in reversed(conv.get("messages") or []):
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        candidate = str(msg.get("content") or "").strip()
-                        if candidate:
-                            user_message = candidate
-                            break
-                stage_outputs: dict[str, str] = {}
-                step_results: dict[str, Any] = {}
-
-                for idx, step in enumerate(steps):
-                    if not isinstance(step, dict):
-                        continue
-                    sid = str(step.get("skillId") or "").strip()
-                    step_id = str(step.get("stepId") or f"step-{idx + 1}")
-                    if not sid:
-                        continue
-                    if resolved.get("allowedSkillIds") and sid not in (resolved.get("allowedSkillIds") or []):
-                        continue
-
-                    step_args: dict[str, Any] = dict(step.get("args") or {})
-                    if sid == "web-search":
-                        scout = (step_results.get("scout") or {}).get("data") or {}
-                        result_block = scout.get("result") or scout
-                        structured_qs = [
-                            str(q.get("query", "")).strip()
-                            for q in (result_block.get("searchQueries") or [])
-                            if isinstance(q, dict) and q.get("query")
-                        ]
-                        legacy_qs = [
-                            str(q).strip()
-                            for q in (result_block.get("queries") or [])
-                            if str(q).strip()
-                        ]
-                        chosen_qs = structured_qs if structured_qs else legacy_qs
-                        if chosen_qs and (not step_args.get("queries") or "(from platform-scout" in str(step_args.get("queries"))):
-                            step_args["queries"] = "\n".join(chosen_qs)
-                        scope = str(result_block.get("scope") or "").strip().lower()
-                        step_args.setdefault("market", str(result_block.get("marketGuess") or ""))
-                        step_args.setdefault("businessType", str(result_block.get("businessTypeGuess") or ""))
-                        step_args.setdefault("operationType", scope if scope in ("local", "global") else "")
-                        step_args.setdefault("coveredRegion", str(result_block.get("coveredRegion") or ""))
-
-                    await emit({"stage": "running", "label": f"Running {sid}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
-
-                    run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
-                    call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
-                    page_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-                    page_worker_task: asyncio.Task | None = None
-                    if _should_stream_page_nl(sid):
-                        async def _page_worker() -> None:
-                            ai = AiHelper(provider="openai", temperature=0.2)
-                            while True:
-                                meta = await page_queue.get()
-                                if meta is None:
-                                    break
-                                try:
-                                    prompt = _build_page_nl_prompt(sid, meta)
-                                    r = await ai.chat(
-                                        message=prompt,
-                                        system_prompt="You convert web extraction objects into compact factual notes.",
-                                    )
-                                    page_url = str(meta.get("url") or "").strip()
-                                    note = (r.message or "").strip()
-                                    if note:
-                                        chunk = f"page: {page_url}\ncontent: {note}\n\n"
-                                        await append_skill_streamed_text(call_id, chunk)
-                                    await save_token_usage(
-                                        assistant_message_id,
-                                        OPENAI_MODEL,
-                                        r.input_tokens,
-                                        r.output_tokens,
-                                        stage=f"page-nl.{sid}",
-                                        provider="openai",
-                                        session_id=session_id,
-                                    )
-                                except Exception:
-                                    pass
-                        page_worker_task = asyncio.create_task(_page_worker())
-                    await emit_progress(
-                        {
-                            "stage": "thinking",
-                            "type": "task",
-                            "message": f"Running skill: {sid}",
-                            "meta": {
-                                "kind": "skill-call",
-                                "id": run_id,
-                                "skillId": sid,
-                                "status": "running",
-                                "input": {"args": step_args},
-                            },
-                        }
-                    )
-
-                    async def on_progress(event: dict[str, Any]) -> None:
-                        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
-                        if (
-                            _should_stream_page_nl(sid)
-                            and str(meta.get("event") or "").strip().lower() == "page_data"
-                            and isinstance(meta, dict)
-                        ):
-                            await page_queue.put(meta)
-                        if str(meta.get("kind") or "") == "token-usage":
-                            await save_token_usage(
-                                assistant_message_id,
-                                str(meta.get("model") or (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL)),
-                                int(meta.get("inputTokens") or 0),
-                                int(meta.get("outputTokens") or 0),
-                                stage=str(meta.get("stage") or f"plan-execution.{sid}"),
-                                provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
-                                session_id=session_id,
-                            )
-                        stream_kind = str(meta.get("streamKind") or "info").strip().lower()
-                        if stream_kind == "data":
-                            await push_skill_output(
-                                call_id,
-                                {"type": "progress", "event": str(meta.get("event")) if meta.get("event") else None, "payload": meta},
-                            )
-                        evt = str(meta.get("event") or "")
-                        page_url = str(meta.get("url") or "").strip()
-                        if evt in ("started", "discovered", "page", "page_data") and page_url:
-                            await emit_progress(
-                                {
-                                    "stage": "running",
-                                    "type": "task",
-                                    "message": f"Reading page: {page_url}",
-                                    "meta": {
-                                        "kind": "page-read",
-                                        "event": evt,
-                                        "url": page_url,
-                                    },
-                                }
-                            )
-                        await emit_progress(event)
-
-                    result = await run_skill(
-                        sid,
-                        plan.get("planMarkdown") or "",
-                        history=conv.get("messages") or [],
-                        args=step_args,
-                        on_progress=on_progress,
-                    )
-                    if page_worker_task is not None:
-                        await page_queue.put(None)
-                        await page_worker_task
-                    step_results[step_id] = {"text": result.text, "data": result.data}
-
-                    await set_skill_call_result(call_id, "error" if result.status == "error" else "done", result.text, result.data, result.error)
-                    await emit_progress(
-                        {
-                            "stage": "error" if result.status == "error" else "thinking",
-                            "type": "task",
-                            "message": f"Skill {sid} {'failed' if result.status == 'error' else 'completed'}",
-                            "meta": {
-                                "kind": "skill-call",
-                                "id": run_id,
-                                "skillId": sid,
-                                "status": "error" if result.status == "error" else "done",
-                                "input": {"args": step_args},
-                                "outputSummary": (result.text or "")[:600],
-                            },
-                        }
-                    )
-                    if checklist_items and result.status != "error":
-                        changed_items = _mark_checklist_from_skill(checklist_items, sid, result.text or "")
-                        if changed_items:
-                            plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
-                            await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
-                            if plan.get("planMessageId"):
-                                await update_message_content(
-                                    conv["id"],
-                                    str(plan.get("planMessageId")),
-                                    plan_markdown_live,
-                                )
-                            await emit_progress(
-                                {
-                                    "stage": "thinking",
-                                    "type": "task",
-                                    "message": f"Checklist updated from {sid}",
-                                    "meta": {
-                                        "kind": "checklist-update",
-                                        "planId": plan_id,
-                                        "planMarkdown": plan_markdown_live,
-                                        "checkedItems": changed_items,
-                                    },
-                                }
-                            )
-
-                    if result.text:
-                        stage_outputs[sid] = result.text
-
-                formatter_calls = await get_skill_calls_by_message_id(assistant_message_id)
-                async def _on_final_token(token: str) -> None:
-                    nonlocal tokens_emitted
-                    tokens_emitted += len(token)
-                    await emit_progress(
-                        {
-                            "stage": "thinking",
-                            "type": "task",
-                            "message": "Generating final report",
-                            "meta": {
-                                "kind": "token-usage",
-                                "outputChars": tokens_emitted,
-                                "outputTokensEstimated": max(1, tokens_emitted // 4),
-                            },
-                        }
-                    )
-                    await emit({"token": token})
-                fmt = await format_final_answer(
-                    message=user_message or (plan.get("planMarkdown") or ""),
-                    start_ms=exec_start_ms,
-                    skill_calls=formatter_calls,
-                    last_skill_result=None,
-                    contexts=resolved.get("contexts") or {},
-                    on_token=_on_final_token,
-                )
-                await save_token_usage(
-                    assistant_message_id,
-                    fmt.model,
-                    fmt.input_tokens,
-                    fmt.output_tokens,
-                    stage="plan-execution.final-formatting",
-                    provider=fmt.provider,
+                await execute_plan_approval_work(
+                    plan_id=plan_id,
+                    conv=conv,
+                    plan=plan,
+                    resolved=resolved,
+                    assistant_message_id=assistant_message_id,
                     session_id=session_id,
+                    emit=emit,
+                    emit_progress=emit_progress,
                 )
-                final_text = (fmt.text or "").strip()
-                if final_text and tokens_emitted == 0:
-                    await emit({"token": final_text})
-
-                skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
-                await update_message_content(conv["id"], assistant_message_id, final_text, None, skills_count)
-                await save_stage_outputs(conv["id"], stage_outputs, None)
-
-                await update_plan_run(plan_id, {"status": "done"})
-                token_usage = await get_token_usage(assistant_message_id)
-                await emit(
-                    {
-                        "done": True,
-                        "conversationId": conv["id"],
-                        "messageId": assistant_message_id,
-                        "runId": fmt.run_id,
-                        "model": CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
-                        "durationMs": fmt.duration_ms,
-                        "stageOutputs": stage_outputs,
-                        "outputFile": None,
-                        "agentId": resolved["agentId"],
-                        "tokenUsage": token_usage,
-                    }
-                )
-            except Exception as exc:
-                await update_plan_run(plan_id, {"status": "error"})
-                await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
             finally:
                 done.set()
 
@@ -1364,4 +1434,3 @@ async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
                 yield b": ping\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
-

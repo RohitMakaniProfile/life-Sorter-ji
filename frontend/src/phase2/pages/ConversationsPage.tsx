@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getConversations, deleteConversation } from '../../api';
 import type { ConversationSummary } from '../../api';
+import { phase2Path } from '../constants';
 
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -47,7 +48,7 @@ export default function ConversationsPage() {
             <p className="text-sm text-slate-400 mt-0.5">{conversations.length} conversations</p>
           </div>
           <button
-            onClick={() => navigate('/new')}
+            onClick={() => navigate(phase2Path('new'))}
             className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white text-sm font-medium rounded-xl hover:bg-violet-700 transition-colors"
           >
             <span>✨</span> New Chat
@@ -65,7 +66,7 @@ export default function ConversationsPage() {
             {conversations.map((c) => (
               <div
                 key={c.id}
-                onClick={() => navigate(`/chat/${c.id}`)}
+                onClick={() => navigate(phase2Path(`chat/${c.id}`))}
                 className="flex items-center gap-4 p-4 bg-white border border-slate-200 rounded-xl hover:border-violet-300 hover:bg-violet-50/30 transition-all cursor-pointer group"
               >
                 <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center text-xl flex-shrink-0">

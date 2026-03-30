@@ -29,6 +29,13 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# Use 400 (not 404) when the agent session_id is missing from memory so clients do not confuse
+# this with "route not found". Sessions are in-process only until replaced by Redis/DB.
+_AGENT_SESSION_GONE = (
+    "Agent session not found or expired (server restart, wrong id, or different backend "
+    "instance). Call POST /api/v1/agent/session first, then retry auth on the same server."
+)
+
 
 # ── Request / Response Models ─────────────────────────────────
 
@@ -127,7 +134,7 @@ async def send_otp_endpoint(req: SendOTPRequest):
     # Ensure session exists
     session = get_session(req.session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
 
     result = await send_otp(req.phone_number)
 
@@ -151,7 +158,7 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
     # Ensure session exists
     session = get_session(req.session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
 
     result = await verify_otp(req.otp_session_id, req.otp_code)
 
@@ -209,12 +216,19 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
 
     session = get_session(req.session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
+
+    google_sub = (req.google_id or "").strip()
+    if not google_sub:
+        raise HTTPException(status_code=400, detail="Missing Google subject (sub)")
 
     email = req.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Missing email")
+
     await update_session_auth(
         session_id=req.session_id,
-        google_id=req.google_id,
+        google_id=google_sub,
         google_email=email,
         google_name=req.name,
         google_avatar_url=req.avatar_url,

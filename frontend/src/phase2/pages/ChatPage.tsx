@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import ChatUI from '../components/chat/ChatUI';
 import type { RichMessage } from '../components/chat/ChatUI';
-import { getMessages, sendMessage, sendMessageStream } from '../../api';
+import { getMessages, getPlanStatus, sendMessage, sendMessageStream } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../context/UiAgentsContext';
+import { phase2Path } from '../constants';
 
 // Stream-mode debug logs are kept in legacy flow; plan-only mode does not use them.
 
@@ -19,12 +20,23 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
   const [initLoading, setInitLoading] = useState(true);
   const [model, setModel] = useState<string | undefined>();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const { activeAgentId } = useUiAgents();
+  const { activeAgentId, setActiveAgentId } = useUiAgents();
 
   const [conversationStageOutputs, setConversationStageOutputs] = useState<Record<string, string>>({});
 
   const loadedForRef = useRef<string | undefined>('__uninitialized__');
+  const planPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (planPollIntervalRef.current) {
+        clearInterval(planPollIntervalRef.current);
+        planPollIntervalRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (loadedForRef.current === propConvId) return;
     loadedForRef.current = propConvId;
@@ -75,8 +87,10 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
   const runStream = async (
     userMessage: string,
     _retryFromStage?: PipelineStage,
-    _retryStageOutputs?: Record<string, string>
+    _retryStageOutputs?: Record<string, string>,
+    streamAgentId?: AgentId
   ) => {
+    const agent = streamAgentId ?? activeAgentId;
     setLoading(true);
 
     // New run: clear any stored pipeline snapshot for the last message so we only
@@ -89,14 +103,14 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     }
 
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId }]);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: agent }]);
 
     try {
       // Plan-only: every user message generates a plan. Execution happens ONLY via approve API.
       const plan = await sendMessageStream({
         message: userMessage,
         conversationId,
-        agentId: activeAgentId,
+        agentId: agent,
         callbacks: {
           onStage: (stage, _label, _idx) => {
             setMessages((prev) => {
@@ -107,7 +121,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                   ...last,
                   pipeline: {
                     currentStage: stage as any,
-                    agentId: activeAgentId,
+                    agentId: agent,
                     stageOutputs: conversationStageOutputs,
                     progressEvents: last.pipeline?.progressEvents ?? [],
                     outputFile: undefined,
@@ -127,7 +141,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                   ...last,
                   pipeline: {
                     currentStage: last.pipeline?.currentStage ?? ('thinking' as PipelineStage),
-                    agentId: activeAgentId,
+                    agentId: agent,
                     stageOutputs: last.pipeline?.stageOutputs ?? conversationStageOutputs,
                     progressEvents: [...(last.pipeline?.progressEvents ?? []), event],
                     outputFile: undefined,
@@ -145,7 +159,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         setConversationId(plan.conversationId);
         if (plan.conversationId !== propConvId) {
           loadedForRef.current = plan.conversationId;
-          navigate(`/chat/${plan.conversationId}`, { replace: true });
+          navigate(phase2Path(`chat/${plan.conversationId}`), { replace: true });
         }
       }
 
@@ -161,7 +175,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             messageId: plan.planMessageId,
             pipeline: {
               currentStage: 'done',
-              agentId: activeAgentId,
+              agentId: agent,
               stageOutputs: conversationStageOutputs,
               progressEvents: last.pipeline?.progressEvents ?? [],
               outputFile: undefined,
@@ -186,6 +200,28 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     }
   };
 
+  const runStreamRef = useRef(runStream);
+  runStreamRef.current = runStream;
+
+  const phase1AutoSendKeysRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Phase 1 handoff: `/phase2/new` may carry `agentId` and/or `initialMessage`.
+   * - With message: select agent, clear state, auto-run plan stream.
+   * - Agent only: select agent, clear state; user composes the first message in Phase 2.
+   */
+  useEffect(() => {
+    if (initLoading) return;
+    const st = location.state as { initialMessage?: string; agentId?: AgentId } | null | undefined;
+    const msg = typeof st?.initialMessage === 'string' ? st.initialMessage.trim() : '';
+    const hasAgent = Boolean(st?.agentId);
+    if ((!msg && !hasAgent) || phase1AutoSendKeysRef.current.has(location.key)) return;
+    phase1AutoSendKeysRef.current.add(location.key);
+    if (st?.agentId) setActiveAgentId(st.agentId);
+    navigate(location.pathname, { replace: true, state: {} });
+    if (msg) void runStreamRef.current(msg, undefined, undefined, st?.agentId);
+  }, [initLoading, location.key, location.pathname, location.state, navigate, setActiveAgentId]);
+
   const handleOptionSelect = async (option: string) => {
     if (!conversationId) return;
     setLoading(true);
@@ -203,7 +239,78 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         return;
       }
 
-      if (ack.requiresStream) {
+      if (ack.backgroundExecution && ack.planId) {
+        if (planPollIntervalRef.current) {
+          clearInterval(planPollIntervalRef.current);
+          planPollIntervalRef.current = null;
+        }
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: '',
+            agentId: activeAgentId,
+            pipeline: {
+              currentStage: 'thinking' as PipelineStage,
+              agentId: activeAgentId,
+              stageOutputs: conversationStageOutputs,
+              progressEvents: [
+                {
+                  stage: 'thinking',
+                  type: 'task',
+                  message: 'Running in background — you can leave this page; results sync when done.',
+                },
+              ],
+              outputFile: undefined,
+              error: undefined,
+            },
+          } as any,
+        ]);
+        const cid = ack.conversationId || conversationId;
+        const pid = ack.planId;
+        const pollOnce = async () => {
+          try {
+            const { status } = await getPlanStatus(pid);
+            if (status !== 'done' && status !== 'error') return;
+            if (planPollIntervalRef.current) {
+              clearInterval(planPollIntervalRef.current);
+              planPollIntervalRef.current = null;
+            }
+            const data = await getMessages(cid);
+            const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+            setMessages(
+              (data.messages ?? []).map((m) => {
+                const base = { ...m, outputFile: m.outputFile, agentId: loadedAgentId };
+                if (
+                  (loadedAgentId === 'business-research' || loadedAgentId === 'business-strategy') &&
+                  m.role === 'assistant' &&
+                  m.content.length > 500 &&
+                  !m.outputFile
+                ) {
+                  return {
+                    ...base,
+                    pipeline: {
+                      currentStage: 'done' as PipelineStage,
+                      agentId: loadedAgentId,
+                      stageOutputs: data.lastStageOutputs ?? {},
+                      progressEvents: [],
+                      outputFile: undefined,
+                      error: undefined,
+                    },
+                  };
+                }
+                return base;
+              })
+            );
+            if (data.conversationId) setConversationId(data.conversationId);
+            if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
+          } catch {
+            // transient network errors — next poll retries
+          }
+        };
+        planPollIntervalRef.current = setInterval(() => void pollOnce(), 2500);
+        void pollOnce();
+      } else if (ack.requiresStream) {
         setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
         const result = await sendMessageStream({
           message: option,
