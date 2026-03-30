@@ -357,6 +357,7 @@ async def generate_full_playbook(request: Request, body: GenerateFullPlaybookReq
             agent_a_output=agent_a_output,
             gap_answers=gap_answers,
             recommended_tools=recommended_tools,
+            task=session.task or "",
         )
 
         # ── Retrieve Agent E result (stored by background task from /start) ──

@@ -260,6 +260,501 @@ const PlaybookCollapsible = ({ title, icon, color, bg, borderColor, content, isP
   );
 };
 
+// ── Copy prompt button for playbook steps ──
+const CopyPromptBtn = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      style={{
+        background: copied ? '#f0fdf4' : '#f5f3ff',
+        border: `1px solid ${copied ? '#bbf7d0' : '#ddd6fe'}`,
+        color: copied ? '#16a34a' : '#7c3aed',
+        fontSize: 10, fontWeight: 600, borderRadius: 6, padding: '4px 10px',
+        cursor: 'pointer', transition: 'all .2s', fontFamily: 'inherit', flexShrink: 0,
+      }}
+    >
+      {copied ? '✓ Copied' : 'Copy Prompt'}
+    </button>
+  );
+};
+
+// ── Audit parse helpers ──
+const parseOverallScore = (audit) => {
+  const m = audit.match(/\*\*Overall:\s*(\d+(?:\.\d+)?)\/10\*\*/i);
+  return m ? parseFloat(m[1]) : null;
+};
+
+const parseAuditScorecard = (audit) => {
+  const rows = [];
+  const tableMatch = audit.match(/\|[^\n]*Score[^\n]*\|[\s\S]*?(?=\n\*\*Overall|\n##|\Z)/i);
+  if (!tableMatch) return rows;
+  const lines = tableMatch[0].split('\n').filter(l => l.includes('|') && !l.includes('---'));
+  for (const line of lines.slice(1)) {
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    if (cells.length >= 2) {
+      const scoreMatch = cells[1].match(/(\d+(?:\.\d+)?)/);
+      if (scoreMatch) {
+        rows.push({ label: cells[0], score: parseFloat(scoreMatch[1]) });
+      }
+    }
+  }
+  return rows;
+};
+
+const parseAuditSection = (audit, keyword) => {
+  const pattern = new RegExp(`##[^#\\n]*(?:${keyword})[\\s\\S]*?(?=\\n##|$)`, 'i');
+  const m = audit.match(pattern);
+  if (!m) return '';
+  return m[0].replace(/^##[^\n]*\n/, '').trim();
+};
+
+const parseAuditMessagingGaps = (audit) => {
+  const section = parseAuditSection(audit, 'Site Loses|Messaging Gap|What Your Site Says|Where Your|Buyer');
+  if (!section) return [];
+  const gaps = [];
+  const blocks = section.split(/(?=\n\*\*[^*\n]+\*\*)/).filter(Boolean);
+  for (const block of blocks) {
+    const titleMatch = block.match(/\*\*([^*\n]+)\*\*/);
+    const impactMatch = block.match(/Revenue Impact:\s*(HIGH|MEDIUM|LOW)/i);
+    if (titleMatch) {
+      gaps.push({
+        title: titleMatch[1].trim(),
+        impact: impactMatch ? impactMatch[1].toUpperCase() : 'MEDIUM',
+        content: block.replace(/^\*\*[^*\n]+\*\*\n?/, '').trim(),
+      });
+    }
+  }
+  return gaps.slice(0, 5);
+};
+
+const parsePlaybookTitle = (playbook) => {
+  const m = playbook.match(/^THE\s+"([^"]+)"\s+PLAYBOOK/im);
+  return m ? `The "${m[1]}" Playbook` : '';
+};
+
+const parsePlaybookOneLever = (playbook) => {
+  const m = playbook.match(/^THE\s+"[^"]+"\s+PLAYBOOK\s*\n+([\s\S]*?)(?=\n---|\n\d+\.)/im);
+  return m ? m[1].trim() : '';
+};
+
+const scoreColor = (score) => {
+  if (score >= 7) return '#16a34a';
+  if (score >= 5) return '#d97706';
+  return '#dc2626';
+};
+
+// ── PlaybookViewer — 3-tab layout (Verdict | Quick Win | Full Playbook) ──
+const PlaybookViewer = ({ playbookData }) => {
+  const [phase, setPhase] = useState('verdict');
+  const [expandedStep, setExpandedStep] = useState(null);
+  const [checks, setChecks] = useState({});
+
+  const phases = ['verdict', 'quickwin', 'playbook'];
+  const phaseLabels = { verdict: 'The Verdict', quickwin: 'Quick Win', playbook: 'Full Playbook' };
+  const pi = phases.indexOf(phase);
+
+  const audit = playbookData.websiteAudit || '';
+  const overallScore = parseOverallScore(audit);
+  const scorecardRows = parseAuditScorecard(audit);
+  const quickWinSection = parseAuditSection(audit, '30-Minute Fix');
+  const bigBuildSection = parseAuditSection(audit, 'Big Build');
+  const messagingGaps = parseAuditMessagingGaps(audit);
+
+  const playbookText = playbookData.playbook || '';
+  const { steps, checklist } = parsePlaybookSteps(playbookText);
+  const playbookTitle = parsePlaybookTitle(playbookText);
+  const oneLever = parsePlaybookOneLever(playbookText);
+
+  const toggleCheck = (k) => setChecks(p => ({ ...p, [k]: !p[k] }));
+
+  // Parse week 1 day tasks from checklist
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const dayTasks = checklist
+    ? dayNames.flatMap(day => {
+        const m = checklist.match(new RegExp(`${day}:\\s*([^\\n]+)`, 'i'));
+        return m ? [{ day: day.slice(0, 3).toUpperCase(), task: m[1].trim() }] : [];
+      })
+    : [];
+  const checkCount = dayTasks.filter(d => checks[d.day]).length;
+
+  return (
+    <div style={{ fontFamily: 'inherit' }}>
+      {/* Header banner */}
+      <div style={{
+        background: '#fff', borderRadius: 20, padding: '1.1rem 1.4rem', marginBottom: 10,
+        border: '1px solid #e5e7eb', boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div>
+          <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 3 }}>
+            AI Growth Playbook
+          </div>
+          <div style={{ fontSize: '1.05rem', fontWeight: 900, color: '#111827', letterSpacing: '-0.02em', lineHeight: 1.2 }}>
+            {playbookTitle || 'Your Personalised Strategy'}
+          </div>
+        </div>
+        <div style={{ fontSize: '2.2rem', lineHeight: 1, flexShrink: 0 }}>🚀</div>
+      </div>
+
+      {/* Tab navigation */}
+      <div style={{
+        background: '#fff', borderRadius: 14, border: '1px solid #e5e7eb',
+        padding: 4, display: 'flex', gap: 3, marginBottom: 14,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      }}>
+        {phases.map((p, i) => (
+          <button key={p} onClick={() => setPhase(p)} style={{
+            flex: 1, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            padding: '9px 6px', borderRadius: 10, transition: 'all .2s',
+            background: phase === p ? 'linear-gradient(135deg, #7c3aed, #8b5cf6)' : 'transparent',
+          }}>
+            <span style={{
+              width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 9, fontWeight: 700,
+              background: phase === p ? 'rgba(255,255,255,0.25)' : i < pi ? '#7c3aed' : '#e5e7eb',
+              color: phase === p ? '#fff' : i < pi ? '#fff' : '#9ca3af',
+            }}>{i + 1}</span>
+            <span style={{
+              fontSize: 11.5, fontWeight: phase === p ? 700 : 500,
+              color: phase === p ? '#fff' : '#6b7280',
+            }}>{phaseLabels[p]}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── VERDICT TAB ── */}
+      {phase === 'verdict' && (
+        <div>
+          {overallScore !== null && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.4rem', marginBottom: 10, textAlign: 'center',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 500, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+                Website Health Score
+              </div>
+              <div style={{ fontSize: 56, fontWeight: 900, color: scoreColor(overallScore), lineHeight: 1 }}>
+                {overallScore}
+                <span style={{ fontSize: 18, color: '#d1d5db', fontWeight: 400 }}>/10</span>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: scoreColor(overallScore) }}>
+                {overallScore < 5 ? 'Critical — Needs Immediate Attention' : overallScore < 7 ? 'Needs Improvement' : 'Good — Keep Optimizing'}
+              </div>
+            </div>
+          )}
+
+          {scorecardRows.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8, marginBottom: 10 }}>
+              {scorecardRows.map((row, i) => (
+                <div key={i} style={{
+                  background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb',
+                  padding: '12px 8px', textAlign: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                }}>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: scoreColor(row.score), lineHeight: 1 }}>
+                    {row.score}<span style={{ fontSize: 11, color: '#d1d5db' }}>/10</span>
+                  </div>
+                  <div style={{ fontSize: 9.5, color: '#9ca3af', marginTop: 3, fontWeight: 500, lineHeight: 1.3 }}>
+                    {row.label.length > 38 ? row.label.slice(0, 36) + '…' : row.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {messagingGaps.length > 0 && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.1rem 1.25rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+                Where You're Losing Buyers
+              </div>
+              {messagingGaps.map((gap, i) => (
+                <div key={i} style={{
+                  padding: '10px 12px', borderRadius: 10, marginBottom: 7,
+                  background: gap.impact === 'HIGH' ? '#fff8f8' : '#fffbeb',
+                  border: `1px solid ${gap.impact === 'HIGH' ? '#fecaca' : '#fde68a'}`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>{gap.title}</span>
+                    <span style={{
+                      fontSize: 8, fontWeight: 700, letterSpacing: '.04em', flexShrink: 0, marginLeft: 8,
+                      color: gap.impact === 'HIGH' ? '#dc2626' : '#d97706',
+                      background: gap.impact === 'HIGH' ? '#fee2e2' : '#fef3c7',
+                      padding: '3px 7px', borderRadius: 20,
+                    }}>{gap.impact}</span>
+                  </div>
+                  <div className="playbook-markdown" style={{ fontSize: 11.5, color: '#6b7280', lineHeight: 1.6 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{gap.content}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Fallback: show raw audit if parsing yielded nothing */}
+          {overallScore === null && scorecardRows.length === 0 && messagingGaps.length === 0 && audit && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.25rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(audit)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          <button onClick={() => setPhase('quickwin')} style={{
+            width: '100%', padding: '13px 24px',
+            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+            border: 'none', borderRadius: 12, cursor: 'pointer',
+            fontSize: 13.5, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+            boxShadow: '0 4px 20px rgba(124,58,237,.25)',
+          }}>
+            See What To Fix First →
+          </button>
+        </div>
+      )}
+
+      {/* ── QUICK WIN TAB ── */}
+      {phase === 'quickwin' && (
+        <div>
+          {quickWinSection ? (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: '1.1rem' }}>⚡</span>
+                <div>
+                  <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>Do This Today — No Developer Needed</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginTop: 2 }}>The 30-Minute Fix</div>
+                </div>
+              </div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(quickWinSection)}</ReactMarkdown>
+              </div>
+            </div>
+          ) : steps[0] && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 6 }}>Start Here — Step 1</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 10 }}>{steps[0].title}</div>
+              {steps[0].subsections.map((sub, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  {sub.label && <div style={{ fontSize: 9, color: sub.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{sub.icon} {sub.label}</div>}
+                  <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {bigBuildSection && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #d97706', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: '1.1rem' }}>🏗️</span>
+                <div>
+                  <div style={{ fontSize: 10, color: '#d97706', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>One Dev Change Worth Your Time</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginTop: 2 }}>The Big Build</div>
+                </div>
+              </div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(bigBuildSection)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          <button onClick={() => setPhase('playbook')} style={{
+            width: '100%', padding: '13px 24px',
+            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+            border: 'none', borderRadius: 12, cursor: 'pointer',
+            fontSize: 13.5, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+            boxShadow: '0 4px 20px rgba(124,58,237,.25)',
+          }}>
+            Show Full 10-Step Playbook →
+          </button>
+        </div>
+      )}
+
+      {/* ── FULL PLAYBOOK TAB ── */}
+      {phase === 'playbook' && (
+        <div>
+          {oneLever && (
+            <div style={{
+              background: '#f5f3ff', borderRadius: 14, border: '1px solid #ddd6fe',
+              padding: '0.9rem 1.1rem', marginBottom: 12, borderLeft: '4px solid #7c3aed',
+            }}>
+              <div style={{ fontSize: 9, color: '#7c3aed', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 5 }}>The One Lever</div>
+              <div style={{ fontSize: 12.5, color: '#3730a3', lineHeight: 1.7 }}>{oneLever}</div>
+            </div>
+          )}
+
+          {steps.length > 0 ? steps.map(step => {
+            const isOpen = expandedStep === step.num;
+            const toolSub = step.subsections.find(s => s.key === 'tool');
+            const promptMatch = toolSub?.content?.match(/Prompt:\s*"?([\s\S]+?)(?:"\s*$|"(?=\n)|$)/m);
+            const promptText = promptMatch ? promptMatch[1].trim().replace(/^"|"$/g, '') : '';
+
+            return (
+              <div key={step.num} style={{
+                background: '#fff', borderRadius: 13, marginBottom: 7,
+                border: `1px solid ${isOpen ? '#ddd6fe' : '#e5e7eb'}`,
+                boxShadow: isOpen ? '0 2px 12px rgba(124,58,237,.08)' : '0 1px 3px rgba(0,0,0,0.04)',
+                overflow: 'hidden', transition: 'box-shadow .2s, border-color .2s',
+              }}>
+                <div onClick={() => setExpandedStep(isOpen ? null : step.num)} style={{
+                  padding: '13px 15px', cursor: 'pointer',
+                  display: 'flex', gap: 11, alignItems: 'center',
+                  background: isOpen ? 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)' : '#fff',
+                }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                    background: '#7c3aed', color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11, fontWeight: 800,
+                  }}>{step.num}</div>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>
+                    {step.title}
+                  </div>
+                  <div style={{
+                    fontSize: 11, color: '#9ca3af', flexShrink: 0,
+                    transform: isOpen ? 'rotate(180deg)' : 'rotate(0)',
+                    transition: 'transform .25s',
+                  }}>▾</div>
+                </div>
+
+                {isOpen && (
+                  <div style={{ padding: '0 13px 14px', borderTop: '1px solid #f3f4f6' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 10 }}>
+                      {step.subsections.map((sub, subi) => (
+                        <div key={subi} style={{
+                          borderRadius: 9,
+                          background: sub.bg === 'transparent' ? '#fafafa' : sub.bg,
+                          border: `1px solid ${sub.border === 'transparent' ? '#f0f0f0' : sub.border}`,
+                          padding: '9px 11px',
+                        }}>
+                          {sub.label && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 }}>
+                              <div style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                                fontSize: 9, fontWeight: 800, color: sub.color,
+                                letterSpacing: '.05em', textTransform: 'uppercase',
+                              }}>
+                                {sub.icon} {sub.label}
+                              </div>
+                              {sub.key === 'tool' && promptText && <CopyPromptBtn text={promptText} />}
+                            </div>
+                          )}
+                          <div className="playbook-markdown" style={{ fontSize: '0.84rem', color: '#374151', lineHeight: 1.75 }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          }) : (
+            <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(playbookText)}</ReactMarkdown>
+            </div>
+          )}
+
+          {/* Week 1 Checklist */}
+          {dayTasks.length > 0 && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.1rem 1.25rem', marginTop: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 9, color: '#7c3aed', fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase' }}>Week 1 Execution Checklist</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', marginTop: 2 }}>Monday — Friday</div>
+                </div>
+                <div style={{
+                  background: checkCount === dayTasks.length ? '#dcfce7' : '#f5f3ff',
+                  borderRadius: 9, padding: '7px 11px', textAlign: 'center', minWidth: 46,
+                }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: checkCount === dayTasks.length ? '#16a34a' : '#7c3aed' }}>
+                    {checkCount}/{dayTasks.length}
+                  </div>
+                  <div style={{ fontSize: 8, color: '#9ca3af' }}>Done</div>
+                </div>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: '#f0effa', marginBottom: 10 }}>
+                <div style={{
+                  height: '100%', borderRadius: 3,
+                  background: checkCount === dayTasks.length ? '#16a34a' : 'linear-gradient(90deg, #7c3aed, #8b5cf6)',
+                  width: `${dayTasks.length ? (checkCount / dayTasks.length) * 100 : 0}%`,
+                  transition: 'width .4s ease',
+                }} />
+              </div>
+              {dayTasks.map(item => (
+                <div key={item.day} onClick={() => toggleCheck(item.day)} style={{
+                  display: 'flex', gap: 11, alignItems: 'flex-start',
+                  padding: '9px 11px', borderRadius: 9, marginBottom: 5, cursor: 'pointer',
+                  background: checks[item.day] ? '#f0fdf4' : '#fafafa',
+                  border: `1px solid ${checks[item.day] ? '#bbf7d0' : '#f0f0f0'}`,
+                  transition: 'all .2s',
+                }}>
+                  <div style={{
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0, marginTop: 2,
+                    border: checks[item.day] ? 'none' : '2px solid #d1d5db',
+                    background: checks[item.day] ? '#16a34a' : '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all .2s',
+                  }}>
+                    {checks[item.day] && <span style={{ fontSize: 10, color: '#fff', fontWeight: 700 }}>✓</span>}
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: '#7c3aed', letterSpacing: '.06em', marginRight: 6 }}>{item.day}</span>
+                    <span style={{
+                      fontSize: 12, color: checks[item.day] ? '#9ca3af' : '#374151',
+                      textDecoration: checks[item.day] ? 'line-through' : 'none', lineHeight: 1.5,
+                    }}>{item.task}</span>
+                  </div>
+                </div>
+              ))}
+              {(() => {
+                const quoteMatch = checklist.match(/"([^"]+)"/);
+                return quoteMatch ? (
+                  <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 9, borderLeft: '3px solid #7c3aed', background: '#faf5ff' }}>
+                    <div style={{ fontSize: 11.5, color: '#4c1d95', fontStyle: 'italic', lineHeight: 1.65 }}>"{quoteMatch[1]}"</div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Heuristic: pick the "better" model output by word count ──
 const pickBestModel = (glm, opus) => {
   if (!glm && !opus) return 'glm';
@@ -1606,10 +2101,13 @@ const ChatBotNew = ({ onNavigate }) => {
   const [otpPhone, setOtpPhone] = useState('');
   const [otpSessionId, setOtpSessionId] = useState(null);
   const [otpCode, setOtpCode] = useState('');
-  const [otpStep, setOtpStep] = useState('phone'); // 'phone' | 'verify'
+  // authModalStep: 'google' (step 1) → 'phone' (step 2 after Google) → 'verify' (OTP entry)
+  const [otpStep, setOtpStep] = useState('google');
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState('');
   const [otpVerified, setOtpVerified] = useState(false);
+  // Stores Google payload during two-step (Google → OTP) flow
+  const [pendingGooglePayload, setPendingGooglePayload] = useState<{ email: string; name: string; token: string } | null>(null);
 
   // ── AI Agent Session State ─────────────────────────────────
   const [sessionId, setSessionId] = useState(null);
@@ -2179,10 +2677,12 @@ const ChatBotNew = ({ onNavigate }) => {
         throw new Error(data?.detail || data?.message || 'Google login failed');
       }
 
-      saveToStorage(STORAGE_KEYS.AUTH_TOKEN, data.token);
-      setUserName(data?.user?.name || payload.name || 'User');
-      setUserEmail(data?.user?.email || payload.email || null);
-      setShowAuthModal(false);
+      // Store Google data — phone OTP required as step 2
+      setPendingGooglePayload({ email: data?.user?.email || payload.email, name: data?.user?.name || payload.name, token: data.token });
+      setOtpStep('phone');
+      setOtpPhone('');
+      setOtpError('');
+      setShowAuthModal(true); // Open modal to show phone OTP step
     } catch {
       const errorMessage = {
         id: generateUniqueId(),
@@ -2193,46 +2693,6 @@ const ChatBotNew = ({ onNavigate }) => {
       setMessages(prev => [...prev, errorMessage]);
       return;
     }
-
-    // If auth-gate before recommendations, proceed directly
-    if (pendingAuthActionRef.current === 'recommendations') {
-      pendingAuthActionRef.current = null;
-      const welcomeMsg = {
-        id: getNextMessageId(),
-        text: `Welcome, ${payload.name}! Generating your **AI Growth Playbook**...`,
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, welcomeMsg]);
-      pendingReportDataRef.current = null;
-      startPlaybook();
-      return;
-    }
-
-    setSelectedDomain(null);
-    setSelectedSubDomain(null);
-    setUserRole(null);
-    setRequirement(null);
-    setBusinessContext({
-      businessType: null,
-      industry: null,
-      targetAudience: null,
-      marketSegment: null
-    });
-    setProfessionalContext({
-      roleAndIndustry: null,
-      solutionFor: null,
-      salaryContext: null
-    });
-    setFlowStage('domain');
-
-    const botMessage = {
-      id: messageIdCounter.current++,
-      text: `Welcome back, ${payload.name}! 🚀\n\nLet's explore another idea. Pick a domain to get started:`,
-      sender: 'bot',
-      timestamp: new Date()
-    };
-    setMessages(prev => [...prev, botMessage]);
   };
 
   // ── OTP Handlers ───────────────────────────────────────────
@@ -2268,25 +2728,34 @@ const ChatBotNew = ({ onNavigate }) => {
     setOtpLoading(true);
     setOtpError('');
     try {
-      const data = await coreApi.verifyOtp({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code });
+      const data = await coreApi.verifyOtp({
+        session_id: sessionIdRef.current,
+        otp_session_id: otpSessionId,
+        otp_code: code,
+        google_email: pendingGooglePayload?.email,
+        google_name: pendingGooglePayload?.name,
+      });
       if (data.verified) {
         if (data?.token) {
           saveToStorage(STORAGE_KEYS.AUTH_TOKEN, data.token);
         }
         setOtpVerified(true);
         setShowAuthModal(false);
-        setOtpStep('phone');
+        setOtpStep('google');
         setOtpCode('');
         setOtpError('');
-        if (data?.user?.name) setUserName(data.user.name);
-        if (data?.user?.email || data?.user?.user_id) setUserEmail(data.user.email || data.user.user_id);
+        const resolvedName = pendingGooglePayload?.name || data?.user?.name || 'User';
+        const resolvedEmail = pendingGooglePayload?.email || data?.user?.email || data?.user?.user_id || null;
+        setUserName(resolvedName);
+        setUserEmail(resolvedEmail);
+        setPendingGooglePayload(null);
 
         // Proceed to playbook if auth-gated
         if (pendingAuthActionRef.current === 'recommendations') {
           pendingAuthActionRef.current = null;
           const welcomeMsg = {
             id: getNextMessageId(),
-            text: `Phone verified! ✅ Generating your **AI Growth Playbook**...`,
+            text: `Welcome, ${resolvedName}! ✅ Generating your **AI Growth Playbook**...`,
             sender: 'bot',
             timestamp: new Date(),
           };
@@ -4411,207 +4880,63 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
   const handleIdentitySubmit = async (name, email) => {
     setUserName(name);
     setUserEmail(email);
-    setFlowStage('complete');
-
-    const botMessage = {
-      id: getNextMessageId(),
-      text: `Thank you, ${name}! 🎯\n\nAnalyzing your requirements and finding the best solutions...`,
-      sender: 'bot',
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, botMessage]);
-    setIsTyping(true);
 
     await saveToSheet(`User Identity: ${name} (${email})`, '', selectedCategory, requirement);
 
-    setTimeout(async () => {
-      try {
-        // Get outcome and domain labels for display
-        const outcomeLabel = outcomeOptions.find(g => g.id === selectedGoal)?.text || selectedGoal;
-        const domainLabel = selectedDomainName || 'General';
+    const taskToRun = requirement || selectedCategory || selectedDomainName || 'General';
 
-        // Search for relevant companies from CSV
-        const searchData = await coreApi.searchCompanies({
-          domain: selectedCategory,
-          subdomain: selectedCategory,
-          requirement: requirement,
-          goal: selectedGoal,
-          role: selectedDomainName,
-          userContext: {
-            goal: selectedGoal,
-            domain: selectedDomainName,
-            category: selectedCategory
-          }
-        });
-        let relevantCompanies = (searchData.companies || []).slice(0, 3);
+    // Custom flow: skip tool discovery (no search-companies) — go directly to URL input,
+    // then scale questions → RCA diagnostic → playbook.
+    setIsTyping(true);
+    setLoadingPhase('diagnostic');
 
-        // Get relevant Chrome extensions and GPTs
-        let extensions = getRelevantExtensions(selectedCategory, selectedGoal);
-        let customGPTs = getRelevantGPTs(selectedCategory, selectedGoal, selectedDomainName);
-
-        // Use fallbacks if empty
-        if (extensions.length === 0) {
-          extensions = [
-            { name: 'Bardeen', description: 'Automate browser tasks with AI', free: true, source: 'Chrome Web Store' },
-            { name: 'Notion Web Clipper', description: 'Save anything instantly', free: true, source: 'Chrome Web Store' },
-            { name: 'Grammarly', description: 'Write better emails & docs', free: true, source: 'Chrome Web Store' }
-          ];
-        }
-
-        if (customGPTs.length === 0) {
-          customGPTs = [
-            { name: 'Task Prioritizer GPT', description: 'Organize your to-dos efficiently', rating: '4.7' },
-            { name: 'Data Analyst GPT', description: 'Analyze data & create charts', rating: '4.9' },
-            { name: 'Automation Expert GPT', description: 'Design smart workflows', rating: '4.7' }
-          ];
-        }
-
-        if (relevantCompanies.length === 0) {
-          relevantCompanies = [
-            { name: 'Bardeen', problem: 'Automate any browser workflow with AI', differentiator: 'No-code browser automation' },
-            { name: 'Zapier', problem: 'Connect 5000+ apps without code', differentiator: 'Largest integration library' },
-            { name: 'Make (Integromat)', problem: 'Visual automation builder', differentiator: 'Complex workflow scenarios' }
-          ];
-        }
-
-        // Generate the immediate action prompt
-        const immediatePrompt = generateImmediatePrompt(selectedGoal, domainLabel, selectedCategory, requirement);
-
-        // Build Stage 1 Desired Output Format - Chat Response
-        let solutionResponse = `## 🎯 Recommended Solution Pathways (Immediate Action)\n\n`;
-        solutionResponse += `I recommend the following solution pathways that you can start implementing immediately, based on your current setup and goals.\n\n`;
-        solutionResponse += `---\n\n`;
-
-        // Section 1: Tools & Extensions (If Google Workspace Is Your Main Stack)
-        solutionResponse += `## 🔌 If Google Tools / Google Workspace Is Your Main Stack\n\n`;
-        solutionResponse += `If Google Workspace is your primary tool stack, here are some tools and extensions that integrate well and can be implemented quickly.\n\n`;
-        solutionResponse += `### Tools & Extensions\n\n`;
-
-        extensions.slice(0, 3).forEach((ext) => {
-          const freeTag = ext.free ? '🆓 Free' : '💰 Paid';
-          solutionResponse += `**🔧 ${ext.name}** ${freeTag}\n`;
-          solutionResponse += `> **Where this helps:** ${ext.description}\n`;
-          solutionResponse += `> **Where to find:** ${ext.source || 'Chrome Web Store / Official Website'}\n\n`;
+    try {
+      const sid = await ensureSession();
+      if (sid) {
+        // Patch session with outcome + domain so backend can match persona docs & RCA tree
+        const domainForBackend = selectedDomain?.name || selectedDomainName || taskToRun;
+        const outcomeForBackend = selectedGoal || 'grow';
+        const outcomeLabelForBackend = outcomeOptions?.find((o: any) => o.id === selectedGoal)?.text || selectedGoal || 'Grow';
+        await coreApi.patchAgentSession(sid, {
+          outcome: outcomeForBackend,
+          outcome_label: outcomeLabelForBackend,
+          domain: domainForBackend,
         });
 
-        solutionResponse += `---\n\n`;
-
-        // Section 2: Custom GPTs
-        solutionResponse += `## 🤖 Using Custom GPTs for Task Automation & Decision Support\n\n`;
-        solutionResponse += `You can also leverage Custom GPTs to automate repetitive thinking tasks, research, analysis, and execution support.\n\n`;
-        solutionResponse += `### Custom GPTs\n\n`;
-
-        customGPTs.slice(0, 3).forEach((gpt) => {
-          solutionResponse += `**🧠 ${gpt.name}** ⭐${gpt.rating}\n`;
-          solutionResponse += `> **What this GPT does:** ${gpt.description}\n\n`;
-        });
-
-        solutionResponse += `---\n\n`;
-
-        // Section 3: AI Companies
-        solutionResponse += `## 🚀 AI Companies Offering Ready-Made Solutions\n\n`;
-        solutionResponse += `If you are looking for AI-powered tools and well-structured, ready-made solutions, here are companies whose products align with your needs.\n\n`;
-        solutionResponse += `### AI Solution Providers\n\n`;
-
-        relevantCompanies.slice(0, 3).forEach((company) => {
-          solutionResponse += `**🏢 ${company.name}**\n`;
-          solutionResponse += `> **What they do:** ${company.problem || company.description || 'AI-powered solution for your needs'}\n\n`;
-        });
-
-        solutionResponse += `---\n\n`;
-
-        // Section 4: How to Use This Framework
-        solutionResponse += `### 📋 How to Use This Framework\n\n`;
-        solutionResponse += `1. **Start with Google Workspace tools** for quick wins\n`;
-        solutionResponse += `2. **Add Custom GPTs** for intelligence and automation\n`;
-        solutionResponse += `3. **Scale using specialized AI companies** when workflows mature\n\n`;
-
-        solutionResponse += `---\n\n`;
-        solutionResponse += `### What would you like to do next?`;
-
-        const finalOutput = {
-          id: getNextMessageId(),
-          text: solutionResponse,
-          sender: 'bot',
-          timestamp: new Date(),
-          showFinalActions: true,
-          showCopyPrompt: true,
-          immediatePrompt: immediatePrompt,
-          companies: relevantCompanies,
-          extensions: extensions,
-          customGPTs: customGPTs,
-          userRequirement: requirement
+        // Fetch RCA/diagnostic questions for this task but do NOT show tool recommendations
+        const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'task_setup', task: taskToRun });
+        // Stash so resumeDiagnosticQuestions() can use them after URL submit/skip
+        pendingDiagnosticDataRef.current = {
+          data,
+          isRca: data.rca_mode === true,
+          task: taskToRun,
         };
-
-        setMessages(prev => [...prev, finalOutput]);
-        setIsTyping(false);
-        setFlowStage('complete');
-
-        saveToSheet('Solution Stack Generated', `Outcome: ${selectedGoal}, Domain: ${selectedDomainName}, Task: ${selectedCategory}`, selectedCategory, requirement);
-      } catch (error) {
-        console.error('Error generating solution stack:', error);
-
-        // Fallback response with Stage 1 format
-        const outcomeLabel = outcomeOptions.find(g => g.id === selectedGoal)?.text || selectedGoal;
-        const domainLabel = selectedDomainName || 'General';
-        const fallbackPrompt = generateImmediatePrompt(selectedGoal, domainLabel, selectedCategory, requirement);
-
-        let fallbackResponse = `## Recommended Solution Pathways (Immediate Action)\n\n`;
-        fallbackResponse += `I recommend the following solution pathways that you can start implementing immediately.\n\n`;
-        fallbackResponse += `---\n\n`;
-
-        fallbackResponse += `## If Google Tools / Google Workspace Is Your Main Stack\n\n`;
-        fallbackResponse += `### Tools & Extensions\n\n`;
-        fallbackResponse += `**Bardeen** Free\n`;
-        fallbackResponse += `> **Where this helps:** Automate browser tasks with AI\n`;
-        fallbackResponse += `> **Where to find:** Chrome Web Store\n\n`;
-        fallbackResponse += `**Notion Web Clipper** Free\n`;
-        fallbackResponse += `> **Where this helps:** Save anything instantly\n`;
-        fallbackResponse += `> **Where to find:** Chrome Web Store\n\n`;
-        fallbackResponse += `**Grammarly** Free\n`;
-        fallbackResponse += `> **Where this helps:** Write better emails & docs\n`;
-        fallbackResponse += `> **Where to find:** Chrome Web Store\n\n`;
-
-        fallbackResponse += `---\n\n`;
-        fallbackResponse += `## Using Custom GPTs for Task Automation & Decision Support\n\n`;
-        fallbackResponse += `### Custom GPTs\n\n`;
-        fallbackResponse += `**Data Analyst GPT** ⭐4.9\n`;
-        fallbackResponse += `> **What this GPT does:** Analyze your data & create charts\n\n`;
-        fallbackResponse += `**Task Prioritizer GPT** ⭐4.7\n`;
-        fallbackResponse += `> **What this GPT does:** Plan and organize your work\n\n`;
-
-        fallbackResponse += `---\n\n`;
-        fallbackResponse += `## AI Companies Offering Ready-Made Solutions\n\n`;
-        fallbackResponse += `### AI Solution Providers\n\n`;
-        fallbackResponse += `**Bardeen**\n`;
-        fallbackResponse += `> **What they do:** Automate any browser workflow with AI\n\n`;
-        fallbackResponse += `**Zapier**\n`;
-        fallbackResponse += `> **What they do:** Connect 5000+ apps without code\n\n`;
-
-        fallbackResponse += `---\n\n`;
-        fallbackResponse += `### How to Use This Framework\n\n`;
-        fallbackResponse += `1. **Start with Google Workspace tools** for quick wins\n`;
-        fallbackResponse += `2. **Add Custom GPTs** for intelligence and automation\n`;
-        fallbackResponse += `3. **Scale using specialized AI companies** when workflows mature\n\n`;
-        fallbackResponse += `---\n\n### What would you like to do next?`;
-
-        const fallbackOutput = {
-          id: getNextMessageId(),
-          text: fallbackResponse,
-          sender: 'bot',
-          timestamp: new Date(),
-          showFinalActions: true,
-          showCopyPrompt: true,
-          immediatePrompt: fallbackPrompt,
-          userRequirement: requirement
-        };
-
-        setMessages(prev => [...prev, fallbackOutput]);
-        setIsTyping(false);
-        setFlowStage('complete');
+        const isRca = data.rca_mode === true;
+        setRcaMode(isRca);
+        if (data.questions && data.questions.length > 0) {
+          setDynamicQuestions(data.questions);
+          setCurrentDynamicQIndex(0);
+          setDynamicAnswers({});
+          setPersonaLoaded(data.persona_loaded);
+        }
       }
-    }, 2000);
+    } catch (e) {
+      console.log('task_setup failed in custom flow, continuing to URL input anyway', e);
+      pendingDiagnosticDataRef.current = null;
+    }
+
+    // Show URL input directly — no tool cards, no search-companies call
+    const urlPromptMsg = {
+      id: getNextMessageId(),
+      text: `Thanks ${name}! Let's now look at **your specific situation**.\n\nShare your website URL so I can audit it (or skip to continue):`,
+      sender: 'bot',
+      timestamp: new Date(),
+      showBusinessUrlInput: true,
+    };
+    setMessages(prev => [...prev, urlPromptMsg]);
+    setFlowStage('url-input');
+    setIsTyping(false);
+    setLoadingPhase('');
   };
 
   const handleSend = async () => {
@@ -5592,48 +5917,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                     {/* ── AI Playbook Result ── */}
                     {message.isPlaybook && message.playbookData && (
                       <div className="playbook-container" style={{ marginTop: '1rem' }}>
-                        {/* Playbook Header Banner — clean light design */}
-                        <div style={{
-                          background: '#fff',
-                          borderRadius: '20px', padding: '1.4rem 1.75rem', marginBottom: '1rem',
-                          border: '1px solid #e5e7eb',
-                          boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
-                              <Sparkles size={14} color="#7c3aed" />
-                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>AI Growth Playbook</span>
-                            </div>
-                            <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#111827', letterSpacing: '-0.025em', lineHeight: 1.2 }}>
-                              Your Personalised Strategy
-                            </div>
-                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
-                              {[['📋','Playbook','#7c3aed','#f3e8ff'],['🌐','Audit','#d97706','#fef3c7']].map(([ico,lbl,col,bg]) => (
-                                <span key={lbl} style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', background: bg, color: col, fontSize:'0.72rem', fontWeight:700, padding:'0.25rem 0.6rem', borderRadius:'20px' }}>
-                                  {ico} {lbl}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div style={{ fontSize: '2.8rem', lineHeight: 1, flexShrink: 0 }}>🚀</div>
-                        </div>
-
-                        {message.playbookData.playbook && (
-                          <PlaybookCollapsible
-                            title="10-Step Growth Playbook" icon="📋"
-                            color="#7c3aed" bg="linear-gradient(135deg, #faf5ff 0%, #f3eeff 100%)" borderColor="rgba(139, 92, 246, 0.2)"
-                            content={message.playbookData.playbook}
-                            isPlaybookSteps
-                          />
-                        )}
-                        {message.playbookData.websiteAudit && (
-                          <PlaybookCollapsible
-                            title="Website Audit & Recommendations" icon="🌐"
-                            color="#d97706" bg="linear-gradient(135deg, #fff7ed 0%, #fef3e2 100%)" borderColor="rgba(245, 158, 11, 0.2)"
-                            content={message.playbookData.websiteAudit}
-                          />
-                        )}
+                        <PlaybookViewer playbookData={message.playbookData} />
                       </div>
                     )}
 
@@ -6196,84 +6480,128 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
         </div>
       )}
 
-      {/* Auth Modal — Google + OTP */}
+      {/* Auth Modal — Google + OTP (two-step: Google → Phone OTP) */}
       {showAuthModal && (
-        <div className="identity-overlay" onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}>
+        <div className="identity-overlay" onClick={() => { setShowAuthModal(false); setOtpStep('google'); setOtpError(''); setPendingGooglePayload(null); }}>
           <div className="identity-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px', padding: '2rem' }}>
-            <h2 style={{ marginBottom: '0.5rem' }}>Verify to Continue</h2>
-            <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>Sign in with Google or verify your phone number</p>
 
-            {/* Google Sign-In */}
-            <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.75rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.95rem', marginBottom: '1.25rem' }}>
-              <span style={{ fontWeight: 600 }}>Continue with Google</span>
-            </button>
+            {/* Step: google — initial sign-in choice */}
+            {otpStep === 'google' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem' }}>Verify to Continue</h2>
+                <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>Sign in with Google or verify your phone number</p>
 
-            {/* Divider */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-              <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>OR</span>
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-            </div>
+                {/* Google Sign-In */}
+                <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.75rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.95rem', marginBottom: '1.25rem' }}>
+                  <span style={{ fontWeight: 600 }}>Continue with Google</span>
+                </button>
 
-            {/* OTP Flow */}
-            {otpStep === 'phone' ? (
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Mobile Number</label>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.5rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.9rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
-                  <input
-                    type="tel"
-                    value={otpPhone}
-                    onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
-                    placeholder="10-digit mobile number"
-                    maxLength={10}
-                    style={{ flex: 1, padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.95rem', outline: 'none' }}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
-                  />
+                {/* Divider */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                  <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+                  <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>OR</span>
+                  <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
                 </div>
-                {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
-                <button
-                  onClick={handleSendOtp}
-                  disabled={otpLoading || otpPhone.length < 10}
-                  style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
-                >
-                  {otpLoading ? 'Sending OTP...' : 'Send OTP'}
-                </button>
-              </div>
-            ) : (
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Enter OTP sent to +91 {otpPhone.slice(-10)}</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={otpCode}
-                  onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                  placeholder="Enter 4-6 digit OTP"
-                  maxLength={6}
-                  style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '1.1rem', letterSpacing: '0.3rem', textAlign: 'center', outline: 'none' }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleVerifyOtp()}
-                  autoFocus
-                />
-                {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
-                <button
-                  onClick={handleVerifyOtp}
-                  disabled={otpLoading || otpCode.length < 4}
-                  style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpCode.length < 4 ? '#d1d5db' : '#16a34a', color: 'white', border: 'none', cursor: otpLoading || otpCode.length < 4 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
-                >
-                  {otpLoading ? 'Verifying...' : 'Verify OTP'}
-                </button>
-                <button
-                  onClick={handleResendOtp}
-                  style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.85rem' }}
-                >
-                  ← Change number / Resend OTP
-                </button>
-              </div>
+
+                {/* Standalone phone OTP */}
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Mobile Number</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.5rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.9rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
+                    <input
+                      type="tel"
+                      value={otpPhone}
+                      onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+                      placeholder="10-digit mobile number"
+                      maxLength={10}
+                      style={{ flex: 1, padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.95rem', outline: 'none' }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
+                    />
+                  </div>
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleSendOtp}
+                    disabled={otpLoading || otpPhone.length < 10}
+                    style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
+                  >
+                    {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step: phone — after Google success, collect phone for 2nd factor */}
+            {otpStep === 'phone' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem' }}>One More Step</h2>
+                <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>
+                  Google sign-in successful ✅<br />Enter your phone number to complete verification
+                </p>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, fontSize: '0.9rem', color: '#374151' }}>Mobile Number</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.5rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.9rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
+                    <input
+                      type="tel"
+                      value={otpPhone}
+                      onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+                      placeholder="10-digit mobile number"
+                      maxLength={10}
+                      style={{ flex: 1, padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.95rem', outline: 'none' }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
+                      autoFocus
+                    />
+                  </div>
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleSendOtp}
+                    disabled={otpLoading || otpPhone.length < 10}
+                    style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
+                  >
+                    {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step: verify — OTP code entry */}
+            {otpStep === 'verify' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem' }}>Enter OTP</h2>
+                <p style={{ marginBottom: '1.5rem', color: '#6b7280', fontSize: '0.9rem' }}>OTP sent to +91 {otpPhone.slice(-10)}</p>
+                <div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    placeholder="Enter 4-6 digit OTP"
+                    maxLength={6}
+                    style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '1.1rem', letterSpacing: '0.3rem', textAlign: 'center', outline: 'none' }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleVerifyOtp()}
+                    autoFocus
+                  />
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.4rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleVerifyOtp}
+                    disabled={otpLoading || otpCode.length < 4}
+                    style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: otpLoading || otpCode.length < 4 ? '#d1d5db' : '#16a34a', color: 'white', border: 'none', cursor: otpLoading || otpCode.length < 4 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.95rem' }}
+                  >
+                    {otpLoading ? 'Verifying...' : 'Verify OTP'}
+                  </button>
+                  <button
+                    onClick={handleResendOtp}
+                    style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    ← Change number / Resend OTP
+                  </button>
+                </div>
+              </>
             )}
 
             {/* Skip option */}
             <button
-              onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}
+              onClick={() => { setShowAuthModal(false); setOtpStep('google'); setOtpError(''); setPendingGooglePayload(null); }}
               style={{ width: '100%', marginTop: '1rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.8rem' }}
             >
               Skip for now

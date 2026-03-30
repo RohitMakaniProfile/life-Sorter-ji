@@ -18,7 +18,7 @@ documented problems and diagnostic signals from the persona docs.
 import json
 import time
 from typing import Optional
-
+import re
 import structlog
 
 from app.config import get_settings

@@ -5,33 +5,7 @@ import remarkGfm from 'remark-gfm';
 import './ChatBotNewMobile.css';
 import { coreApi } from '../api';
 import { formatCompaniesForDisplay, analyzeMarketGaps } from '../utils/csvParser';
-
-// ── Markdown normaliser — ensures consistent heading levels across LLM output ──
-const formatSectionMarkdown = (text) => {
-  let r = text;
-  r = r.replace(/^\*\*([A-Z][A-Z &\-\/():'0-9,.]+?)\*\*\s*$/gm, (_, l) => `### ${l.trim()}`);
-  r = r.replace(/^(?![#>|*\-])([A-Z][A-Z &\-\/():'0-9,.]{7,})\s*$/gm, (_, l) => `### ${l.trim()}`);
-  r = r.replace(/^(?:#{0,4}\s*)?(?:\*\*)?STEP\s+(\d{1,2})\s*[\u2192\->]+\s*(.+?)(?:\*\*)?\s*$/gm,
-    (_, n, t) => `#### STEP ${n} → ${t.trim()}`);
-  return r;
-};
-
-const formatPlaybookSteps = (text) => {
-  let r = text;
-  r = r.replace(
-    /^(?:#{0,3}\s*)?(?:\*\*)?(\d{1,2})\.\s*(?:\*\*\s*)?(?:The\s+)?[""\u201C]?([^""\u201D\n]+?)[""\u201D]?(?:\*\*)?\s*$/gm,
-    (_, num, name) => `## **STEP ${num} — ${name.trim()}**`
-  );
-  const subs = [
-    [/^(?:#{0,4}\s*)?(?:\*\*)?WHAT TO DO(?:\*\*)?\s*$/gm, '#### 📌 WHAT TO DO'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*$/gm, '#### 🤖 TOOL + AI SHORTCUT'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?REAL EXAMPLE(?:\*\*)?\s*$/gm, '#### 💡 REAL EXAMPLE'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?THE EDGE(?:\*\*)?\s*$/gm, '#### ⚡ THE EDGE'],
-    [/^(?:#{0,4}\s*)?(?:\*\*)?WEEK\s*1\s*EXECUTION\s*CHECKLIST(?:\*\*)?\s*$/gm, '### 📅 WEEK 1 EXECUTION CHECKLIST'],
-  ];
-  for (const [pat, rep] of subs) r = r.replace(pat, rep);
-  return r;
-};
+import PlaybookViewer, { PlaybookData } from './PlaybookViewer';
 
 // Generate unique message IDs to prevent React key conflicts
 const generateUniqueId = () => `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -539,8 +513,23 @@ const THINKING_PHRASES = [
   '✨ Almost there...',
 ];
 
+interface MobileMessage {
+  id: string | number;
+  text: string;
+  sender: string;
+  timestamp: Date;
+  showOutcomeOptions?: boolean;
+  isPlaybook?: boolean;
+  playbookData?: PlaybookData;
+  isPlaybookGapQuestions?: boolean;
+  showCrawlDetails?: boolean;
+  crawlSummaryPoints?: string[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
 const ChatBotNewMobile = ({ onNavigate }) => {
-  const [messages, setMessages] = useState([
+  const [messages, setMessages] = useState<MobileMessage[]>([
     {
       id: 'welcome-msg',
       text: "Welcome to Ikshan!\n\nLet's find the perfect AI solution for you.",
@@ -571,7 +560,8 @@ const ChatBotNewMobile = ({ onNavigate }) => {
   const [otpPhone, setOtpPhone] = useState('');
   const [otpSessionId, setOtpSessionId] = useState(null);
   const [otpCode, setOtpCode] = useState('');
-  const [otpStep, setOtpStep] = useState('phone'); // 'phone' | 'verify'
+  const [otpStep, setOtpStep] = useState('google'); // 'google' | 'phone' | 'verify'
+  const [pendingGooglePayload, setPendingGooglePayload] = useState<{ email: string; name: string; token: string } | null>(null);
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState('');
   const [otpVerified, setOtpVerified] = useState(false);
@@ -939,51 +929,37 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     window.google.accounts.id.prompt();
   };
 
-  const handleGoogleCallback = (response) => {
-    const payload = JSON.parse(atob(response.credential.split('.')[1]));
-    setUserName(payload.name);
-    setUserEmail(payload.email);
-    setShowAuthModal(false);
-
-    // If auth-gate before recommendations, proceed directly
-    if (pendingAuthActionRef.current === 'recommendations') {
-      pendingAuthActionRef.current = null;
-      const welcomeMsg = {
-        id: getNextMessageId(),
-        text: `Welcome, ${payload.name}! Generating your **AI Growth Playbook**...`,
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, welcomeMsg]);
-      pendingReportDataRef.current = null;
-      startPlaybook();
+  const handleGoogleCallback = async (response) => {
+    let payload;
+    try {
+      payload = JSON.parse(atob(response.credential.split('.')[1]));
+    } catch {
       return;
     }
 
-    setSelectedDomain(null);
-    setSelectedSubDomain(null);
-    setUserRole(null);
-    setRequirement(null);
-    setBusinessContext({
-      businessType: null,
-      industry: null,
-      targetAudience: null,
-      marketSegment: null
-    });
-    setProfessionalContext({
-      roleAndIndustry: null,
-      solutionFor: null,
-      salaryContext: null
-    });
-    setFlowStage('domain');
+    const sid = await ensureSession();
+    if (!sid) return;
 
-    const botMessage = {
-      id: messageIdCounter.current++,
-      text: `Welcome back, ${payload.name}! 🚀\n\nLet's explore another idea. Pick a domain to get started:`,
-      sender: 'bot',
-      timestamp: new Date()
-    };
-    setMessages(prev => [...prev, botMessage]);
+    try {
+      const data = await coreApi.googleAuth({
+        session_id: sid,
+        google_id: payload.sub,
+        email: payload.email,
+        name: payload.name,
+        avatar_url: payload.picture || '',
+      });
+      if (!data?.success || !data?.token) {
+        throw new Error((data as any)?.detail || (data as any)?.message || 'Google login failed');
+      }
+      // Store Google data — phone OTP required as step 2
+      setPendingGooglePayload({ email: data?.user?.email || payload.email, name: data?.user?.name || payload.name, token: data.token });
+      setOtpStep('phone');
+      setOtpPhone('');
+      setOtpError('');
+      setShowAuthModal(true); // Open modal to show phone OTP step
+    } catch {
+      return;
+    }
   };
 
   // ── OTP Handlers ───────────────────────────────────────────
@@ -1019,19 +995,33 @@ const ChatBotNewMobile = ({ onNavigate }) => {
     setOtpLoading(true);
     setOtpError('');
     try {
-      const data = await coreApi.verifyOtp({ session_id: sessionIdRef.current, otp_session_id: otpSessionId, otp_code: code });
+      const data = await coreApi.verifyOtp({
+        session_id: sessionIdRef.current,
+        otp_session_id: otpSessionId,
+        otp_code: code,
+        google_email: pendingGooglePayload?.email,
+        google_name: pendingGooglePayload?.name,
+      });
       if (data.verified) {
+        if (data?.token) {
+          try { localStorage.setItem('ikshan-auth-token', data.token); } catch {}
+        }
         setOtpVerified(true);
         setShowAuthModal(false);
-        setOtpStep('phone');
+        setOtpStep('google');
         setOtpCode('');
         setOtpError('');
+        const resolvedName = pendingGooglePayload?.name || data?.user?.name as string || 'User';
+        const resolvedEmail = pendingGooglePayload?.email || data?.user?.email as string || data?.user?.user_id as string || null;
+        setUserName(resolvedName);
+        setUserEmail(resolvedEmail);
+        setPendingGooglePayload(null);
 
         if (pendingAuthActionRef.current === 'recommendations') {
           pendingAuthActionRef.current = null;
           const welcomeMsg = {
             id: getNextMessageId(),
-            text: `Phone verified! ✅ Generating your **AI Growth Playbook**...`,
+            text: `Welcome, ${resolvedName}! ✅ Generating your **AI Growth Playbook**...`,
             sender: 'bot',
             timestamp: new Date(),
           };
@@ -2963,20 +2953,66 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
   const handleIdentitySubmit = async (name, email) => {
     setUserName(name);
     setUserEmail(email);
-    setFlowStage('complete');
-
-    const botMessage = {
-      id: getNextMessageId(),
-      text: `Thank you, ${name}! 🎯\n\nAnalyzing your requirements and finding the best solutions...`,
-      sender: 'bot',
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, botMessage]);
-    setIsTyping(true);
 
     await saveToSheet(`User Identity: ${name} (${email})`, '', selectedCategory, requirement);
 
+    const taskToRun = requirement || selectedCategory || selectedDomainName || 'General';
+
+    // Custom flow: skip tool discovery (no search-companies) — go directly to URL input,
+    // then scale questions → RCA diagnostic → playbook.
+    setIsTyping(true);
+    setLoadingPhase('diagnostic');
+
+    try {
+      const sid = await ensureSession();
+      if (sid) {
+        // Patch session with outcome + domain so backend can match persona docs & RCA tree
+        const domainForBackend = selectedDomain?.name || selectedDomainName || taskToRun;
+        const outcomeForBackend = selectedGoal || 'grow';
+        const outcomeLabelForBackend = outcomeOptions?.find((o: any) => o.id === selectedGoal)?.text || selectedGoal || 'Grow';
+        await coreApi.patchAgentSession(sid, {
+          outcome: outcomeForBackend,
+          outcome_label: outcomeLabelForBackend,
+          domain: domainForBackend,
+        });
+
+        const { result: data } = await coreApi.advanceAgentSession(sid, { action: 'task_setup', task: taskToRun });
+        pendingDiagnosticDataRef.current = {
+          data,
+          isRca: data.rca_mode === true,
+          task: taskToRun,
+        };
+        const isRca = data.rca_mode === true;
+        setRcaMode(isRca);
+        if (data.questions && data.questions.length > 0) {
+          setDynamicQuestions(data.questions);
+          setCurrentDynamicQIndex(0);
+          setDynamicAnswers({});
+          setPersonaLoaded(data.persona_loaded);
+        }
+      }
+    } catch (e) {
+      console.log('task_setup failed in custom flow, continuing to URL input anyway', e);
+      pendingDiagnosticDataRef.current = null;
+    }
+
+    // Show URL input directly — no tool cards, no search-companies call
+    const urlPromptMsg = {
+      id: getNextMessageId(),
+      text: `Thanks ${name}! Let's now look at **your specific situation**.\n\nShare your website URL so I can audit it (or skip to continue):`,
+      sender: 'bot',
+      timestamp: new Date(),
+      showBusinessUrlInput: true,
+    };
+    setMessages(prev => [...prev, urlPromptMsg]);
+    setFlowStage('url-input');
+    setIsTyping(false);
+    setLoadingPhase('');
+  };
+
+  const _handleIdentitySubmit_OLD_UNUSED = async (name, email) => {
+    // kept for reference only — not called anywhere
+    setIsTyping(true);
     setTimeout(async () => {
       try {
         // Get outcome and domain labels for display
@@ -3998,88 +4034,7 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
                   {/* ── AI Playbook Result ── */}
                   {message.isPlaybook && message.playbookData && (
                     <div className="playbook-container" style={{ marginTop: '0.75rem' }}>
-                      {message.playbookData.icpCard && (
-                        <div style={{
-                          background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
-                          border: '1px solid rgba(14, 165, 233, 0.25)',
-                          borderRadius: '12px',
-                          padding: '1rem',
-                          marginBottom: '0.75rem',
-                        }}>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#0284c7', marginBottom: '0.6rem' }}>
-                            👤 Ideal Customer Profile
-                          </div>
-                          <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.icpCard)}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-
-                      {message.playbookData.playbook && (
-                        <div style={{
-                          background: 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)',
-                          border: '1px solid rgba(139, 92, 246, 0.25)',
-                          borderRadius: '12px',
-                          padding: '1rem',
-                          marginBottom: '0.75rem',
-                        }}>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#7c3aed', marginBottom: '0.6rem' }}>
-                            📋 Your 10-Step Growth Playbook
-                          </div>
-                          <div className="playbook-markdown playbook-steps" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatPlaybookSteps(message.playbookData.playbook)}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-
-                      {message.playbookData.toolMatrix && (
-                        <div style={{
-                          background: 'linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%)',
-                          border: '1px solid rgba(16, 185, 129, 0.25)',
-                          borderRadius: '12px',
-                          padding: '1rem',
-                          marginBottom: '0.75rem',
-                        }}>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#059669', marginBottom: '0.6rem' }}>
-                            🛠 Tool & Tech Matrix
-                          </div>
-                          <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.toolMatrix)}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-
-                      {message.playbookData.websiteAudit && (
-                        <div style={{
-                          background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
-                          border: '1px solid rgba(245, 158, 11, 0.25)',
-                          borderRadius: '12px',
-                          padding: '1rem',
-                          marginBottom: '0.75rem',
-                        }}>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#d97706', marginBottom: '0.6rem' }}>
-                            🌐 Website Audit & Recommendations
-                          </div>
-                          <div className="playbook-markdown" style={{ fontSize: '0.82rem', color: '#1e293b', lineHeight: 1.7 }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(message.playbookData.websiteAudit)}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-
-                      {message.playbookData.latencies && Object.keys(message.playbookData.latencies).length > 0 && (
-                        <div style={{
-                          display: 'flex',
-                          gap: '0.5rem',
-                          flexWrap: 'wrap',
-                          fontSize: '0.7rem',
-                          color: '#9ca3af',
-                          marginTop: '0.25rem',
-                        }}>
-                          {Object.entries(message.playbookData.latencies).map(([agent, ms]) => (
-                            <span key={agent}>{agent}: {(ms / 1000).toFixed(1)}s</span>
-                          ))}
-                        </div>
-                      )}
+                      <PlaybookViewer playbookData={message.playbookData} />
                     </div>
                   )}
 
@@ -4479,78 +4434,122 @@ This solution helps at the **${subDomainName}** stage of your ${domainName} oper
 
       {/* Auth Modal — Google + OTP */}
       {showAuthModal && (
-        <div className="identity-overlay" onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}>
+        <div className="identity-overlay" onClick={() => { setShowAuthModal(false); setOtpStep('google'); setOtpError(''); setPendingGooglePayload(null); }}>
           <div className="identity-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '360px', padding: '1.5rem' }}>
-            <h2 style={{ marginBottom: '0.5rem', fontSize: '1.1rem' }}>Verify to Continue</h2>
-            <p style={{ marginBottom: '1.25rem', color: '#6b7280', fontSize: '0.85rem' }}>Sign in with Google or verify your phone</p>
 
-            <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.7rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', marginBottom: '1rem' }}>
-              <span style={{ fontWeight: 600 }}>Continue with Google</span>
-            </button>
+            {/* Step: google — initial choice */}
+            {otpStep === 'google' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem', fontSize: '1.1rem' }}>Verify to Continue</h2>
+                <p style={{ marginBottom: '1.25rem', color: '#6b7280', fontSize: '0.85rem' }}>Sign in with Google or verify your phone</p>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-              <span style={{ color: '#9ca3af', fontSize: '0.75rem' }}>OR</span>
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-            </div>
+                <button onClick={handleGoogleSignIn} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'white', border: '1px solid #d1d5db', color: '#374151', width: '100%', padding: '0.7rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                  <span style={{ fontWeight: 600 }}>Continue with Google</span>
+                </button>
 
-            {otpStep === 'phone' ? (
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 500, fontSize: '0.85rem', color: '#374151' }}>Mobile Number</label>
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.4rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.85rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
-                  <input
-                    type="tel"
-                    value={otpPhone}
-                    onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
-                    placeholder="10-digit number"
-                    maxLength={10}
-                    style={{ flex: 1, padding: '0.7rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.9rem', outline: 'none' }}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
-                  />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                  <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+                  <span style={{ color: '#9ca3af', fontSize: '0.75rem' }}>OR</span>
+                  <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
                 </div>
-                {otpError && <p style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '0.3rem' }}>{otpError}</p>}
-                <button
-                  onClick={handleSendOtp}
-                  disabled={otpLoading || otpPhone.length < 10}
-                  style={{ width: '100%', marginTop: '0.6rem', padding: '0.7rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.9rem' }}
-                >
-                  {otpLoading ? 'Sending OTP...' : 'Send OTP'}
-                </button>
-              </div>
-            ) : (
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 500, fontSize: '0.85rem', color: '#374151' }}>Enter OTP sent to +91 {otpPhone.slice(-10)}</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={otpCode}
-                  onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                  placeholder="Enter OTP"
-                  maxLength={6}
-                  style={{ width: '100%', padding: '0.7rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '1rem', letterSpacing: '0.3rem', textAlign: 'center', outline: 'none' }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleVerifyOtp()}
-                  autoFocus
-                />
-                {otpError && <p style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '0.3rem' }}>{otpError}</p>}
-                <button
-                  onClick={handleVerifyOtp}
-                  disabled={otpLoading || otpCode.length < 4}
-                  style={{ width: '100%', marginTop: '0.6rem', padding: '0.7rem', borderRadius: '8px', background: otpLoading || otpCode.length < 4 ? '#d1d5db' : '#16a34a', color: 'white', border: 'none', cursor: otpLoading || otpCode.length < 4 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.9rem' }}
-                >
-                  {otpLoading ? 'Verifying...' : 'Verify OTP'}
-                </button>
-                <button
-                  onClick={handleResendOtp}
-                  style={{ width: '100%', marginTop: '0.4rem', padding: '0.4rem', background: 'transparent', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem' }}
-                >
-                  ← Change number / Resend
-                </button>
-              </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 500, fontSize: '0.85rem', color: '#374151' }}>Mobile Number</label>
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.4rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.85rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
+                    <input
+                      type="tel"
+                      value={otpPhone}
+                      onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+                      placeholder="10-digit number"
+                      maxLength={10}
+                      style={{ flex: 1, padding: '0.7rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.9rem', outline: 'none' }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
+                    />
+                  </div>
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '0.3rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleSendOtp}
+                    disabled={otpLoading || otpPhone.length < 10}
+                    style={{ width: '100%', marginTop: '0.6rem', padding: '0.7rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.9rem' }}
+                  >
+                    {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step: phone — after Google, collect phone for 2nd factor */}
+            {otpStep === 'phone' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem', fontSize: '1.1rem' }}>One More Step</h2>
+                <p style={{ marginBottom: '1.25rem', color: '#6b7280', fontSize: '0.85rem' }}>
+                  Google sign-in successful ✅<br />Enter your phone to complete
+                </p>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: 500, fontSize: '0.85rem', color: '#374151' }}>Mobile Number</label>
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', padding: '0 0.4rem', background: '#f3f4f6', borderRadius: '8px', fontSize: '0.85rem', color: '#6b7280', border: '1px solid #d1d5db' }}>+91</span>
+                    <input
+                      type="tel"
+                      value={otpPhone}
+                      onChange={(e) => setOtpPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+                      placeholder="10-digit number"
+                      maxLength={10}
+                      style={{ flex: 1, padding: '0.7rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.9rem', outline: 'none' }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
+                      autoFocus
+                    />
+                  </div>
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '0.3rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleSendOtp}
+                    disabled={otpLoading || otpPhone.length < 10}
+                    style={{ width: '100%', marginTop: '0.6rem', padding: '0.7rem', borderRadius: '8px', background: otpLoading || otpPhone.length < 10 ? '#d1d5db' : '#2563eb', color: 'white', border: 'none', cursor: otpLoading || otpPhone.length < 10 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.9rem' }}
+                  >
+                    {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step: verify — OTP code entry */}
+            {otpStep === 'verify' && (
+              <>
+                <h2 style={{ marginBottom: '0.5rem', fontSize: '1.1rem' }}>Enter OTP</h2>
+                <p style={{ marginBottom: '1.25rem', color: '#6b7280', fontSize: '0.85rem' }}>Sent to +91 {otpPhone.slice(-10)}</p>
+                <div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    placeholder="Enter OTP"
+                    maxLength={6}
+                    style={{ width: '100%', padding: '0.7rem', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '1rem', letterSpacing: '0.3rem', textAlign: 'center', outline: 'none' }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleVerifyOtp()}
+                    autoFocus
+                  />
+                  {otpError && <p style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '0.3rem' }}>{otpError}</p>}
+                  <button
+                    onClick={handleVerifyOtp}
+                    disabled={otpLoading || otpCode.length < 4}
+                    style={{ width: '100%', marginTop: '0.6rem', padding: '0.7rem', borderRadius: '8px', background: otpLoading || otpCode.length < 4 ? '#d1d5db' : '#16a34a', color: 'white', border: 'none', cursor: otpLoading || otpCode.length < 4 ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '0.9rem' }}
+                  >
+                    {otpLoading ? 'Verifying...' : 'Verify OTP'}
+                  </button>
+                  <button
+                    onClick={handleResendOtp}
+                    style={{ width: '100%', marginTop: '0.4rem', padding: '0.4rem', background: 'transparent', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem' }}
+                  >
+                    ← Change number / Resend
+                  </button>
+                </div>
+              </>
             )}
 
             <button
-              onClick={() => { setShowAuthModal(false); setOtpStep('phone'); setOtpError(''); }}
+              onClick={() => { setShowAuthModal(false); setOtpStep('google'); setOtpError(''); setPendingGooglePayload(null); }}
               style={{ width: '100%', marginTop: '0.75rem', padding: '0.4rem', background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.75rem' }}
             >
               Skip for now

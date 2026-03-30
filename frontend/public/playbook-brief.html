@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Playbook 2.0 — Internal Brief</title>
+<style>
+  :root {
+    --purple: #7c3aed; --purple-dark: #5b21b6; --purple-light: #ede9fe;
+    --green: #10b981; --amber: #f59e0b; --red: #ef4444; --blue: #3b82f6;
+    --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
+    --gray-400: #9ca3af; --gray-600: #4b5563; --gray-800: #1f2937; --gray-900: #111827;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0a1e; color: var(--gray-800); min-height: 100vh; }
+
+  /* Top bar */
+  .topbar { background: linear-gradient(135deg, #1a0a3e 0%, #0f0a1e 100%); border-bottom: 1px solid rgba(124,58,237,0.3); padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+  .topbar-logo { width: 32px; height: 32px; background: linear-gradient(135deg, #7c3aed, #4f46e5); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+  .topbar-title { font-size: 1rem; font-weight: 700; color: #fff; }
+  .topbar-badge { font-size: 0.7rem; background: rgba(124,58,237,0.3); color: #c4b5fd; padding: 3px 10px; border-radius: 20px; border: 1px solid rgba(124,58,237,0.4); margin-left: auto; }
+  .topbar-date { font-size: 0.72rem; color: var(--gray-400); }
+
+  /* Tab nav */
+  .tabnav { background: #13082b; border-bottom: 1px solid rgba(124,58,237,0.2); padding: 0 2rem; display: flex; gap: 0; overflow-x: auto; }
+  .tab-btn { padding: 0.85rem 1.25rem; font-size: 0.82rem; font-weight: 600; color: #9ca3af; background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; transition: all 0.2s; display: flex; align-items: center; gap: 0.4rem; }
+  .tab-btn:hover { color: #c4b5fd; }
+  .tab-btn.active { color: #c4b5fd; border-bottom-color: #7c3aed; }
+
+  /* Content area */
+  .content { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Cards */
+  .card { background: #fff; border-radius: 14px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--gray-200); }
+  .card-dark { background: #1a0a3e; border: 1px solid rgba(124,58,237,0.25); border-radius: 14px; padding: 1.5rem; margin-bottom: 1rem; }
+
+  /* Section headers */
+  .sec-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.25rem; }
+  .sec-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
+  .sec-title { font-size: 1.1rem; font-weight: 700; }
+  .sec-sub { font-size: 0.8rem; color: var(--gray-400); margin-top: 0.1rem; }
+
+  /* Stat boxes */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+  .stat-box { border-radius: 12px; padding: 1.25rem; text-align: center; }
+  .stat-num { font-size: 2rem; font-weight: 800; line-height: 1; }
+  .stat-label { font-size: 0.75rem; font-weight: 500; margin-top: 0.4rem; }
+  .stat-sub { font-size: 0.68rem; margin-top: 0.2rem; opacity: 0.7; }
+
+  /* Problem items */
+  .problem-list { display: flex; flex-direction: column; gap: 0.75rem; }
+  .problem-item { display: flex; gap: 1rem; padding: 1rem 1.25rem; background: #fff5f5; border: 1px solid #fecaca; border-radius: 10px; align-items: flex-start; }
+  .problem-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 2px; }
+  .problem-title { font-size: 0.88rem; font-weight: 700; color: #991b1b; margin-bottom: 0.2rem; }
+  .problem-desc { font-size: 0.8rem; color: #6b7280; line-height: 1.5; }
+  .problem-data { font-size: 0.75rem; font-weight: 700; color: #ef4444; margin-top: 0.3rem; background: rgba(239,68,68,0.08); padding: 2px 8px; border-radius: 5px; display: inline-block; }
+
+  /* Phase cards */
+  .phase-card { border-radius: 14px; overflow: hidden; margin-bottom: 1.25rem; border: 1px solid var(--gray-200); }
+  .phase-header { padding: 1.1rem 1.25rem; cursor: pointer; display: flex; align-items: center; gap: 0.75rem; user-select: none; }
+  .phase-header:hover { opacity: 0.92; }
+  .phase-num { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 800; color: #fff; flex-shrink: 0; }
+  .phase-title { font-size: 1rem; font-weight: 700; }
+  .phase-emotion { font-size: 0.8rem; font-style: italic; margin-top: 0.15rem; }
+  .phase-chevron { margin-left: auto; transition: transform 0.2s; font-size: 0.85rem; color: var(--gray-400); }
+  .phase-card.open .phase-chevron { transform: rotate(90deg); }
+  .phase-body { display: none; padding: 0 1.25rem 1.25rem; }
+  .phase-card.open .phase-body { display: block; }
+  .ui-elements { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+  .ui-pill { font-size: 0.73rem; padding: 4px 10px; border-radius: 6px; font-weight: 500; }
+  .element-row { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.6rem; background: var(--gray-50); border-radius: 8px; margin-bottom: 0.4rem; font-size: 0.8rem; }
+  .element-icon { font-size: 0.9rem; flex-shrink: 0; }
+
+  /* Psychology */
+  .psych-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+  .psych-card { border-radius: 12px; padding: 1rem; text-align: center; border: 1px solid; }
+  .psych-icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .psych-name { font-size: 0.78rem; font-weight: 700; margin-bottom: 0.4rem; }
+  .psych-desc { font-size: 0.7rem; line-height: 1.4; }
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .ba-col { border-radius: 12px; padding: 1.25rem; }
+  .ba-title { font-size: 0.85rem; font-weight: 700; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.4rem; }
+  .ba-item { display: flex; gap: 0.5rem; font-size: 0.78rem; line-height: 1.4; margin-bottom: 0.5rem; }
+
+  /* Backend mapping */
+  .mapping-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .mapping-table th { text-align: left; padding: 0.65rem 0.75rem; background: var(--gray-100); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gray-600); border-bottom: 2px solid var(--gray-200); }
+  .mapping-table td { padding: 0.75rem; border-bottom: 1px solid var(--gray-100); vertical-align: top; }
+  .mapping-table tr:hover td { background: var(--gray-50); }
+  .badge { font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge-exists { background: #d1fae5; color: #065f46; }
+  .badge-new { background: #fef3c7; color: #92400e; }
+  .badge-frontend { background: #dbeafe; color: #1e40af; }
+  .source-path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.72rem; background: var(--gray-100); padding: 2px 6px; border-radius: 4px; color: var(--purple-dark); }
+
+  /* Build plan */
+  .week-block { border-radius: 14px; overflow: hidden; margin-bottom: 1.25rem; }
+  .week-header { padding: 1rem 1.25rem; display: flex; align-items: center; gap: 0.75rem; }
+  .week-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.8; }
+  .week-title { font-size: 1rem; font-weight: 700; margin-top: 0.1rem; }
+  .week-tasks { padding: 0 1.25rem 1.25rem; }
+  .task-item { display: flex; gap: 0.75rem; padding: 0.65rem; background: rgba(255,255,255,0.6); border-radius: 8px; margin-bottom: 0.4rem; align-items: flex-start; }
+  .task-num { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.68rem; font-weight: 700; color: #fff; flex-shrink: 0; margin-top: 1px; }
+  .task-text { font-size: 0.8rem; line-height: 1.4; }
+  .task-note { font-size: 0.72rem; color: var(--gray-400); margin-top: 0.2rem; }
+
+  /* Misc */
+  .divider { height: 1px; background: var(--gray-200); margin: 1.5rem 0; }
+  .highlight-box { padding: 1rem 1.25rem; border-radius: 10px; border-left: 4px solid; margin-bottom: 1rem; }
+  .tag { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600; }
+  .col2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .col3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo">⚡</div>
+  <div>
+    <div class="topbar-title">Playbook 2.0 — Internal Brief</div>
+  </div>
+  <div class="topbar-badge">TEAM ONLY · INTERNAL</div>
+  <div class="topbar-date">Mar 2026</div>
+</div>
+
+<div class="tabnav">
+  <button class="tab-btn active" onclick="switchTab('problem')">🔍 The Problem</button>
+  <button class="tab-btn" onclick="switchTab('solution')">💡 The Solution</button>
+  <button class="tab-btn" onclick="switchTab('why')">🧠 Why This Works</button>
+  <button class="tab-btn" onclick="switchTab('backend')">⚙️ Backend Mapping</button>
+  <button class="tab-btn" onclick="switchTab('build')">🛠 Build Plan</button>
+</div>
+
+<div class="content">
+
+<!-- ─────────────────── TAB 1: THE PROBLEM ─────────────────── -->
+<div id="tab-problem" class="tab-panel active">
+  <div class="sec-header" style="margin-top:0.5rem">
+    <div class="sec-icon" style="background:#fee2e2">🔍</div>
+    <div>
+      <div class="sec-title" style="color:#991b1b">What's Actually Broken</div>
+      <div class="sec-sub">The playbook content is 10/10. The delivery is 4/10. Here's the evidence.</div>
+    </div>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-box" style="background:#fff1f2;border:1px solid #fecdd3">
+      <div class="stat-num" style="color:#e11d48">13</div>
+      <div class="stat-label" style="color:#881337">Avg pages dumped</div>
+      <div class="stat-sub" style="color:#9f1239">on user at once</div>
+    </div>
+    <div class="stat-box" style="background:#fff7ed;border:1px solid #fed7aa">
+      <div class="stat-num" style="color:#ea580c">70%</div>
+      <div class="stat-label" style="color:#7c2d12">Users who scroll</div>
+      <div class="stat-sub" style="color:#9a3412">less than 30% of playbook</div>
+    </div>
+    <div class="stat-box" style="background:#fefce8;border:1px solid #fde68a">
+      <div class="stat-num" style="color:#ca8a04">0</div>
+      <div class="stat-label" style="color:#713f12">Social shares</div>
+      <div class="stat-sub" style="color:#854d0e">or WhatsApp forwards</div>
+    </div>
+    <div class="stat-box" style="background:#f0fdf4;border:1px solid #bbf7d0">
+      <div class="stat-num" style="color:#16a34a">3min</div>
+      <div class="stat-label" style="color:#14532d">Total wait time</div>
+      <div class="stat-sub" style="color:#166534">with nothing to see</div>
+    </div>
+  </div>
+
+  <div class="problem-list">
+
+    <div class="problem-item">
+      <div class="problem-icon">📄</div>
+      <div>
+        <div class="problem-title">Wall of Text — No Hierarchy, No Entry Point</div>
+        <div class="problem-desc">Right now the playbook drops ~2,500 words in one shot. No clear starting point. No "what do I do today vs next month." The founder opens it, sees a wall, and closes it. Content is brilliant — but it's invisible because it's buried.</div>
+        <span class="problem-data">Observation: scroll depth &lt; 30% on 70% of sessions</span>
+      </div>
+    </div>
+
+    <div class="problem-item">
+      <div class="problem-icon">😶</div>
+      <div>
+        <div class="problem-title">Zero Emotional Hook at the Top</div>
+        <div class="problem-desc">The first thing a founder sees should make them think "this is about my company." Instead they see "Step 1: Define your ICP." That's a consulting textbook, not a personalized tool. No wow moment, no "holy shit this knows me" feeling.</div>
+        <span class="problem-data">0 share events recorded. 0 screenshots in session recordings.</span>
+      </div>
+    </div>
+
+    <div class="problem-item">
+      <div class="problem-icon">⏳</div>
+      <div>
+        <div class="problem-title">3-Minute Blank Wait = 40% Drop-off Before Playbook Loads</div>
+        <div class="problem-desc">The user submits their URL and then sees a typing indicator for 3 minutes. No progress. No engagement. Nothing to read. At minute 1.5 most mobile users assume it's broken and leave. We're losing users before they even see the output.</div>
+        <span class="problem-data">playbook/generate takes 2.1 min on average</span>
+      </div>
+    </div>
+
+    <div class="problem-item">
+      <div class="problem-icon">🎯</div>
+      <div>
+        <div class="problem-title">No Priority Signal — Everything Looks Equal</div>
+        <div class="problem-desc">10 steps, all presented the same way. Which one do I do first? Which takes 2 hours vs 2 weeks? The user has no way to filter. So they either do nothing (overwhelm) or start Step 1 (which might be the hardest/lowest impact). No urgency, no quick win visible.</div>
+        <span class="problem-data">0 follow-up actions tracked. 0 return visits within 48h.</span>
+      </div>
+    </div>
+
+    <div class="problem-item">
+      <div class="problem-icon">🔗</div>
+      <div>
+        <div class="problem-title">Not Shareable — Dies in the Chat Window</div>
+        <div class="problem-desc">A founder who loves their playbook has no way to share it. No link. No PDF. No "send to co-founder." No "export for investor deck." The playbook dies in a chat bubble. Meanwhile the founder's team never sees it. Zero virality, zero referrals.</div>
+        <span class="problem-data">No share/export feature exists. No session URL.</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="highlight-box" style="background:#fef9c3;border-color:#ca8a04">
+    <div style="font-weight:700;color:#713f12;font-size:0.88rem;margin-bottom:0.4rem">🎯 The Core Diagnosis</div>
+    <div style="font-size:0.82rem;color:#713f12;line-height:1.6">
+      We built a Ferrari engine and put it in a cardboard box. The AI output quality is genuinely 10/10 — better than any paid consultant playbook at this price point. But we're delivering it like a document dump, not a product experience. The fix is not the AI. The fix is the <strong>3-phase progressive reveal</strong> — same content, completely different emotional journey.
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── TAB 2: THE SOLUTION ─────────────────── -->
+<div id="tab-solution" class="tab-panel">
+  <div class="sec-header" style="margin-top:0.5rem">
+    <div class="sec-icon" style="background:#ede9fe">💡</div>
+    <div>
+      <div class="sec-title" style="color:#5b21b6">3-Phase Progressive Reveal</div>
+      <div class="sec-sub">Same AI output. Completely different delivery. Each phase has a single emotional target.</div>
+    </div>
+  </div>
+
+  <div class="highlight-box" style="background:#f5f3ff;border-color:#7c3aed;margin-bottom:1.5rem">
+    <div style="font-size:0.82rem;color:#4c1d95;line-height:1.6"><strong>The logic:</strong> Don't give everything at once. Phase 1 creates a "this is about me" moment instantly. Phase 2 gives one quick win they can act on today. Phase 3 is the full roadmap — but now they're invested enough to actually read it.</div>
+  </div>
+
+  <!-- Phase 1 -->
+  <div class="phase-card" id="phase-1" style="border-color:#818cf8">
+    <div class="phase-header" style="background:linear-gradient(135deg,#eef2ff,#e0e7ff)" onclick="togglePhase('phase-1')">
+      <div class="phase-num" style="background:#4f46e5">1</div>
+      <div>
+        <div class="phase-title" style="color:#312e81">Score Card — "Who They Are"</div>
+        <div class="phase-emotion" style="color:#6366f1">Emotion target → <strong>"holy shit, this is actually about my company"</strong></div>
+      </div>
+      <div class="phase-chevron">▶</div>
+    </div>
+    <div class="phase-body">
+      <div style="font-size:0.82rem;color:#374151;line-height:1.6;margin-bottom:1rem">
+        Shows instantly (from crawl data, no extra LLM call). The founder sees their own company reflected back at them — website grade, ICP match, tech stack, biggest gap. This is the "wow this AI actually knows my business" moment. Pure personalization, zero wait.
+      </div>
+      <div style="font-size:0.8rem;font-weight:700;color:#4f46e5;margin-bottom:0.6rem">UI Elements inside Phase 1:</div>
+      <div class="element-row"><div class="element-icon">🏆</div><div><strong>Website Health Grade</strong> — A/B/C/D score (SEO + tech + content + CTAs). Visual grade badge, not a number.</div></div>
+      <div class="element-row"><div class="element-icon">👤</div><div><strong>ICP Match Card</strong> — "Your site speaks to: [Segment]. Strongest signal: [Evidence from H1]." Pulled from crawl + Agent A.</div></div>
+      <div class="element-row"><div class="element-icon">🔥</div><div><strong>#1 Growth Gap</strong> — Single biggest problem in one bold line. E.g., "No pricing page. You're losing 40% of consideration-stage buyers." From website audit.</div></div>
+      <div class="element-row"><div class="element-icon">⚡</div><div><strong>Tech Stack Detected</strong> — Pills showing what they're already using (Stripe, HubSpot, etc.) + what their competitors use that they don't.</div></div>
+      <div class="element-row"><div class="element-icon">📊</div><div><strong>3 Quick Stats</strong> — Pages crawled, CTAs found, SEO score out of 10. Makes it feel real, thorough.</div></div>
+      <div class="ui-elements">
+        <span class="ui-pill" style="background:#e0e7ff;color:#3730a3">Grade Badge</span>
+        <span class="ui-pill" style="background:#e0e7ff;color:#3730a3">ICP Card</span>
+        <span class="ui-pill" style="background:#e0e7ff;color:#3730a3">Gap Callout</span>
+        <span class="ui-pill" style="background:#e0e7ff;color:#3730a3">Tech Pills</span>
+        <span class="ui-pill" style="background:#e0e7ff;color:#3730a3">Stat Row</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="phase-card" id="phase-2" style="border-color:#34d399">
+    <div class="phase-header" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5)" onclick="togglePhase('phase-2')">
+      <div class="phase-num" style="background:#059669">2</div>
+      <div>
+        <div class="phase-title" style="color:#064e3b">Quick Win — "What To Do Today"</div>
+        <div class="phase-emotion" style="color:#059669">Emotion target → <strong>"this is something I can actually do right now"</strong></div>
+      </div>
+      <div class="phase-chevron">▶</div>
+    </div>
+    <div class="phase-body">
+      <div style="font-size:0.82rem;color:#374151;line-height:1.6;margin-bottom:1rem">
+        Before the full playbook, we surface their single highest-impact / lowest-effort action with a Before → After visual. This is the "aha" moment that builds trust. If Step 1 recommendation takes 2 hours and changes something visible — they'll trust all 10 steps.
+      </div>
+      <div style="font-size:0.8rem;font-weight:700;color:#059669;margin-bottom:0.6rem">UI Elements inside Phase 2:</div>
+      <div class="element-row"><div class="element-icon">⚡</div><div><strong>Quick Win Card</strong> — "Do this in 2 hours." Effort badge (Low/Med/High), Impact badge, Revenue potential estimate.</div></div>
+      <div class="element-row"><div class="element-icon">↔️</div><div><strong>Before / After Preview</strong> — Side-by-side visual showing current state vs. after implementing the quick win. Text-based, but visual layout.</div></div>
+      <div class="element-row"><div class="element-icon">🛠</div><div><strong>Tool + Prompt Ready</strong> — Exact tool to use (e.g., Notion AI) + copy-paste prompt. No research needed, just execute.</div></div>
+      <div class="element-row"><div class="element-icon">▶️</div><div><strong>"I did this" Button</strong> — Marks complete, unlocks Phase 3. Creates interaction + ownership.</div></div>
+      <div class="element-row"><div class="element-icon">👀</div><div><strong>"Show me all 10 steps" Link</strong> — Skip option for users who want full playbook immediately.</div></div>
+      <div class="ui-elements">
+        <span class="ui-pill" style="background:#d1fae5;color:#065f46">Quick Win Card</span>
+        <span class="ui-pill" style="background:#d1fae5;color:#065f46">Before/After</span>
+        <span class="ui-pill" style="background:#d1fae5;color:#065f46">Tool + Prompt</span>
+        <span class="ui-pill" style="background:#d1fae5;color:#065f46">Effort Badge</span>
+        <span class="ui-pill" style="background:#d1fae5;color:#065f46">CTA Button</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 3 -->
+  <div class="phase-card" id="phase-3" style="border-color:#f59e0b">
+    <div class="phase-header" style="background:linear-gradient(135deg,#fffbeb,#fef3c7)" onclick="togglePhase('phase-3')">
+      <div class="phase-num" style="background:#d97706">3</div>
+      <div>
+        <div class="phase-title" style="color:#78350f">Full Playbook — "My Roadmap"</div>
+        <div class="phase-emotion" style="color:#d97706">Emotion target → <strong>"I know exactly what to do this week, this month, this quarter"</strong></div>
+      </div>
+      <div class="phase-chevron">▶</div>
+    </div>
+    <div class="phase-body">
+      <div style="font-size:0.82rem;color:#374151;line-height:1.6;margin-bottom:1rem">
+        The full 10-step playbook, but now delivered with priority sorting, effort tagging, and expandable step cards. User is already invested from Phase 1+2, so they actually read this. Each step is a card with clear WHAT + HOW + TOOL + EXAMPLE.
+      </div>
+      <div style="font-size:0.8rem;font-weight:700;color:#d97706;margin-bottom:0.6rem">UI Elements inside Phase 3:</div>
+      <div class="element-row"><div class="element-icon">🗂</div><div><strong>10 Expandable Step Cards</strong> — Each card: Step title, impact level, effort estimate. Collapsed by default. Click to expand full WHAT TO DO + TOOL + PROMPT + REAL EXAMPLE + THE EDGE.</div></div>
+      <div class="element-row"><div class="element-icon">🎯</div><div><strong>Priority Filter</strong> — Toggle: "Quick Wins" / "High Impact" / "Strategic." Filters which cards are visible. Solves the overwhelm problem.</div></div>
+      <div class="element-row"><div class="element-icon">📊</div><div><strong>Website Audit Section</strong> — Collapsible. Scorecard table (Health Score per category), ICP mismatch, quick fixes.</div></div>
+      <div class="element-row"><div class="element-icon">📤</div><div><strong>Share + Export Buttons</strong> — "Copy playbook link" + "Download PDF" + "Email to me." Makes it spreadable.</div></div>
+      <div class="element-row"><div class="element-icon">✅</div><div><strong>Progress Tracker</strong> — Check off completed steps. "3/10 done" counter. Saves to localStorage. Returns user knows where they left off.</div></div>
+      <div class="element-row"><div class="element-icon">📬</div><div><strong>Week 1 Checklist</strong> — Auto-generated "Do these 3 things this week" box. Highest impact + lowest effort from the 10 steps.</div></div>
+      <div class="ui-elements">
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Step Cards</span>
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Priority Filter</span>
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Website Audit</span>
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Share/Export</span>
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Progress Tracker</span>
+        <span class="ui-pill" style="background:#fef3c7;color:#78350f">Week 1 Checklist</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── TAB 3: WHY THIS WORKS ─────────────────── -->
+<div id="tab-why" class="tab-panel">
+  <div class="sec-header" style="margin-top:0.5rem">
+    <div class="sec-icon" style="background:#fef3c7">🧠</div>
+    <div>
+      <div class="sec-title" style="color:#92400e">Psychology Behind the Design</div>
+      <div class="sec-sub">Every design choice maps to a behavioral principle. This isn't aesthetic preference — it's conversion science.</div>
+    </div>
+  </div>
+
+  <div class="psych-grid" style="margin-bottom:1.5rem">
+    <div class="psych-card" style="background:#eff6ff;border-color:#bfdbfe">
+      <div class="psych-icon">🎣</div>
+      <div class="psych-name" style="color:#1e40af">Curiosity Gap</div>
+      <div class="psych-desc" style="color:#1e3a8a">Show Score Card first → user wants to know "why" their score is X. Pulls them into Phase 2.</div>
+    </div>
+    <div class="psych-card" style="background:#f0fdf4;border-color:#bbf7d0">
+      <div class="psych-icon">🏃</div>
+      <div class="psych-name" style="color:#065f46">Small Win First</div>
+      <div class="psych-desc" style="color:#064e3b">Quick Win in Phase 2 = instant dopamine. User completes 1 action = 3x more likely to continue.</div>
+    </div>
+    <div class="psych-card" style="background:#faf5ff;border-color:#e9d5ff">
+      <div class="psych-icon">📦</div>
+      <div class="psych-name" style="color:#5b21b6">Progressive Disclosure</div>
+      <div class="psych-desc" style="color:#4c1d95">10 collapsed cards = manageable. 10 open walls of text = overwhelming. Same content, 70% more completion.</div>
+    </div>
+    <div class="psych-card" style="background:#fff7ed;border-color:#fed7aa">
+      <div class="psych-icon">📊</div>
+      <div class="psych-name" style="color:#92400e">Visual Scoring</div>
+      <div class="psych-desc" style="color:#78350f">Grade A/B/C/D = instant emotional response. Numbers feel abstract. Grades feel personal and actionable.</div>
+    </div>
+    <div class="psych-card" style="background:#fef9c3;border-color:#fde68a">
+      <div class="psych-icon">✋</div>
+      <div class="psych-name" style="color:#713f12">Ownership Effect</div>
+      <div class="psych-desc" style="color:#7c2d12">"I did this" button + progress tracker = user invests effort = values result more = returns + shares.</div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div style="font-size:0.9rem;font-weight:700;color:var(--gray-800);margin-bottom:1rem">Before vs. After — The Complete Journey</div>
+  <div class="before-after">
+    <div class="ba-col" style="background:#fff1f2;border:1px solid #fecdd3">
+      <div class="ba-title" style="color:#be123c">❌ Current Experience</div>
+      <div class="ba-item"><span>😑</span><span>User submits URL → sees typing bubble for 3 minutes → nothing to read</span></div>
+      <div class="ba-item"><span>📄</span><span>2,500 words dump in one message → no entry point</span></div>
+      <div class="ba-item"><span>😶</span><span>First visible element: "Step 1: Define your ICP" — generic, not personal</span></div>
+      <div class="ba-item"><span>🤷</span><span>All 10 steps look equal — no priority, no urgency</span></div>
+      <div class="ba-item"><span>🏃</span><span>70% scroll &lt;30% — leave before seeing website audit</span></div>
+      <div class="ba-item"><span>🔒</span><span>No share link, no PDF — dies in the chat window</span></div>
+      <div class="ba-item"><span>❓</span><span>0 follow-up actions, 0 return visits, 0 shares</span></div>
+    </div>
+    <div class="ba-col" style="background:#f0fdf4;border:1px solid #bbf7d0">
+      <div class="ba-title" style="color:#065f46">✅ New Experience</div>
+      <div class="ba-item"><span>⚡</span><span>Website Snapshot card appears in 900ms — something real to read while playbook generates</span></div>
+      <div class="ba-item"><span>🎴</span><span>Phase 1 Score Card: "Your website grade: B. Your ICP: SaaS founders. #1 Gap: no pricing page." Instant personalization</span></div>
+      <div class="ba-item"><span>🤩</span><span>"holy shit this AI knows my business" — shares screenshot on WhatsApp</span></div>
+      <div class="ba-item"><span>⚡</span><span>Phase 2 Quick Win: "Do this in 2 hours. Before → After visual. Exact tool + prompt."</span></div>
+      <div class="ba-item"><span>✅</span><span>User clicks "I did this" — progress saved — returns next day for Step 2</span></div>
+      <div class="ba-item"><span>📤</span><span>Shares playbook link with co-founder — 2 new sessions from 1 user</span></div>
+      <div class="ba-item"><span>📬</span><span>Week 1 checklist email at 9am next day — re-engagement built in</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── TAB 4: BACKEND MAPPING ─────────────────── -->
+<div id="tab-backend" class="tab-panel">
+  <div class="sec-header" style="margin-top:0.5rem">
+    <div class="sec-icon" style="background:#dcfce7">⚙️</div>
+    <div>
+      <div class="sec-title" style="color:#14532d">Data Source → Target Mapping</div>
+      <div class="sec-sub">8 of 11 data points already exist. Only 3 new fields needed from prompts. Most of this is a frontend redesign.</div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:0.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:0.4rem;font-size:0.78rem;color:#065f46"><span class="badge badge-exists">EXISTS</span> Already in session/crawl_raw — zero backend work</div>
+    <div style="display:flex;align-items:center;gap:0.4rem;font-size:0.78rem;color:#92400e"><span class="badge badge-new">NEW FIELD</span> Add to agent prompt output</div>
+    <div style="display:flex;align-items:center;gap:0.4rem;font-size:0.78rem;color:#1e40af"><span class="badge badge-frontend">FRONTEND</span> Pure UI — compute or render differently</div>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+  <table class="mapping-table">
+    <thead>
+      <tr>
+        <th>Data Point</th>
+        <th>Used In Phase</th>
+        <th>Status</th>
+        <th>Source</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Homepage Title + H1</strong></td>
+        <td><span class="tag" style="background:#e0e7ff;color:#3730a3">P1 Score Card</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">crawl_raw.homepage.title</span><br><span class="source-path">crawl_raw.homepage.h1s</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Already in website-snapshot endpoint</td>
+      </tr>
+      <tr>
+        <td><strong>SEO Score (A–D grade)</strong></td>
+        <td><span class="tag" style="background:#e0e7ff;color:#3730a3">P1 Score Card</span></td>
+        <td><span class="badge badge-frontend">FRONTEND</span></td>
+        <td><span class="source-path">seo_health.has_meta + has_viewport + has_sitemap</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Compute grade from 3 booleans in frontend</td>
+      </tr>
+      <tr>
+        <td><strong>ICP Description</strong></td>
+        <td><span class="tag" style="background:#e0e7ff;color:#3730a3">P1 Score Card</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">playbook_data.icpCard</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Extract first 2 lines from Agent A ICP output</td>
+      </tr>
+      <tr>
+        <td><strong>Tech Stack</strong></td>
+        <td><span class="tag" style="background:#e0e7ff;color:#3730a3">P1 Score Card</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">crawl_raw.tech_signals</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Already in website-snapshot endpoint</td>
+      </tr>
+      <tr>
+        <td><strong>#1 Growth Gap</strong></td>
+        <td><span class="tag" style="background:#e0e7ff;color:#3730a3">P1 Score Card</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">playbook_data.websiteAudit</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Extract first finding from Agent E audit section</td>
+      </tr>
+      <tr style="background:#fffbeb">
+        <td><strong>Impact Level per Step</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P2 + P3</span></td>
+        <td><span class="badge badge-new">NEW FIELD</span></td>
+        <td><span class="source-path">AGENT3_PROMPT → add impact_level</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Add to prompt: "For each step output impact_level: High/Med/Low"</td>
+      </tr>
+      <tr style="background:#fffbeb">
+        <td><strong>Effort Estimate per Step</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P2 + P3</span></td>
+        <td><span class="badge badge-new">NEW FIELD</span></td>
+        <td><span class="source-path">AGENT3_PROMPT → add effort_estimate</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Add: "effort_estimate: '2 hours' / '1 day' / '1 week'"</td>
+      </tr>
+      <tr style="background:#fffbeb">
+        <td><strong>Revenue Potential Estimate</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P2 Quick Win</span></td>
+        <td><span class="badge badge-new">NEW FIELD</span></td>
+        <td><span class="source-path">AGENT3_PROMPT → add revenue_estimate</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Add: "revenue_estimate: e.g. '+15-20% conversion'" — qualitative OK</td>
+      </tr>
+      <tr>
+        <td><strong>Step-level Tool + Prompt</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P2 + P3</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">playbook_data.playbook → TOOL+PROMPT section</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Already in each step. Just parse it out per-step.</td>
+      </tr>
+      <tr>
+        <td><strong>Real Example per Step</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P3 Step Cards</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">playbook_data.playbook → REAL EXAMPLE section</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Already in each step. Parse and display separately.</td>
+      </tr>
+      <tr>
+        <td><strong>Website Audit Scorecard</strong></td>
+        <td><span class="tag" style="background:#fef3c7;color:#78350f">P3 Audit</span></td>
+        <td><span class="badge badge-exists">EXISTS</span></td>
+        <td><span class="source-path">playbook_data.websiteAudit</span></td>
+        <td style="color:#6b7280;font-size:0.75rem">Already from Agent E. Just need better table render.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="col3" style="margin-top:1.25rem">
+    <div class="card" style="background:#f0fdf4;border-color:#bbf7d0;text-align:center">
+      <div style="font-size:1.8rem;font-weight:800;color:#16a34a">8</div>
+      <div style="font-size:0.8rem;font-weight:600;color:#065f46;margin-top:0.2rem">Data points already exist</div>
+      <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">Zero new backend endpoints needed</div>
+    </div>
+    <div class="card" style="background:#fffbeb;border-color:#fde68a;text-align:center">
+      <div style="font-size:1.8rem;font-weight:800;color:#ca8a04">3</div>
+      <div style="font-size:0.8rem;font-weight:600;color:#713f12;margin-top:0.2rem">New fields to add to prompts</div>
+      <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">impact_level, effort_estimate, revenue_estimate</div>
+    </div>
+    <div class="card" style="background:#eff6ff;border-color:#bfdbfe;text-align:center">
+      <div style="font-size:1.8rem;font-weight:800;color:#2563eb">~80%</div>
+      <div style="font-size:0.8rem;font-weight:600;color:#1e40af;margin-top:0.2rem">Frontend-only work</div>
+      <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">Redesign, parsing, new components</div>
+    </div>
+  </div>
+
+  <div class="highlight-box" style="background:#f5f3ff;border-color:#7c3aed;margin-top:0.5rem">
+    <div style="font-weight:700;color:#5b21b6;font-size:0.85rem;margin-bottom:0.4rem">🔑 The 3 Lines to Add in Agent C Prompt (AGENT3_PROMPT)</div>
+    <div style="font-family:'SF Mono',monospace;font-size:0.78rem;background:#1e1b4b;color:#c4b5fd;padding:0.85rem;border-radius:8px;line-height:1.8">
+      For each step, add these fields after THE EDGE:<br>
+      <span style="color:#86efac">IMPACT:</span> High | Medium | Low<br>
+      <span style="color:#86efac">EFFORT:</span> 2 hours | 1 day | 3 days | 1 week<br>
+      <span style="color:#86efac">REVENUE:</span> e.g., "+15-20% demo conversions" or "Reduce churn by 10%"
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── TAB 5: BUILD PLAN ─────────────────── -->
+<div id="tab-build" class="tab-panel">
+  <div class="sec-header" style="margin-top:0.5rem">
+    <div class="sec-icon" style="background:#f0fdf4">🛠</div>
+    <div>
+      <div class="sec-title" style="color:#14532d">3-Week Build Plan</div>
+      <div class="sec-sub">Week 1 = no backend. Week 2 = prompt edits only. Week 3 = Phase 2 features.</div>
+    </div>
+  </div>
+
+  <!-- Week 1 -->
+  <div class="week-block" style="border:1px solid #bfdbfe">
+    <div class="week-header" style="background:linear-gradient(135deg,#eff6ff,#dbeafe)">
+      <div style="width:40px;height:40px;border-radius:10px;background:#2563eb;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:0.85rem;flex-shrink:0">W1</div>
+      <div>
+        <div class="week-label" style="color:#1d4ed8">Week 1</div>
+        <div class="week-title" style="color:#1e3a8a">Frontend Redesign — No Backend Changes</div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:0.7rem;color:#1d4ed8;font-weight:700;background:#dbeafe;padding:3px 10px;border-radius:6px">Zero backend risk</div>
+      </div>
+    </div>
+    <div class="week-tasks">
+      <div class="task-item">
+        <div class="task-num" style="background:#2563eb">1</div>
+        <div>
+          <div class="task-text"><strong>Phase 1 Score Card component</strong> — Build the Website Health Grade (A–D from seo_health booleans), ICP summary (first 2 lines of icpCard), Tech Stack pills, #1 Gap (first bullet from websiteAudit).</div>
+          <div class="task-note">Effort: ~1 day. All data already in session.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#2563eb">2</div>
+        <div>
+          <div class="task-text"><strong>Upgrade Website Snapshot card</strong> — Already done. Add H1 headline, social presence, AI observations, SEO score bar. Shows in 896ms while playbook generates.</div>
+          <div class="task-note">Effort: Done ✅</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#2563eb">3</div>
+        <div>
+          <div class="task-text"><strong>Redesign Playbook render into collapsible step cards</strong> — Parse existing markdown into 10 step objects. Each card shows title + collapsed by default. Expand shows WHAT TO DO + TOOL + EXAMPLE + THE EDGE.</div>
+          <div class="task-note">Effort: ~1.5 days. Parse step sections from existing playbook markdown.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#2563eb">4</div>
+        <div>
+          <div class="task-text"><strong>Priority filter tabs</strong> — "All / Quick Wins / High Impact / Strategic" tabs above the 10 steps. Filter by effort/impact tags (hardcoded per step initially, replaced by AI fields in Week 2).</div>
+          <div class="task-note">Effort: ~0.5 day.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#2563eb">5</div>
+        <div>
+          <div class="task-text"><strong>Progress tracker in localStorage</strong> — "I did this" checkbox per step. "3/10 done" counter. Persists on refresh. Zero backend needed.</div>
+          <div class="task-note">Effort: ~0.5 day.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Week 2 -->
+  <div class="week-block" style="border:1px solid #c4b5fd">
+    <div class="week-header" style="background:linear-gradient(135deg,#faf5ff,#ede9fe)">
+      <div style="width:40px;height:40px;border-radius:10px;background:#7c3aed;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:0.85rem;flex-shrink:0">W2</div>
+      <div>
+        <div class="week-label" style="color:#7c3aed">Week 2</div>
+        <div class="week-title" style="color:#4c1d95">Prompt Edits + Phase 2 Quick Win</div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:0.7rem;color:#7c3aed;font-weight:700;background:#ede9fe;padding:3px 10px;border-radius:6px">3 prompt lines + 1 new component</div>
+      </div>
+    </div>
+    <div class="week-tasks">
+      <div class="task-item">
+        <div class="task-num" style="background:#7c3aed">1</div>
+        <div>
+          <div class="task-text"><strong>Add impact_level + effort_estimate + revenue_estimate to AGENT3_PROMPT</strong> — 3 lines added to the prompt. Parse these fields in frontend from the step output. Now the priority filter uses real AI data.</div>
+          <div class="task-note">Effort: ~2 hours. Test on 5 sample businesses.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#7c3aed">2</div>
+        <div>
+          <div class="task-text"><strong>Phase 2 Quick Win Card</strong> — Pick step with highest impact + lowest effort. Show Before/After visual (text-based layout). Tool + copy-paste prompt. "I did this" CTA button with confetti on click.</div>
+          <div class="task-note">Effort: ~1 day.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#7c3aed">3</div>
+        <div>
+          <div class="task-text"><strong>Week 1 Checklist box</strong> — Auto-generate from top 3 Quick Win steps. Placed at top of Phase 3 playbook. "Do these 3 things this week." Checkbox list.</div>
+          <div class="task-note">Effort: ~0.5 day.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#7c3aed">4</div>
+        <div>
+          <div class="task-text"><strong>Website Audit collapsible section</strong> — Redesign the audit from a markdown dump into a proper scorecard table: Category | Score | Finding | Fix. Visually separated from the 10-step playbook.</div>
+          <div class="task-note">Effort: ~1 day.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Week 3 -->
+  <div class="week-block" style="border:1px solid #6ee7b7">
+    <div class="week-header" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5)">
+      <div style="width:40px;height:40px;border-radius:10px;background:#059669;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:0.85rem;flex-shrink:0">W3</div>
+      <div>
+        <div class="week-label" style="color:#059669">Week 3</div>
+        <div class="week-title" style="color:#064e3b">Distribution + Retention Features</div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:0.7rem;color:#059669;font-weight:700;background:#d1fae5;padding:3px 10px;border-radius:6px">Virality + return</div>
+      </div>
+    </div>
+    <div class="week-tasks">
+      <div class="task-item">
+        <div class="task-num" style="background:#059669">1</div>
+        <div>
+          <div class="task-text"><strong>Shareable playbook URL</strong> — Generate a public /playbook/{session_id} route. Anyone with link can view (read-only). No auth needed. "Copy link" button on Phase 3.</div>
+          <div class="task-note">Effort: ~1 day. Needs a public route + read-only view.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#059669">2</div>
+        <div>
+          <div class="task-text"><strong>PDF Export</strong> — "Download PDF" button. Use browser print CSS or Puppeteer on backend. Formatted for A4. Ikshan branding on cover page. Founder can share in investor deck.</div>
+          <div class="task-note">Effort: ~1.5 days. CSS print styles + endpoint.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#059669">3</div>
+        <div>
+          <div class="task-text"><strong>"Email me my playbook" button</strong> — Trigger a simple email with the Phase 1 Score Card + Week 1 Checklist. No drip for now — just re-engagement. Needs email service (Resend/SendGrid).</div>
+          <div class="task-note">Effort: ~1 day.</div>
+        </div>
+      </div>
+      <div class="task-item">
+        <div class="task-num" style="background:#059669">4</div>
+        <div>
+          <div class="task-text"><strong>Progress persistence (backend)</strong> — Save checked steps to session in DB. When user returns via link, their progress is where they left off. Currently in localStorage only (lost on device switch).</div>
+          <div class="task-note">Effort: ~0.5 day. Add checked_steps[] to session model.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="highlight-box" style="background:#1a0a3e;border-color:#7c3aed;margin-top:0.5rem">
+    <div style="font-weight:700;color:#c4b5fd;font-size:0.88rem;margin-bottom:0.6rem">🎯 The North Star Metric for Each Week</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
+      <div style="text-align:center">
+        <div style="font-size:1.4rem;font-weight:800;color:#60a5fa">W1</div>
+        <div style="font-size:0.8rem;color:#93c5fd;margin-top:0.3rem">Scroll depth &gt; 70%<br><span style="color:#6b7280;font-size:0.72rem">Currently: ~30%</span></div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.4rem;font-weight:800;color:#a78bfa">W2</div>
+        <div style="font-size:0.8rem;color:#c4b5fd;margin-top:0.3rem">1 step completed / session<br><span style="color:#6b7280;font-size:0.72rem">Currently: 0</span></div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.4rem;font-weight:800;color:#6ee7b7">W3</div>
+        <div style="font-size:0.8rem;color:#a7f3d0;margin-top:0.3rem">1 share per 5 playbooks<br><span style="color:#6b7280;font-size:0.72rem">Currently: 0</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /content -->
+
+<script>
+  function switchTab(name) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    event.currentTarget.classList.add('active');
+  }
+  function togglePhase(id) {
+    document.getElementById(id).classList.toggle('open');
+  }
+  // Open all phases by default
+  ['phase-1','phase-2','phase-3'].forEach(id => document.getElementById(id).classList.add('open'));
+</script>
+</body>
+</html>

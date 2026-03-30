@@ -23,7 +23,7 @@ export const coreApi = {
     apiPost<{ success: boolean; token?: string; user?: Record<string, unknown> }>(API_ROUTES.auth.google, payload),
   sendOtp: (payload: { session_id: string; phone_number: string }) =>
     apiPost<{ success: boolean; otp_session_id?: string; message?: string }>(API_ROUTES.auth.sendOtp, payload),
-  verifyOtp: (payload: { session_id: string; otp_session_id: string; otp_code: string }) =>
+  verifyOtp: (payload: { session_id: string; otp_session_id: string; otp_code: string; google_email?: string; google_name?: string }) =>
     apiPost<{ success: boolean; verified: boolean; token?: string; user?: Record<string, unknown>; message?: string }>(
       API_ROUTES.auth.verifyOtp,
       payload,
