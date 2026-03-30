@@ -195,10 +195,9 @@ def _html_to_text(html: str, max_chars: int = 2000) -> str:
 # ── Websites to crawl ─────────────────────────────────────────
 WEBSITES = [
     "https://www.curiousjr.com/",
-    "https://www.zomato.com/",
-    "https://www.edgistify.com/",
     "https://endee.io/",
-    "https://www.chimple.org/",
+    "https://www.edgistify.com/",
+    "https://www.pw.live/",
 ]
 
 CASE_DIR = Path(__file__).resolve().parent

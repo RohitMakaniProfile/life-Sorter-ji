@@ -1,0 +1,19 @@
+{
+  "url": "https://www.zomato.com/",
+  "homepage": {
+    "title": "",
+    "meta_desc": "",
+    "h1s": [],
+    "nav_links": []
+  },
+  "tech_signals": [],
+  "cta_patterns": [],
+  "social_links": [],
+  "schema_markup": [],
+  "seo_basics": {
+    "has_meta": false,
+    "has_viewport": false,
+    "has_sitemap": false
+  },
+  "page_text": ""
+}

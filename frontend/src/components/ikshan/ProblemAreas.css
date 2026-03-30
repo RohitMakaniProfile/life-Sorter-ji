@@ -1,0 +1,234 @@
+.ik-problems {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: calc(100vh - 60px);
+  padding: 40px 24px 120px;
+  position: relative;
+}
+
+/* ─── Header ────────────────────────────────────────────── */
+
+.ik-problems__header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.ik-problems__title {
+  font-size: clamp(28px, 3.5vw, 42px);
+  font-weight: 800;
+  color: #fff;
+  margin: 0;
+}
+
+.ik-problems__subtext {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 8px;
+}
+
+/* ─── Acknowledgment ────────────────────────────────────── */
+
+.ik-problems__ack {
+  font-size: 14px;
+  color: rgba(168, 130, 255, 0.8);
+  margin-bottom: 16px;
+  text-align: center;
+  max-width: 600px;
+}
+
+/* ─── Question Card ─────────────────────────────────────── */
+
+.ik-problems__card {
+  width: 100%;
+  max-width: 680px;
+  padding: 28px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  transition: opacity 0.3s;
+}
+
+.ik-problems__card--loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.ik-problems__insight {
+  font-size: 12px;
+  color: rgba(168, 130, 255, 0.7);
+  font-weight: 500;
+  margin: 0 0 8px;
+  letter-spacing: 0.3px;
+}
+
+.ik-problems__question {
+  font-size: 17px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  margin: 0 0 20px;
+  line-height: 1.45;
+}
+
+/* ─── Options ───────────────────────────────────────────── */
+
+.ik-problems__options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ik-problems__option {
+  text-align: left;
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ik-problems__option:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.ik-problems__option--selected {
+  background: rgba(168, 130, 255, 0.15);
+  border-color: rgba(168, 130, 255, 0.5);
+  color: #fff;
+}
+
+/* ─── Custom input ──────────────────────────────────────── */
+
+.ik-problems__custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ik-problems__custom-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  outline: none;
+}
+
+.ik-problems__custom-input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.ik-problems__custom-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ik-problems__custom-send:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.ik-problems__custom-send:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ─── Loading ───────────────────────────────────────────── */
+
+.ik-problems__loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.ik-problems__spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(168, 130, 255, 0.3);
+  border-top-color: #a882ff;
+  border-radius: 50%;
+  animation: ik-spin 0.7s linear infinite;
+}
+
+@keyframes ik-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Chat bar ──────────────────────────────────────────── */
+
+.ik-problems__chatbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 48px);
+  max-width: 680px;
+  padding: 10px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(30, 30, 30, 0.95);
+  backdrop-filter: blur(12px);
+  z-index: 30;
+}
+
+.ik-problems__chat-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  outline: none;
+}
+
+.ik-problems__chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.ik-problems__chat-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #a882ff, #7c4dff);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.ik-problems__chat-send:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.ik-problems__chat-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

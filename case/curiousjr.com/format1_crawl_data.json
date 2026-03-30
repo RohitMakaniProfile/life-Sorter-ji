@@ -2,22 +2,69 @@
   "url": "https://www.curiousjr.com/",
   "homepage": {
     "title": "CuriousJr | Online Tuition Classes for 1st to 10th Kids",
-    "meta_desc": "Live online tuition for kids! Expert-led classes in Math, Science, English &amp;amp; more. Fun, interactive learning for classes 1st- 10th. Start today!",
-    "h1s": [],
-    "nav_links": []
+    "meta_desc": "Live online tuition for kids! Expert-led classes in Math, Science, English & more. Fun, interactive learning for classes 1st-10th. Start today!",
+    "h1s": [
+      "Learning made fun for Curious Minds!"
+    ],
+    "headings": [
+      "Let your child start learning how to excel in School Curriculum, Maths & English!",
+      "Pick a learning program & get started!",
+      "Choose from our Best Courses for your kid",
+      "After-School",
+      "Learn English",
+      "Maths Learning",
+      "Hand's-On Learning and More!",
+      "Explore Our Latest Features",
+      "Interactive Live Classes",
+      "The Two-Teacher Model",
+      "Tailored Practice Solutions",
+      "Homework Assistance",
+      "Daily Performance Tracking",
+      "From Alakh Sir's Desk",
+      "CuriousJr's Way of Teaching",
+      "On a Mission to Revolutionise Traditional Education Practices",
+      "Stories of our Brightest Stars!",
+      "Students and Parents love Curious Jr",
+      "Join Students From All Over India!",
+      "Meet our Faculty"
+    ],
+    "nav_links": [
+      "https://www.curiousjr.com/in/school-curriculum/class-3",
+      "https://www.curiousjr.com/in/school-curriculum/class-4",
+      "https://www.curiousjr.com/in/school-curriculum/class-5",
+      "https://www.curiousjr.com/in/school-curriculum/class-6",
+      "https://www.curiousjr.com/in/school-curriculum/class-7",
+      "https://www.curiousjr.com/in/school-curriculum/class-8",
+      "https://www.curiousjr.com/in/mental-maths/class-1",
+      "https://www.curiousjr.com/in/mental-maths/class-2",
+      "https://www.curiousjr.com/in/mental-maths/class-3",
+      "https://www.curiousjr.com/in/mental-maths/class-4",
+      "https://www.curiousjr.com/in/mental-maths/class-5",
+      "https://www.curiousjr.com/contact-us",
+      "https://www.curiousjr.com/blogs",
+      "https://www.curiousjr.com/login",
+      "https://www.pw.live/about-us"
+    ]
   },
+  "business_name": "CuriousJr",
   "tech_signals": [
-    "Google Analytics",
     "React/Next.js",
+    "Google Analytics",
     "Google Tag Manager"
   ],
-  "cta_patterns": [],
+  "cta_patterns": [
+    "View Learning Programs",
+    "Book a Demo",
+    "Get Started",
+    "Know More",
+    "Login or register",
+    "Download on Play Store"
+  ],
   "social_links": [],
   "schema_markup": [],
   "seo_basics": {
     "has_meta": true,
     "has_viewport": true,
     "has_sitemap": false
-  },
-  "page_text": "CuriousJr | Online Tuition Classes for 1st to 10th Kids Initializing..."
+  }
 }

@@ -2,15 +2,49 @@
   "url": "https://endee.io/",
   "homepage": {
     "title": "Endee - High-Performance Vector Database for Production AI Systems",
-    "meta_desc": "Enterprise-grade vector database engineered for speed, scale, and efficiency. 10,000+ QPS, 99%+ recall, sub-5ms latency. Built for production AI workloads.",
-    "h1s": [],
-    "nav_links": []
+    "meta_desc": "Enterprise-grade vector database engineered for speed, scale, and efficiency. Built for production AI workloads.",
+    "h1s": [
+      "Vector Infrastructure Built for Efficiency"
+    ],
+    "headings": [
+      "Our Customers & Partners",
+      "Vector Graph Engine",
+      "Built for Developers",
+      "The Intelligence Layer Behind Modern AI",
+      "Scaling AI Shouldn't Cost the Earth",
+      "Ready to Scale Your AI Infrastructure?"
+    ],
+    "nav_links": [
+      "https://endee.io/benchmarks",
+      "https://endee.io/pricing",
+      "https://endee.io/about",
+      "https://endee.io/careers",
+      "https://endee.io/contact",
+      "https://endee.io/community",
+      "https://endee.io/blog",
+      "https://endee.io/privacy-policy",
+      "https://endee.io/terms-of-use",
+      "https://endee.io/data-processing-agreement",
+      "https://docs.endee.io/",
+      "https://github.com/endee-io/endee"
+    ]
   },
+  "business_name": "Endee",
   "tech_signals": [
     "React/Next.js"
   ],
-  "cta_patterns": [],
-  "social_links": [],
+  "cta_patterns": [
+    "Explore Open Source",
+    "Get in Touch",
+    "View Our Benchmarks",
+    "Request a Demo",
+    "Get Started Free"
+  ],
+  "social_links": [
+    "https://www.linkedin.com/company/endee-io/",
+    "https://x.com/EndeeVectorDB",
+    "https://discord.gg/5HFGqDZQE3"
+  ],
   "schema_markup": [
     "SoftwareApplication"
   ],
@@ -18,6 +52,5 @@
     "has_meta": true,
     "has_viewport": true,
     "has_sitemap": false
-  },
-  "page_text": "Endee - High-Performance Vector Database for Production AI Systems"
+  }
 }

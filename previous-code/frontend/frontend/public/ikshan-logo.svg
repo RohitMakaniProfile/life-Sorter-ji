@@ -1,0 +1,47 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Outer glow -->
+  <defs>
+    <linearGradient id="goldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fbbf24;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f59e0b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="purpleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8b5cf6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- AI Brain/Circuit design -->
+  <!-- Central core -->
+  <circle cx="24" cy="24" r="8" fill="url(#goldGradient)" filter="url(#glow)"/>
+
+  <!-- Neural connections -->
+  <path d="M 24 16 L 24 8 M 24 32 L 24 40 M 16 24 L 8 24 M 32 24 L 40 24"
+        stroke="url(#goldGradient)" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+
+  <!-- Diagonal connections -->
+  <path d="M 18 18 L 12 12 M 30 30 L 36 36 M 30 18 L 36 12 M 18 30 L 12 36"
+        stroke="url(#purpleGradient)" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- Node circles -->
+  <circle cx="24" cy="8" r="3" fill="url(#goldGradient)"/>
+  <circle cx="24" cy="40" r="3" fill="url(#goldGradient)"/>
+  <circle cx="8" cy="24" r="3" fill="url(#goldGradient)"/>
+  <circle cx="40" cy="24" r="3" fill="url(#goldGradient)"/>
+
+  <circle cx="12" cy="12" r="2.5" fill="url(#purpleGradient)"/>
+  <circle cx="36" cy="36" r="2.5" fill="url(#purpleGradient)"/>
+  <circle cx="36" cy="12" r="2.5" fill="url(#purpleGradient)"/>
+  <circle cx="12" cy="36" r="2.5" fill="url(#purpleGradient)"/>
+
+  <!-- Inner circuit details -->
+  <circle cx="24" cy="24" r="4" fill="none" stroke="#ffffff" stroke-width="1" opacity="0.6"/>
+  <circle cx="24" cy="24" r="2" fill="#ffffff" opacity="0.8"/>
+</svg>

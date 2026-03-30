@@ -1,0 +1,121 @@
+.ik-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 60px);
+  padding: 40px 24px;
+  gap: 20px;
+}
+
+/* ─── Hero ──────────────────────────────────────────────── */
+
+.ik-outcome__hero {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.ik-outcome__title {
+  font-size: clamp(28px, 4vw, 48px);
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.ik-outcome__accent {
+  background: linear-gradient(135deg, #a882ff, #7c4dff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.ik-outcome__subtitle {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 12px;
+}
+
+/* ─── Cards ─────────────────────────────────────────────── */
+
+.ik-outcome__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 480px;
+}
+
+.ik-outcome__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 30px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.ik-outcome__card:hover,
+.ik-outcome__card--hovered {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.ik-outcome__card-label {
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.ik-outcome__card-sub {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 2px;
+}
+
+/* ─── Hover Tooltip (Q2 preview) ────────────────────────── */
+
+.ik-outcome__tooltip {
+  position: absolute;
+  left: calc(100% + 14px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-width: 200px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  animation: ik-tooltip-in 0.15s ease;
+}
+
+@keyframes ik-tooltip-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-6px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+.ik-outcome__tooltip-item {
+  padding: 6px 4px;
+  font-size: 13px;
+  color: #333;
+  border-bottom: 1px solid #eee;
+}
+
+.ik-outcome__tooltip-item:last-child {
+  border-bottom: none;
+}
+
+/* ─── Quote ─────────────────────────────────────────────── */
+
+.ik-outcome__quote {
+  margin-top: 40px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+}

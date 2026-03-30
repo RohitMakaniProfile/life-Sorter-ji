@@ -1,49 +1,70 @@
-# 🏠 Landing Page Analysis: Endee - High-Performance Vector Database for Production AI Systems
+# Landing Page Analysis: Endee - High-Performance Vector Database for Production AI Systems
 
 **URL:** https://endee.io/
-**Crawled at:** 2026-03-09 05:54 UTC
-**Format:** Landing Page Only
+**Crawled at:** 2026-03-25 11:50 UTC
+**Format:** Landing Page Only (Stage 1 crawl_service)
 
 ---
 
-## 📋 Meta Information
+## Meta Information
 
 | Field | Value |
 |---|---|
 | **Title** | Endee - High-Performance Vector Database for Production AI Systems |
-| **Meta Description** | Enterprise-grade vector database engineered for speed, scale, and efficiency. 10,000+ QPS, 99%+ recall, sub-5ms latency. Built for production AI workloads. |
-| **H1 Headlines** | — |
+| **Meta Description** | Enterprise-grade vector database engineered for speed, scale, and efficiency. Built for production AI workloads. |
+| **H1 Headlines** | Vector Infrastructure Built for Efficiency |
+| **Business Name** | Endee |
 
-## 🔍 SEO Basics
+## SEO Basics
 
 | Check | Status |
 |---|---|
-| Meta tags present | ✅ Yes |
-| Mobile viewport | ✅ Yes |
-| Sitemap detected | ❌ No |
+| Meta tags present | Yes |
+| Mobile viewport | Yes |
+| Sitemap detected | No |
 
-## 🛠️ Tech Stack Detected (1 signals)
+## Tech Stack (1 signal)
 
 - React/Next.js
 
-## 🎯 CTA Patterns (0 found)
+## CTA Patterns (5 found)
 
-- No CTAs detected
+- Explore Open Source
+- Get in Touch
+- View Our Benchmarks
+- Request a Demo
+- Get Started Free
 
-## 🌐 Social Links (0 found)
+## Social Links (3 found)
 
-- No social links found
+- https://www.linkedin.com/company/endee-io/
+- https://x.com/EndeeVectorDB
+- https://discord.gg/5HFGqDZQE3
 
-## 📊 Schema Markup (1 types)
+## Schema Markup (1 type)
 
-- `SoftwareApplication`
+- SoftwareApplication
 
-## 🧭 Navigation Links (0 found)
+## Navigation Links (12 found)
 
-- No internal navigation links found
+- https://endee.io/benchmarks
+- https://endee.io/pricing
+- https://endee.io/about
+- https://endee.io/careers
+- https://endee.io/contact
+- https://endee.io/community
+- https://endee.io/blog
+- https://endee.io/privacy-policy
+- https://endee.io/terms-of-use
+- https://endee.io/data-processing-agreement
+- https://docs.endee.io/
+- https://github.com/endee-io/endee
 
-## 📝 Landing Page Content (Extracted Text)
+## Homepage Headings (6)
 
-```
-Endee - High-Performance Vector Database for Production AI Systems
-```
+- Our Customers & Partners
+- Vector Graph Engine
+- Built for Developers
+- The Intelligence Layer Behind Modern AI
+- Scaling AI Shouldn't Cost the Earth
+- Ready to Scale Your AI Infrastructure?

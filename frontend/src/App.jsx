@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import IkshanApp from './components/ikshan/IkshanApp';
 import ChatBotNew from './components/ChatBotNew';
 import ChatBotNewMobile from './components/ChatBotNewMobile';
 import AboutPage from './components/AboutPage';
@@ -10,7 +11,7 @@ import './App.css';
 
 function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  const [currentPage, setCurrentPage] = useState('chat');
+  const [currentPage, setCurrentPage] = useState('ikshan');
   const [sandboxToken, setSandboxToken] = useState(null);
 
   useEffect(() => {
@@ -36,34 +37,38 @@ function App() {
 
   const handleSandboxLogout = () => {
     setSandboxToken(null);
-    setCurrentPage('chat');
+    setCurrentPage('ikshan');
   };
 
   const renderPage = () => {
     switch (currentPage) {
+      case 'ikshan':
+        return <IkshanApp />;
       case 'about':
-        return <AboutPage onBack={() => setCurrentPage('chat')} />;
+        return <AboutPage onBack={() => setCurrentPage('ikshan')} />;
       case 'developer-login':
         return (
           <SandboxLogin
             onLogin={handleSandboxLogin}
-            onBack={() => setCurrentPage('chat')}
+            onBack={() => setCurrentPage('ikshan')}
           />
         );
       case 'sandbox':
         return (
           <SandboxPanel
             token={sandboxToken}
-            onBack={() => setCurrentPage('chat')}
+            onBack={() => setCurrentPage('ikshan')}
             onLogout={handleSandboxLogout}
           />
         );
-      default:
+      case 'chat-legacy':
         return isMobile ? (
           <ChatBotNewMobile onNavigate={handleNavigate} />
         ) : (
           <ChatBotNew onNavigate={handleNavigate} />
         );
+      default:
+        return <IkshanApp />;
     }
   };
 
