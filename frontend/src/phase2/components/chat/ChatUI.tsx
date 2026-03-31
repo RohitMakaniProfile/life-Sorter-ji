@@ -541,7 +541,8 @@ export default function ChatUI({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const [contextMessageId, setContextMessageId] = useState<string | undefined>(undefined);
-  const canUseContextPanel = getPhase2IsSuperAdmin();
+  const isProd = Boolean((import.meta as any)?.env?.PROD);
+  const canUseContextPanel = !isProd || getPhase2IsSuperAdmin();
 
   const resolvedTitle = title ?? 'Chat';
   const resolvedPlaceholder = placeholder ?? 'Ask me anything…';
