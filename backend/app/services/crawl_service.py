@@ -69,7 +69,7 @@ INTERNAL_PAGE_PATTERNS = [
 ]
 
 # Max pages to crawl beyond homepage
-MAX_INTERNAL_PAGES = 15
+MAX_INTERNAL_PAGES = 8
 
 # HTTP client config
 CRAWL_TIMEOUT = 15.0
@@ -120,6 +120,34 @@ def _extract_meta(html: str) -> dict:
     h1s = re.findall(r"<h1[^>]*>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL)
     h1s = [re.sub(r"<[^>]+>", "", h).strip() for h in h1s]
 
+    # Extract og:site_name (most reliable company name signal)
+    og_site_name = ""
+    og_match = re.search(
+        r'<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\'>]+)["\']',
+        html, re.IGNORECASE,
+    )
+    if not og_match:
+        og_match = re.search(
+            r'<meta[^>]+content=["\']([^"\'>]+)["\'][^>]+property=["\']og:site_name["\']',
+            html, re.IGNORECASE,
+        )
+    if og_match:
+        og_site_name = og_match.group(1).strip()
+
+    # Extract application-name meta
+    app_name = ""
+    app_match = re.search(
+        r'<meta[^>]+name=["\']application-name["\'][^>]+content=["\']([^"\'>]+)["\']',
+        html, re.IGNORECASE,
+    )
+    if not app_match:
+        app_match = re.search(
+            r'<meta[^>]+content=["\']([^"\'>]+)["\'][^>]+name=["\']application-name["\']',
+            html, re.IGNORECASE,
+        )
+    if app_match:
+        app_name = app_match.group(1).strip()
+
     has_viewport = bool(re.search(r'<meta[^>]+name=["\']viewport["\']', html, re.IGNORECASE))
     has_meta = bool(title and meta_desc)
 
@@ -129,6 +157,8 @@ def _extract_meta(html: str) -> dict:
         "h1s": h1s[:5],
         "has_viewport": has_viewport,
         "has_meta": has_meta,
+        "og_site_name": og_site_name[:100],
+        "application_name": app_name[:100],
     }
 
 
@@ -295,6 +325,59 @@ def _extract_headings(html: str) -> list[str]:
     return [h for h in headings if h and len(h) > 3][:15]
 
 
+def _extract_business_name(title: str, h1s: list[str], url: str,
+                           og_site_name: str = "", application_name: str = "") -> str:
+    """
+    Extract a clean business/company name from page metadata.
+
+    Priority:
+      1. og:site_name (most reliable — explicitly set by site owner)
+      2. application-name meta tag
+      3. First H1 (if short and looks like a name, ≤ 8 words)
+      4. Title before common separators (|, -, –, —, :)
+      5. Domain name (capitalized, subdomain-aware)
+    """
+    # 1. og:site_name — gold standard for company name
+    if og_site_name:
+        return og_site_name
+
+    # 2. application-name meta
+    if application_name:
+        return application_name
+
+    # 3. Try H1 first — often the cleanest company name
+    if h1s:
+        h1 = h1s[0].strip()
+        if h1 and len(h1.split()) <= 8 and len(h1) <= 80:
+            return h1
+
+    # 4. Try title — split on common separators and take shortest meaningful part
+    if title:
+        parts = re.split(r'\s*[|–—]\s*|\s+-\s+|\s*:\s+', title)
+        generic = {"home", "homepage", "welcome", "official site", "official website", "main"}
+        candidates = [p.strip() for p in parts if p.strip().lower() not in generic and len(p.strip()) > 1]
+        if candidates:
+            best = min(candidates, key=len)
+            if len(best) <= 60:
+                return best
+
+    # 5. Fallback: extract from domain (subdomain-aware)
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.hostname or ""
+        domain = re.sub(r"^www\.", "", domain)
+        parts = domain.split(".")
+        # For subdomains like app.company.com, use 'company' not 'app'
+        if len(parts) >= 3:
+            name_part = parts[-2]  # e.g. app.company.com → company
+        else:
+            name_part = parts[0]
+        return name_part.capitalize()
+    except Exception:
+        return ""
+
+
 async def _fetch_page(client: httpx.AsyncClient, url: str) -> Optional[str]:
     """Fetch a single page, returns HTML or None on failure."""
     try:
@@ -373,6 +456,11 @@ async def crawl_website(website_url: str, session_id: str = None) -> dict:
             "headings": homepage_headings,
             "nav_links": nav_links[:15],
         }
+        result["business_name"] = _extract_business_name(
+            meta["title"], meta["h1s"], website_url,
+            og_site_name=meta.get("og_site_name", ""),
+            application_name=meta.get("application_name", ""),
+        )
         result["tech_signals"] = tech_signals
         result["cta_patterns"] = cta_patterns
         result["social_links"] = social_links

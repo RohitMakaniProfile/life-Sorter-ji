@@ -313,6 +313,14 @@ def add_llm_call_log(
         error=error,
     )
     session.llm_call_log.append(entry)
+
+    # Auto-accumulate token counts
+    if token_usage:
+        p_tok = token_usage.get("prompt_tokens", 0)
+        c_tok = token_usage.get("completion_tokens", 0)
+        session.total_llm_tokens["prompt_tokens"] += p_tok
+        session.total_llm_tokens["completion_tokens"] += c_tok
+
     return update_session(session)
 
 
@@ -502,3 +510,23 @@ def set_playbook_results(
     session.playbook_latencies = latencies
     session.stage = SessionStage.PLAYBOOK
     return update_session(session)
+
+
+def log_phase_timing(session_id: str, phase: str, duration_ms: int) -> None:
+    """Record a phase's duration (e.g. crawl_ms, rca_total_ms, playbook_total_ms)."""
+    session = get_session(session_id)
+    if not session:
+        return
+    session.phase_timings[phase] = duration_ms
+    update_session(session)
+
+
+def add_cost_and_tokens(session_id: str, cost_inr: float, prompt_tokens: int, completion_tokens: int) -> None:
+    """Accumulate cost and token counts for the session."""
+    session = get_session(session_id)
+    if not session:
+        return
+    session.estimated_cost_inr += cost_inr
+    session.total_llm_tokens["prompt_tokens"] += prompt_tokens
+    session.total_llm_tokens["completion_tokens"] += completion_tokens
+    update_session(session)

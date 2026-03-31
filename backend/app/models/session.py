@@ -141,6 +141,11 @@ class SessionContext(BaseModel):
     playbook_complete: bool = False                       # True when full pipeline is done
     playbook_latencies: dict[str, Any] = {}               # Per-agent timing data
 
+    # ── Per-Session Timing & Cost Tracking ─────────────────────
+    phase_timings: dict[str, Any] = {}                    # {crawl_ms, rca_total_ms, playbook_total_ms, ...}
+    estimated_cost_inr: float = 0.0                       # Running total estimated cost in INR
+    total_llm_tokens: dict[str, int] = Field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0})
+
     # LLM call log for context pool transparency
     llm_call_log: list[LLMCallLog] = []
 

@@ -1,0 +1,24 @@
+{
+  "url": "https://endee.io/",
+  "homepage": {
+    "title": "Endee - High-Performance Vector Database for Production AI Systems",
+    "meta_desc": "Enterprise-grade vector database engineered for speed, scale, and efficiency. 10,000+ QPS, 99%+ recall, sub-5ms latency. Built for production AI workloads.",
+    "h1s": [],
+    "nav_links": []
+  },
+  "pages_crawled": [],
+  "tech_signals": [
+    "React/Next.js"
+  ],
+  "cta_patterns": [],
+  "social_links": [],
+  "schema_markup": [
+    "SoftwareApplication"
+  ],
+  "seo_basics": {
+    "has_meta": true,
+    "has_viewport": true,
+    "has_sitemap": false
+  },
+  "homepage_text": "Endee - High-Performance Vector Database for Production AI Systems"
+}
