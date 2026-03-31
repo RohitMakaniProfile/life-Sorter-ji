@@ -312,7 +312,7 @@ export default function AgentsPage() {
                     </p>
                   ) : skills.length === 0 ? (
                     <p className="text-xs text-slate-400">
-                      No skills loaded yet. Ensure backend is running and `/api/chat/skills` is reachable.
+                      No skills loaded yet. Ensure backend is running and `/api/v1/ai-chat/skills` is reachable.
                     </p>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

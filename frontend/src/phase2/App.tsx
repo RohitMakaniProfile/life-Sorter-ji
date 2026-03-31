@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import ChatPage from './pages/ChatPage';
 import ConversationsPage from './pages/ConversationsPage';
@@ -8,6 +8,7 @@ import AgentContextsPage from './pages/AgentContextsPage';
 import InternalGoogleLoginPage from './pages/InternalGoogleLoginPage';
 import { getConversations } from './api/client';
 import { UiAgentsProvider } from './context/UiAgentsContext';
+import { phase2Path } from './constants';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -44,22 +45,20 @@ function DefaultChat() {
 function App({ basename = '' }: { basename?: string }) {
   return (
     <UiAgentsProvider>
-      <BrowserRouter basename={basename || undefined}>
-        <Routes>
-          <Route path="login-internal" element={<InternalGoogleLoginPage mode="internal" />} />
-          <Route path="login-admin" element={<InternalGoogleLoginPage mode="admin" />} />
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Navigate to="/chat" replace />} />
-            <Route path="chat" element={<DefaultChat />} />
-            <Route path="chat/:conversationId" element={<ChatWithId />} />
-            <Route path="new" element={<ChatPage key="new" />} />
-            <Route path="conversations" element={<ConversationsPage />} />
-            <Route path="agents" element={<AgentsPage />} />
-            <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
+      <Routes>
+        <Route path="login-internal" element={<InternalGoogleLoginPage mode="internal" />} />
+        <Route path="login-admin" element={<InternalGoogleLoginPage mode="admin" />} />
+        <Route path="/" element={<Layout />}>
+          <Route index element={<Navigate to={phase2Path('chat')} replace />} />
+          <Route path="chat" element={<DefaultChat />} />
+          <Route path="chat/:conversationId" element={<ChatWithId />} />
+          <Route path="new" element={<ChatPage key="new" />} />
+          <Route path="conversations" element={<ConversationsPage />} />
+          <Route path="agents" element={<AgentsPage />} />
+          <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to={phase2Path('chat')} replace />} />
+      </Routes>
     </UiAgentsProvider>
   );
 }

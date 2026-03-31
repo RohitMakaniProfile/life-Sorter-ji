@@ -27,6 +27,7 @@ export interface RichMessage {
 export interface ChatUIProps {
   messages: RichMessage[];
   onSend: (msg: string) => Promise<void>;
+  onOptionSelect?: (option: string) => Promise<void>;
   onApprovePlan?: (planId: string, planMarkdown: string) => Promise<void>;
   loading?: boolean;
   disabled?: boolean;

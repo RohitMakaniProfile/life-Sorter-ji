@@ -1,46 +1,62 @@
 import { API_ROUTES } from '../../api/routes';
-import { apiGet, apiPost } from '../../api/http';
+import { apiPost } from '../../api/http';
+import { coreApi } from '../../api/services/core';
 
 // ─── Session ──────────────────────────────────────────────────────
 export const createSession = () => apiPost(API_ROUTES.agent.session, {});
 
 // ─── Q1 → Q2 → Q3 ───────────────────────────────────────────────
 export const submitOutcome = (sessionId, outcome, outcomeLabel) =>
-  apiPost(API_ROUTES.agent.outcome, { session_id: sessionId, outcome, outcome_label: outcomeLabel });
+  coreApi.patchAgentSession(sessionId, { outcome, outcome_label: outcomeLabel });
 
 export const submitDomain = (sessionId, domain) =>
-  apiPost(API_ROUTES.agent.domain, { session_id: sessionId, domain });
+  coreApi.patchAgentSession(sessionId, { domain });
 
 export const submitTask = (sessionId, task) =>
-  apiPost(API_ROUTES.agent.task, { session_id: sessionId, task });
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'task_setup', task })
+    .then((res) => res?.result ?? res);
 
 // ─── URL & Crawl ─────────────────────────────────────────────────
 export const submitUrl = (sessionId, businessUrl, gbpUrl = '') =>
-  apiPost(API_ROUTES.agent.url, { session_id: sessionId, business_url: businessUrl, gbp_url: gbpUrl });
+  coreApi.patchAgentSession(sessionId, { business_url: businessUrl, gbp_url: gbpUrl }).then((snapshot) => ({
+    ...snapshot,
+    crawl_started: snapshot?.crawl_status === 'in_progress',
+  }));
 
 export const skipUrl = (sessionId) =>
-  apiPost(API_ROUTES.agent.skipUrl, { session_id: sessionId });
+  coreApi.patchAgentSession(sessionId, { skip_url: true });
 
 export const getCrawlStatus = (sessionId) =>
-  apiGet(API_ROUTES.agent.crawlStatus(sessionId));
+  coreApi.getAgentSessionView(sessionId, 'status');
 
 // ─── Scale Questions ──────────────────────────────────────────────
 export const getScaleQuestions = (sessionId) =>
-  apiGet(API_ROUTES.agent.scaleQuestions(sessionId));
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'scale_questions' })
+    .then((res) => res?.result ?? res);
 
 export const submitScaleAnswers = (sessionId, answers) =>
-  apiPost(API_ROUTES.agent.scaleAnswers, { session_id: sessionId, answers });
+  coreApi.patchAgentSession(sessionId, { scale_answers: answers });
 
 // ─── Diagnostic / RCA ─────────────────────────────────────────────
 export const startDiagnostic = (sessionId) =>
-  apiPost(API_ROUTES.agent.startDiagnostic, { session_id: sessionId });
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'start_diagnostic' })
+    .then((res) => res?.result ?? res);
 
 export const submitAnswer = (sessionId, questionIndex, answer) =>
-  apiPost(API_ROUTES.agent.answer, { session_id: sessionId, question_index: questionIndex, answer });
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'submit_answer', question_index: questionIndex, answer })
+    .then((res) => res?.result ?? res);
 
 // ─── Precision & Recommendations ──────────────────────────────────
 export const getPrecisionQuestions = (sessionId) =>
-  apiPost(API_ROUTES.agent.precisionQuestions, { session_id: sessionId });
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'precision_questions' })
+    .then((res) => res?.result ?? res);
 
 export const getRecommendations = (sessionId) =>
-  apiPost(API_ROUTES.agent.recommend, { session_id: sessionId });
+  coreApi
+    .advanceAgentSession(sessionId, { action: 'recommend' })
+    .then((res) => res?.result ?? res);

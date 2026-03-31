@@ -131,6 +131,13 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     setConversationStageOutputs({});
     setConversationId(propConvId);
 
+    // `/phase2/new` should always be a blank slate. Do NOT auto-load the latest
+    // conversation when no conversationId is provided.
+    if (!propConvId) {
+      setInitLoading(false);
+      return;
+    }
+
     getMessages(propConvId)
       .then((data) => {
         console.log('[bg] getMessages resolved', {

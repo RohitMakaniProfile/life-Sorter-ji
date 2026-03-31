@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useUiAgents } from '../context/UiAgentsContext';
+import { phase2Path } from '../constants';
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -43,19 +44,19 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="px-3 pt-3 space-y-1">
-          <NavLink to="/chat" className={navLinkClass} end>
+          <NavLink to={phase2Path('chat')} className={navLinkClass} end>
             <span className="text-lg">💬</span>
             <span className="text-sm">Chat</span>
           </NavLink>
-          <NavLink to="/conversations" className={navLinkClass}>
+          <NavLink to={phase2Path('conversations')} className={navLinkClass}>
             <span className="text-lg">🕒</span>
             <span className="text-sm">History</span>
           </NavLink>
-          <NavLink to="/agents" className={navLinkClass}>
+          <NavLink to={phase2Path('agents')} className={navLinkClass}>
             <span className="text-lg">🧩</span>
             <span className="text-sm">Agents</span>
           </NavLink>
-          <NavLink to="/new" className={navLinkClass}>
+          <NavLink to={phase2Path('new')} className={navLinkClass}>
             <span className="text-lg">✨</span>
             <span className="text-sm">New Chat</span>
           </NavLink>

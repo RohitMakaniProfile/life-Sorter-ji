@@ -534,7 +534,7 @@ export interface UiAgent {
 }
 
 export async function fetchSkills(): Promise<SkillMeta[]> {
-  const res = await apiFetch('/api/chat/skills');
+  const res = await apiFetch('/api/v1/ai-chat/skills');
   if (!res.ok) throw new Error('Failed to load skills');
   return res.json() as Promise<SkillMeta[]>;
 }

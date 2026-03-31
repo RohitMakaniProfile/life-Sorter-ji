@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
 import type { AgentId, UiAgent } from '../api/client';
 import { getAgent, getPhase2IsAdmin, getPhase2IsSuperAdmin, getPhase2UserId, updateAgent } from '../api/client';
+import { phase2Path } from '../constants';
 
 type TabId = 'selector' | 'final';
 type EditorMode = 'edit' | 'preview';
@@ -150,7 +151,7 @@ export default function AgentContextsPage() {
         </div>
         <div className="flex items-center gap-2">
           <NavLink
-            to="/agents"
+            to={phase2Path('agents')}
             className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
           >
             Back
