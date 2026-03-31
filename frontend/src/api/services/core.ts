@@ -23,7 +23,7 @@ export const coreApi = {
     apiPost<{ success: boolean; token?: string; user?: Record<string, unknown> }>(API_ROUTES.auth.google, payload),
   sendOtp: (payload: { session_id: string; phone_number: string }) =>
     apiPost<{ success: boolean; otp_session_id?: string; message?: string }>(API_ROUTES.auth.sendOtp, payload),
-  verifyOtp: (payload: { session_id: string; otp_session_id: string; otp_code: string }) =>
+  verifyOtp: (payload: { session_id: string; otp_session_id: string; otp_code: string; google_email?: string; google_name?: string }) =>
     apiPost<{ success: boolean; verified: boolean; token?: string; user?: Record<string, unknown>; message?: string }>(
       API_ROUTES.auth.verifyOtp,
       payload,
@@ -50,6 +50,15 @@ export const coreApi = {
   playbookStart: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.start, payload),
   playbookGenerate: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.generate, payload),
   playbookGapAnswers: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.gapAnswers, payload),
+  playbookGenerateStream: (
+    payload: Record<string, unknown>,
+    callbacks: {
+      onToken?: (token: string) => void;
+      onStage?: (stage: string, label: string) => void;
+      onDone?: (result: { playbook: string; website_audit: string; context_brief: string; icp_card: string }) => void;
+      onError?: (message: string) => void;
+    },
+  ) => playbookGenerateStream(payload, callbacks),
 
   createPaymentOrder: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.payments.createOrder, payload),
   getPaymentStatus: (orderId: string) => apiGet<any>(API_ROUTES.payments.status(orderId)),
@@ -377,5 +386,59 @@ export async function deleteAgent(id: AgentId): Promise<void> {
 export async function deleteConversation(id: string): Promise<void> {
   const response = await apiFetch(API_ROUTES.aiChat.conversationById(id), { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractApiError(response));
+}
+
+export async function playbookGenerateStream(
+  payload: Record<string, unknown>,
+  callbacks: {
+    onToken?: (token: string) => void;
+    onStage?: (stage: string, label: string) => void;
+    onDone?: (result: { playbook: string; website_audit: string; context_brief: string; icp_card: string }) => void;
+    onError?: (message: string) => void;
+  },
+): Promise<void> {
+  const response = await apiRequest(`${getApiBase()}${API_ROUTES.playbook.generateStream}`, {
+    method: 'POST',
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) throw new Error(await extractApiError(response));
+  if (!response.body) throw new Error('No response body');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6)) as {
+          type: string;
+          token?: string;
+          stage?: string;
+          label?: string;
+          playbook?: string;
+          website_audit?: string;
+          context_brief?: string;
+          icp_card?: string;
+          message?: string;
+        };
+        if (data.type === 'token' && data.token) callbacks.onToken?.(data.token);
+        if (data.type === 'stage') callbacks.onStage?.(data.stage ?? '', data.label ?? data.stage ?? '');
+        if (data.type === 'done') callbacks.onDone?.({ playbook: data.playbook ?? '', website_audit: data.website_audit ?? '', context_brief: data.context_brief ?? '', icp_card: data.icp_card ?? '' });
+        if (data.type === 'error') callbacks.onError?.(data.message ?? 'Unknown error');
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
 }
 

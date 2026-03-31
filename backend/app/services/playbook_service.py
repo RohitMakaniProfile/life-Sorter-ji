@@ -262,7 +262,7 @@ YOU DO: Recommend the single best REAL tool per step — use the PROVIDED TOOL L
 THE "D2C MARGIN RECOVERY" PLAYBOOK
 
 
-1. The "RTO-Impact" Scoring Sheet
+1. [PRIORITY: HIGH] The "RTO-Impact" Scoring Sheet
 
 
 WHAT TO DO
@@ -323,7 +323,7 @@ THE "[OUTCOME IN CAPS]" PLAYBOOK
 ---
 
 
-[N]. The "[Memorable Step Name in Quotes]"
+[N]. [PRIORITY: HIGH/MEDIUM/LOW] The "[Memorable Step Name in Quotes]"
 
 
 WHAT TO DO
@@ -376,9 +376,15 @@ If you know the tool has a free tier, mention it in one word: "(Free)" or "(Paid
 The Prompt in TOOL + AI SHORTCUT must be specific to THIS company — not reusable for others.
 
 
+━━━ PRIORITY RULES (assign per step based on actual impact) ━━━
+HIGH   = Foundational or highest-ROI steps — broken/missing = everything else fails. Quick wins that pay off this week. Steps the user must do before anything else works.
+MEDIUM = Important but not immediately blocking. Builds on HIGH steps. Meaningful impact in 2–4 weeks.
+LOW    = Optimization and scaling steps. Only valuable once HIGH + MEDIUM are working. Advanced moves.
+Assign priority based on THIS business's actual situation — not step position. Step 7 can be HIGH if it's the single biggest lever. Always write [PRIORITY: HIGH], [PRIORITY: MEDIUM], or [PRIORITY: LOW] — never omit it.
+
 ━━━ RULES YOU NEVER BREAK ━━━
 — Playbook name = the outcome, never the company name
-— Every step = named technique in quotes
+— Every step = named technique in quotes + PRIORITY label
 — WHAT TO DO always present. TOOL, REAL EXAMPLE, THE EDGE earn their place.
 — Steps must be a chain — each builds on the last
 — Simple English. Founder reads on phone at 10pm. Understands immediately.
@@ -473,6 +479,11 @@ and identify the exact gaps needed before building their growth playbook.
 YOU DO NOT: Give advice. Recommend tools. Build playbooks. Build ICP profiles.
 YOU DO: Parse, enrich, structure, and flag gaps.
 
+⚠️ CRITICAL RULE — TASK LOCK: The TASK field in the input is the user's explicitly selected goal.
+It is NON-NEGOTIABLE. Website crawl data, GBP data, and business profile are SUPPORTING CONTEXT ONLY.
+They NEVER replace or override the TASK. If crawl data points to a different problem, note it as
+an "Inferred Gap" — do NOT shift the Primary Goal away from the stated TASK.
+
 
 ━━━ OUTPUT FORMAT ━━━
 
@@ -486,8 +497,8 @@ YOU DO: Parse, enrich, structure, and flag gaps.
 - Revenue Model: [subscription / transaction / project / commission / ad-supported]
 
 **GOAL CLASSIFICATION**
-- Primary Goal: [what they want to achieve — one specific sentence]
-- Task Priority Order: [list their tasks by urgency, most critical first]
+- Primary Goal: MUST match the TASK field exactly — e.g. if TASK = "Generate hyper-personalized cold outreach sequences", write that. Do not replace with a website-derived goal.
+- Task Priority Order: [list their tasks by urgency, most critical first — anchor to the stated TASK]
 - Why this order: [one sentence — given their stage and constraint]
 
 **BUYER SITUATION**
@@ -855,7 +866,11 @@ def _build_playbook_input(
     parts = [
         f"GOAL: {outcome_label}",
         f"DOMAIN: {domain}",
-        f"TASK: {task}",
+        (
+            f"TASK (PRIMARY FOCUS — THE ENTIRE PLAYBOOK MUST BE BUILT AROUND THIS SPECIFIC TASK): {task}\n"
+            f"⚠️ RULE: Every step, every tool, every example must directly serve '{task}'. "
+            f"Website/crawl data is background context only — it NEVER changes this task focus."
+        ),
     ]
 
     # Business profile — compact inline (6 fields, single line)
@@ -1058,13 +1073,21 @@ async def run_agent2_icp_analyst(
 async def run_agent3_playbook_architect(
     agent1_output: str,
     agent2_output: str,
+    task: str = "",
     gap_answers: str = "",
 ) -> dict[str, Any]:
     """
     Agent 3: Build the 10-step execution playbook.
     Input: Agent 1 output + Agent 2 output + gap answers.
     """
+    task_lock = (
+        f"⚠️ PLAYBOOK TASK (NON-NEGOTIABLE — every step must directly serve this specific task): {task}\n"
+        f"Every step title, action, tool, and example must be about '{task}'. "
+        f"If the context brief mentions other topics (GBP, website, SEO, etc.), ignore them — they are background only.\n\n"
+    ) if task else ""
+
     user_message = (
+        f"{task_lock}"
         "═══ BUSINESS CONTEXT BRIEF (Agent 1) ═══\n"
         f"{agent1_output}\n\n"
         "═══ ICP CARD (Agent 2) ═══\n"
@@ -1078,6 +1101,7 @@ async def run_agent3_playbook_architect(
     user_message += (
         "Build the 10-step playbook now. Follow the exact output format. "
         "Every step must be specific to THIS company — nothing generic. "
+        f"Every step must serve the TASK: '{task}'. "
         "You MUST include all 10 steps — do NOT stop early. Exactly 10 numbered steps."
     )
 
@@ -1343,10 +1367,78 @@ async def run_agent_e_standalone(
     }
 
 
+async def run_agent_c_stream(
+    agent_a_output: str,
+    gap_answers: str = "",
+    recommended_tools: str = "",
+    task: str = "",
+    on_token=None,
+) -> dict[str, Any]:
+    """
+    Streaming version of run_agent_c.
+    Calls on_token(token: str) for each token as it arrives.
+    Returns same dict shape as run_agent_c.
+    """
+    t0 = time.perf_counter()
+    settings = get_settings()
+
+    task_lock = (
+        f"⚠️ PLAYBOOK TASK (NON-NEGOTIABLE — every step must directly serve this specific task): {task}\n"
+        f"Every step title, action, tool, and example must be about '{task}'. "
+        f"If the context brief mentions other topics (GBP, website, SEO, etc.), ignore them — they are background only.\n\n"
+    ) if task else ""
+
+    agent_c_msg = (
+        f"{task_lock}"
+        "═══ CONTEXT BRIEF + ICP CARD (Agent A) ═══\n"
+        f"{agent_a_output}\n\n"
+    )
+    if gap_answers:
+        agent_c_msg += f"═══ GAP QUESTION ANSWERS ═══\n{gap_answers}\n\n"
+    if recommended_tools:
+        agent_c_msg += (
+            f"═══ PROVIDED TOOL LIST (already recommended to this user — use these in TOOL + AI SHORTCUT where relevant) ═══\n"
+            f"{recommended_tools}\n\n"
+        )
+    agent_c_msg += (
+        "Build the 10-step playbook now. Follow the exact output format. "
+        "Every step must be specific to THIS company — nothing generic. "
+        "For TOOL + AI SHORTCUT: use tools from the PROVIDED TOOL LIST above where they fit, "
+        "and your own knowledge for the rest — always name the real tool, never use placeholders. "
+        "You MUST include all 10 steps — do NOT stop early. Exactly 10 numbered steps."
+    )
+
+    result = await openrouter_service.chat_completion_stream(
+        model=settings.OPENROUTER_CLAUDE_MODEL,
+        messages=[
+            {"role": "system", "content": AGENT3_PROMPT},
+            {"role": "user", "content": agent_c_msg},
+        ],
+        temperature=0.7,
+        max_tokens=10000,
+        on_token=on_token,
+    )
+
+    total_ms = int((time.perf_counter() - t0) * 1000)
+
+    logger.info(
+        "Agent C stream (Playbook Architect) completed — Sonnet",
+        latency_ms=total_ms,
+    )
+
+    return {
+        "agent_c_playbook": result["message"],
+        "agent_c_latency_ms": total_ms,
+        "total_latency_ms": total_ms,
+        "usage": result.get("usage", {}),
+    }
+
+
 async def run_agent_c(
     agent_a_output: str,
     gap_answers: str = "",
     recommended_tools: str = "",
+    task: str = "",
 ) -> dict[str, Any]:
     """
     Run Agent C (Playbook) — GLM only (fast path).
@@ -1355,8 +1447,15 @@ async def run_agent_c(
     """
     t0 = time.perf_counter()
 
+    task_lock = (
+        f"⚠️ PLAYBOOK TASK (NON-NEGOTIABLE — every step must directly serve this specific task): {task}\n"
+        f"Every step title, action, tool, and example must be about '{task}'. "
+        f"If the context brief mentions other topics (GBP, website, SEO, etc.), ignore them — they are background only.\n\n"
+    ) if task else ""
+
     # Build the shared Agent C user message
     agent_c_msg = (
+        f"{task_lock}"
         "═══ CONTEXT BRIEF + ICP CARD (Agent A) ═══\n"
         f"{agent_a_output}\n\n"
     )
@@ -1463,6 +1562,7 @@ async def run_full_playbook_pipeline(
     agent3 = await run_agent3_playbook_architect(
         agent1_output=agent1["output"],
         agent2_output=agent2["output"],
+        task=task,
         gap_answers=gap_answers,
     )
     _accum_usage(agent3)

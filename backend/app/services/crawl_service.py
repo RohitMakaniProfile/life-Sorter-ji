@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import sys
 from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
@@ -36,6 +38,49 @@ SOCIAL_DOMAINS = {
     "linkedin.com", "tiktok.com", "youtube.com", "pinterest.com",
     "threads.net",
 }
+
+# File extensions to skip when crawling
+SKIP_EXTENSIONS = {
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
+    ".mp4", ".mp3", ".zip", ".tar", ".gz", ".exe", ".dmg",
+    ".css", ".woff", ".woff2", ".ttf", ".ico", ".xml", ".json",
+}
+
+# Tech stack detection patterns (HTML + network requests)
+TECH_PATTERNS = [
+    (r"wp-content|wordpress", "WordPress"),
+    (r"shopify\.com|cdn\.shopify", "Shopify"),
+    (r"squarespace\.com|sqsp\.net", "Squarespace"),
+    (r"wix\.com|wixstatic", "Wix"),
+    (r"webflow\.com|webflow\.io", "Webflow"),
+    (r"react|__next|_next/static", "React/Next.js"),
+    (r"vue\.js|vuejs|__vue__", "Vue.js"),
+    (r"angular|ng-version", "Angular"),
+    (r"gatsby", "Gatsby"),
+    (r"hubspot\.com|hs-scripts", "HubSpot"),
+    (r"mailchimp\.com", "Mailchimp"),
+    (r"intercom\.com|intercom-", "Intercom"),
+    (r"drift\.com|drift-frame", "Drift"),
+    (r"zendesk\.com|zdassets", "Zendesk"),
+    (r"google-analytics|gtag|ga\.js|UA-", "Google Analytics"),
+    (r"googletagmanager", "Google Tag Manager"),
+    (r"hotjar\.com", "Hotjar"),
+    (r"stripe\.com|stripe\.js", "Stripe"),
+    (r"cloudflare", "Cloudflare"),
+    (r"bootstrap|getbootstrap", "Bootstrap"),
+    (r"tailwindcss|tailwind", "Tailwind CSS"),
+    (r"calendly\.com", "Calendly"),
+    (r"facebook\.net|fbq|fb-pixel", "Facebook Pixel"),
+    (r"segment\.com|segment\.io|analytics\.js", "Segment"),
+    (r"amplitude\.com", "Amplitude"),
+    (r"mixpanel\.com", "Mixpanel"),
+    (r"crisp\.chat", "Crisp"),
+    (r"freshdesk|freshchat", "Freshdesk"),
+    (r"razorpay", "Razorpay"),
+    (r"paypal\.com", "PayPal"),
+    (r"supabase", "Supabase"),
+    (r"firebase", "Firebase"),
+]
 
 # Google Business Profile URL patterns
 GBP_DOMAINS = {
@@ -218,38 +263,35 @@ def _extract_schema_markup(html: str) -> list[str]:
     return schemas[:10]
 
 
-def _detect_tech_signals(html: str) -> list[str]:
-    """Detect technology stack signals from HTML source."""
-    signals = []
-    tech_patterns = [
-        (r"wp-content|wordpress", "WordPress"),
-        (r"shopify\.com|cdn\.shopify", "Shopify"),
-        (r"squarespace\.com|sqsp\.net", "Squarespace"),
-        (r"wix\.com|wixstatic", "Wix"),
-        (r"webflow\.com|webflow\.io", "Webflow"),
-        (r"react|__next|_next/static", "React/Next.js"),
-        (r"vue\.js|vuejs|__vue__", "Vue.js"),
-        (r"angular|ng-version", "Angular"),
-        (r"gatsby", "Gatsby"),
-        (r"hubspot\.com|hs-scripts", "HubSpot"),
-        (r"mailchimp\.com", "Mailchimp"),
-        (r"intercom\.com|intercom-", "Intercom"),
-        (r"drift\.com|drift-frame", "Drift"),
-        (r"zendesk\.com|zdassets", "Zendesk"),
-        (r"google-analytics|gtag|ga\.js|UA-", "Google Analytics"),
-        (r"googletagmanager", "Google Tag Manager"),
-        (r"hotjar\.com", "Hotjar"),
-        (r"stripe\.com|stripe\.js", "Stripe"),
-        (r"cloudflare", "Cloudflare"),
-        (r"bootstrap|getbootstrap", "Bootstrap"),
-        (r"tailwindcss|tailwind", "Tailwind CSS"),
-        (r"calendly\.com", "Calendly"),
-        (r"facebook\.net|fbq|fb-pixel", "Facebook Pixel"),
-    ]
-    for pattern, name in tech_patterns:
+def _detect_tech_signals(html: str, network_urls: list[str] = None) -> list[str]:
+    """Detect technology stack signals from HTML source and optional network requests."""
+    signals = set()
+    for pattern, name in TECH_PATTERNS:
         if re.search(pattern, html, re.IGNORECASE):
-            signals.append(name)
-    return list(set(signals))
+            signals.add(name)
+    if network_urls:
+        combined = " ".join(network_urls)
+        for pattern, name in TECH_PATTERNS:
+            if re.search(pattern, combined, re.IGNORECASE):
+                signals.add(name)
+    return list(signals)
+
+
+def _should_skip_url(url: str) -> bool:
+    """Return True if the URL points to a non-HTML asset that should not be crawled."""
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    ext = "." + path.rsplit(".", 1)[-1] if "." in path.split("/")[-1] else ""
+    return ext in SKIP_EXTENSIONS
+
+
+def _classify_page_type(url: str) -> str:
+    """Classify an internal page URL by path pattern."""
+    path = urlparse(url).path.lower()
+    for pattern, page_type in INTERNAL_PAGE_PATTERNS:
+        if re.search(pattern, path):
+            return page_type
+    return "other"
 
 
 def _extract_cta_patterns(html: str) -> list[str]:
@@ -538,6 +580,187 @@ async def crawl_website(website_url: str, session_id: str = None) -> dict:
     return result
 
 
+async def crawl_website_playwright(website_url: str, session_id: str = None) -> dict:
+    """
+    JS-rendered website crawler via skills/scrape-playwright/runner.py.
+    Delegates actual crawling to the skill subprocess and maps the output
+    into the same schema as crawl_website() for drop-in compatibility.
+    """
+    _RUNNER = os.path.normpath(
+        os.path.join(
+            os.path.dirname(__file__),
+            "../../skills/scrape-playwright/runner.py",
+        )
+    )
+
+    def _update_progress(phase: str, pages_found: int = 0, pages_crawled: int = 0, current_page: str = ""):
+        if session_id:
+            session = session_store.get_session(session_id)
+            if session:
+                session.crawl_progress = {
+                    "phase": phase,
+                    "pages_found": pages_found,
+                    "pages_crawled": pages_crawled,
+                    "current_page": current_page,
+                }
+                session_store.update_session(session)
+
+    if not website_url.startswith(("http://", "https://")):
+        website_url = "https://" + website_url
+
+    parsed_base = urlparse(website_url)
+    base_domain = parsed_base.netloc.lower().replace("www.", "")
+
+    result = {
+        "homepage": {"title": "", "meta_desc": "", "h1s": [], "headings": [], "nav_links": []},
+        "pages_crawled": [],
+        "tech_signals": [],
+        "cta_patterns": [],
+        "social_links": [],
+        "schema_markup": [],
+        "seo_basics": {"has_meta": False, "has_viewport": False, "has_sitemap": False},
+        "js_rendered": True,
+        "network_requests": [],
+        "local_storage_keys": [],
+        "cookie_names": [],
+    }
+
+    _update_progress("fetching_homepage", current_page=website_url)
+    logger.info("Playwright crawl: delegating to skill runner", url=website_url)
+
+    payload = json.dumps({
+        "message": website_url,
+        "args": {
+            "url": website_url,
+            "maxPages": 15,
+            "maxDepth": 2,
+            "deep": False,
+            "parallel": False,
+        },
+    }).encode("utf-8")
+
+    page_records: list[dict] = []
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, _RUNNER,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        assert proc.stdin is not None
+        proc.stdin.write(payload)
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        stdout_data, _ = await proc.communicate()
+        stdout_text = stdout_data.decode("utf-8", errors="replace")
+
+        for line in stdout_text.splitlines():
+            t = line.strip()
+            if not t:
+                continue
+            if t.startswith("PROGRESS:"):
+                raw_json = t[len("PROGRESS:"):].strip()
+                try:
+                    meta = json.loads(raw_json)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                evt = meta.get("event", "")
+                if evt == "page_data":
+                    page_records.append(meta)
+                    _update_progress(
+                        "crawling_pages",
+                        pages_crawled=len(page_records),
+                        current_page=meta.get("url", ""),
+                    )
+                elif evt == "discovery_done":
+                    _update_progress("crawling_pages", pages_found=meta.get("total_pages", 0))
+
+    except Exception as e:
+        logger.error("Playwright skill runner failed to launch", url=website_url, error=str(e))
+        return result
+
+    if not page_records:
+        logger.warning("Playwright skill scraper returned no pages", url=website_url)
+        return result
+
+    _update_progress("generating_summary", pages_crawled=len(page_records))
+
+    # ── Map skill page_data records → standard crawl format ───────────────
+    all_network: list[str] = []
+    all_schema: list[str] = []
+
+    homepage_rec = next((r for r in page_records if r.get("depth", 1) == 0), page_records[0])
+    other_recs = [r for r in page_records if r is not homepage_rec]
+
+    hp_elems = homepage_rec.get("elements") or []
+    h1s = [e["content"] for e in hp_elems if e.get("type") == "h1"][:5]
+    headings = [e["content"] for e in hp_elems if e.get("type") in ("h2", "h3")][:15]
+
+    raw_nav = homepage_rec.get("links_internal") or []
+    seen_nav: set[str] = set()
+    nav_links: list[str] = []
+    for lnk in raw_nav:
+        p = urlparse(lnk)
+        clean = f"{p.scheme}://{p.netloc}{p.path}".rstrip("/")
+        dom = p.netloc.lower().replace("www.", "")
+        if dom == base_domain and p.path not in ("", "/") and clean not in seen_nav and not _should_skip_url(clean):
+            seen_nav.add(clean)
+            nav_links.append(clean)
+    nav_links = nav_links[:30]
+
+    result["homepage"] = {
+        "title": homepage_rec.get("title", ""),
+        "meta_desc": homepage_rec.get("meta_description", ""),
+        "h1s": h1s,
+        "headings": headings,
+        "nav_links": nav_links,
+    }
+    result["seo_basics"] = {
+        "has_meta": bool(homepage_rec.get("title") and homepage_rec.get("meta_description")),
+        "has_viewport": False,
+        "has_sitemap": False,
+    }
+    result["local_storage_keys"] = (homepage_rec.get("local_storage_keys") or [])[:20]
+    result["cookie_names"] = (homepage_rec.get("cookie_names") or [])[:20]
+    all_network.extend(homepage_rec.get("network_requests") or [])
+    all_schema.extend(homepage_rec.get("schema_types") or [])
+
+    for rec in other_recs:
+        url = rec.get("url", "")
+        elems = rec.get("elements") or []
+        page_headings = [e["content"] for e in elems if e.get("type") in ("h2", "h3")][:10]
+        key_parts = [e["content"] for e in elems if e.get("type") in ("h1", "h2", "h3", "p", "li")]
+        result["pages_crawled"].append({
+            "url": url,
+            "type": _classify_page_type(url),
+            "title": rec.get("title", ""),
+            "meta_desc": rec.get("meta_description", ""),
+            "headings": page_headings,
+            "key_content": " ".join(key_parts)[:2500],
+        })
+        all_network.extend(rec.get("network_requests") or [])
+        all_schema.extend(rec.get("schema_types") or [])
+
+    result["network_requests"] = list(dict.fromkeys(all_network))[:50]
+    result["schema_markup"] = list(dict.fromkeys(all_schema))[:10]
+    result["tech_signals"] = _detect_tech_signals("", all_network)
+
+    logger.info(
+        "Playwright crawl complete (via skill)",
+        url=website_url,
+        pages_crawled=len(result["pages_crawled"]) + 1,
+        tech_signals=len(result["tech_signals"]),
+        network_requests=len(result["network_requests"]),
+        js_rendered=True,
+    )
+    return result
+
+
 async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
     """
     Generate a compressed 5-bullet summary from raw crawl data using GPT.
@@ -716,7 +939,6 @@ async def run_background_crawl(session_id: str, website_url: str):
         else:
             # Use Playwright (JS-rendered) with httpx fallback
             try:
-                from app.services.playwright_crawl_service import crawl_website_playwright
                 logger.info("Using Playwright crawler (JS-rendered)", url=website_url)
                 crawl_raw = await crawl_website_playwright(website_url, session_id=session_id)
             except Exception as pw_err:

@@ -63,6 +63,9 @@ class VerifyOTPRequest(BaseModel):
     session_id: str
     otp_session_id: str
     otp_code: str
+    # Set when Google was Step 1 of two-step verification
+    google_email: str | None = None
+    google_name: str | None = None
 
     @field_validator("otp_code")
     @classmethod
@@ -176,24 +179,30 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             message="Incorrect OTP — please try again",
         )
 
-    # OTP matched -> persist auth state
-    # Extract phone from the send-otp step (stored in session or passed again)
+    # OTP matched — determine if this is step 2 of Google+OTP two-step, or standalone OTP
+    is_two_step = bool(req.google_email)
+    provider = "both" if is_two_step else "otp"
+    email = req.google_email.strip().lower() if is_two_step else None
+    name = req.google_name or "Verified User"
+    user_id = email if is_two_step else f"otp:{req.session_id}"
+
     await update_session_auth(
         session_id=req.session_id,
         otp_verified=True,
-        auth_provider="otp",
+        auth_provider=provider,
     )
-    user_id = f"otp:{req.session_id}"
     await promote_session_conversations(req.session_id, user_id)
     token = create_access_token(
         subject=user_id,
         claims={
-            "provider": "otp",
+            "provider": provider,
+            "email": email,
+            "name": name,
             "session_id": req.session_id,
         },
     )
 
-    logger.info("OTP verified for session", session_id=req.session_id)
+    logger.info("OTP verified for session", session_id=req.session_id, provider=provider)
 
     return VerifyOTPResponse(
         success=True,
@@ -202,9 +211,9 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
         token=token,
         user={
             "user_id": user_id,
-            "provider": "otp",
-            "email": None,
-            "name": "Verified User",
+            "provider": provider,
+            "email": email,
+            "name": name,
             "session_id": req.session_id,
         },
     )

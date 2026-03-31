@@ -44,7 +44,7 @@ async def send_otp(phone_number: str) -> dict:
     if phone.startswith("+"):
         phone = phone[1:]
 
-    url = f"{TWO_FACTOR_BASE}/{api_key}/SMS/{phone}/AUTOGEN"
+    url = f"{TWO_FACTOR_BASE}/{api_key}/SMS/{phone}/AUTOGEN/aiplaybook"
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

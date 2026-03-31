@@ -10,23 +10,10 @@ import DiagnosticStage from './stages/DiagnosticStage';
 import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
 import { getToolsForSelection } from './toolService';
 import * as api from './api';
+import { coreApi } from '../../api/services/core';
 import './IkshanApp.css';
 
 const IDLE_TIMEOUT = 10_000;
-
-// ★ DEMO MODE — set to true to skip LLM calls and see the full UI with dummy data
-const DEMO_MODE = true;
-
-const DEMO_DIAGNOSTIC_QUESTIONS = [
-  { question: 'What is the biggest bottleneck in your current workflow?', options: ['Manual data entry', 'Slow approvals', 'Lack of visibility', 'Too many tools'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
-  { question: 'How do you currently measure success for this task?', options: ['Revenue metrics', 'Time saved', 'Customer feedback', 'We don\'t measure it'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
-  { question: 'What is your team size working on this?', options: ['Just me', '2-5 people', '6-15 people', '15+'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
-];
-
-const DEMO_PRECISION_QUESTIONS = [
-  { type: 'contradiction', question: 'You mentioned manual data entry is your bottleneck, but your website shows automated forms. Are these actually connected to your CRM?', options: ['Yes, fully connected', 'Partially', 'No, they are separate', 'I\'m not sure'], section_label: 'Precision', insight: 'We noticed a gap between your public-facing automation and internal workflow.' },
-  { type: 'blind_spot', question: 'Based on your answers, it seems you may not be tracking lead response time. Would faster response help close more deals?', options: ['Definitely yes', 'Possibly', 'Not a priority right now', 'We already track this'], section_label: 'Precision', insight: 'Companies that respond within 5 minutes convert 21x more leads.' },
-];
 
 export default function IkshanApp() {
   const canvasRef = useRef(null);
@@ -101,6 +88,21 @@ export default function IkshanApp() {
   const [showComplete, setShowComplete] = useState(false);
   const [error, setError] = useState(null);
 
+  // Crawl
+  const [crawlStatus, setCrawlStatus] = useState(''); // '', 'in_progress', 'complete', 'failed', 'skipped'
+  const crawlPollRef = useRef(null);
+  const crawlSummaryRef = useRef(null);
+
+  // Playbook
+  const [showPlaybook, setShowPlaybook] = useState(false);
+  const [playbookStreaming, setPlaybookStreaming] = useState(false);
+  const [playbookText, setPlaybookText] = useState('');
+  const [playbookDone, setPlaybookDone] = useState(false);
+  const [playbookResult, setPlaybookResult] = useState(null);
+  const [gapQuestions, setGapQuestions] = useState([]);
+  const [gapAnswers, setGapAnswers] = useState({});
+  const [showGapQuestions, setShowGapQuestions] = useState(false);
+
   // ─── Horizontal wheel scroll ──────────────────────────
   useEffect(() => {
     const el = canvasRef.current;
@@ -122,6 +124,37 @@ export default function IkshanApp() {
       el.scrollTo({ left: el.scrollWidth - el.clientWidth, behavior: 'smooth' });
     });
   }, []);
+
+  // ─── Crawl polling ────────────────────────────────────
+  const startCrawlPolling = useCallback(() => {
+    if (crawlPollRef.current) clearInterval(crawlPollRef.current);
+    crawlPollRef.current = setInterval(async () => {
+      try {
+        const sid = sessionIdRef.current;
+        if (!sid) return;
+        const data = await api.getCrawlStatus(sid);
+        if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
+          setCrawlStatus(data.crawl_status);
+          clearInterval(crawlPollRef.current);
+          crawlPollRef.current = null;
+          if (data.crawl_status === 'complete' && data.crawl_summary) {
+            crawlSummaryRef.current = data.crawl_summary;
+          }
+        }
+      } catch { /* silent */ }
+    }, 3000);
+  }, []);
+
+  // Cleanup poll on unmount
+  useEffect(() => () => { if (crawlPollRef.current) clearInterval(crawlPollRef.current); }, []);
+
+  // Wait for crawl to finish (used before playbook)
+  const waitForCrawl = useCallback(() => new Promise((resolve) => {
+    if (!crawlPollRef.current) { resolve(); return; }
+    const check = setInterval(() => {
+      if (!crawlPollRef.current) { clearInterval(check); resolve(); }
+    }, 500);
+  }), []);
 
   // ─── Derived data ─────────────────────────────────────
   const domains = selectedOutcome ? (OUTCOME_DOMAINS[selectedOutcome.id] || []) : [];
@@ -211,7 +244,8 @@ export default function IkshanApp() {
       if (urlValue.trim()) {
         let finalUrl = urlValue.trim();
         if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
-        await api.submitUrl(sid, finalUrl);
+        const res = await api.submitUrl(sid, finalUrl);
+        if (res?.crawl_started) { setCrawlStatus('in_progress'); startCrawlPolling(); }
       }
       if (gbpValue.trim()) {
         let finalGbp = gbpValue.trim();
@@ -228,6 +262,7 @@ export default function IkshanApp() {
     try {
       const sid = await ensureSession();
       await api.skipUrl(sid);
+      setCrawlStatus('skipped');
     } catch (err) { console.warn('Skip URL:', err.message); }
     await moveToScaleQuestions();
     setUrlSubmitting(false);
@@ -256,13 +291,6 @@ export default function IkshanApp() {
   const handleScaleSubmit = async () => {
     setLoading(true);
     try {
-      if (DEMO_MODE) {
-        setCurrentQuestion(DEMO_DIAGNOSTIC_QUESTIONS[0]);
-        setQuestionIndex(0);
-        setShowDiagnostic(true);
-        setTimeout(scrollToEnd, 50);
-        return;
-      }
       const sid = await ensureSession();
       await api.submitScaleAnswers(sid, scaleAnswers);
       const diagData = await api.startDiagnostic(sid);
@@ -282,21 +310,6 @@ export default function IkshanApp() {
   const handleDiagnosticAnswer = async (answer) => {
     setLoading(true);
     try {
-      if (DEMO_MODE) {
-        const nextIdx = questionIndex + 1;
-        if (nextIdx < DEMO_DIAGNOSTIC_QUESTIONS.length) {
-          setCurrentQuestion(DEMO_DIAGNOSTIC_QUESTIONS[nextIdx]);
-          setQuestionIndex(nextIdx);
-        } else {
-          // Move to precision questions
-          setPrecisionQuestions(DEMO_PRECISION_QUESTIONS);
-          setPrecisionIndex(0);
-          setCurrentQuestion(DEMO_PRECISION_QUESTIONS[0]);
-          setShowPrecision(true);
-          setTimeout(scrollToEnd, 50);
-        }
-        return;
-      }
       const sid = await ensureSession();
       const data = await api.submitAnswer(sid, questionIndex, answer);
       if (data.all_answered) {
@@ -306,10 +319,10 @@ export default function IkshanApp() {
           setPrecisionIndex(0);
           setCurrentQuestion(precData.questions[0]);
           setShowPrecision(true);
+          setTimeout(scrollToEnd, 50);
         } else {
-          setShowComplete(true);
+          handleStartPlaybook();
         }
-        setTimeout(scrollToEnd, 50);
       } else if (data.next_question) {
         setCurrentQuestion(data.next_question);
         setQuestionIndex((i) => i + 1);
@@ -321,17 +334,6 @@ export default function IkshanApp() {
   const handlePrecisionAnswer = async (answer) => {
     setLoading(true);
     try {
-      if (DEMO_MODE) {
-        const nextIdx = precisionIndex + 1;
-        if (nextIdx < precisionQuestions.length) {
-          setPrecisionIndex(nextIdx);
-          setCurrentQuestion(precisionQuestions[nextIdx]);
-        } else {
-          setShowComplete(true);
-          setTimeout(scrollToEnd, 50);
-        }
-        return;
-      }
       const sid = await ensureSession();
       await api.submitAnswer(sid, precisionIndex, answer);
       const nextIdx = precisionIndex + 1;
@@ -339,8 +341,7 @@ export default function IkshanApp() {
         setPrecisionIndex(nextIdx);
         setCurrentQuestion(precisionQuestions[nextIdx]);
       } else {
-        setShowComplete(true);
-        setTimeout(scrollToEnd, 50);
+        handleStartPlaybook();
       }
     } catch (err) { setError('Failed to submit answer.'); }
     finally { setLoading(false); }
@@ -351,6 +352,10 @@ export default function IkshanApp() {
     clearPostTask();
     setDiagnosticData(null); setError(null);
     setHoveredOutcome(null); setHoveredDomain(null); setHoveredTask(null);
+    setShowPlaybook(false); setPlaybookText(''); setPlaybookDone(false);
+    setPlaybookResult(null); setGapQuestions([]); setGapAnswers({}); setShowGapQuestions(false);
+    setCrawlStatus(''); crawlSummaryRef.current = null;
+    if (crawlPollRef.current) { clearInterval(crawlPollRef.current); crawlPollRef.current = null; }
     sessionIdRef.current = null; sessionPromiseRef.current = null;
     if (canvasRef.current) canvasRef.current.scrollLeft = 0;
   };
@@ -362,6 +367,144 @@ export default function IkshanApp() {
   };
 
   const clearError = () => setError(null);
+
+  // ─── Playbook helpers ─────────────────────────────────
+  const streamPlaybook = async (sid) => {
+    await coreApi.playbookGenerateStream({ session_id: sid }, {
+      onToken: (token) => setPlaybookText((t) => t + token),
+      onDone: (result) => { setPlaybookResult(result); setPlaybookDone(true); setPlaybookStreaming(false); },
+      onError: (msg) => { setError(msg); setPlaybookStreaming(false); },
+    });
+  };
+
+  const handleStartPlaybook = async () => {
+    setShowPlaybook(true);
+    setPlaybookStreaming(true);
+    setPlaybookText('');
+    setPlaybookDone(false);
+    setPlaybookResult(null);
+    setTimeout(scrollToEnd, 50);
+    try {
+      const sid = await ensureSession();
+      // Wait for background crawl to finish before generating playbook
+      await waitForCrawl();
+      const startData = await coreApi.playbookStart({ session_id: sid });
+      if (startData.gap_questions?.length) {
+        setGapQuestions(startData.gap_questions_parsed || startData.gap_questions);
+        setShowGapQuestions(true);
+        setPlaybookStreaming(false);
+        return;
+      }
+      await streamPlaybook(sid);
+    } catch (err) { setError('Failed to start playbook.'); setPlaybookStreaming(false); }
+  };
+
+  const handleGapSubmit = async () => {
+    setShowGapQuestions(false);
+    setPlaybookStreaming(true);
+    try {
+      const sid = await ensureSession();
+      const answersStr = gapQuestions.map((q, i) => {
+        const qNum = (typeof q === 'object' && q.id) ? q.id : `Q${i + 1}`;
+        return `${qNum}-${gapAnswers[i] || ''}`;
+      }).join(', ');
+      await coreApi.playbookGapAnswers({ session_id: sid, answers: answersStr });
+      await streamPlaybook(sid);
+    } catch (err) { setError('Failed to submit answers.'); setPlaybookStreaming(false); }
+  };
+
+  // ─── RENDER: PLAYBOOK ─────────────────────────────────
+  if (showPlaybook) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '24px 32px', overflow: 'hidden', minHeight: 0 }}>
+          <h1 style={{ fontSize: 'clamp(20px,2.5vw,32px)', fontWeight: 800, margin: '0 0 20px', textAlign: 'center' }}>
+            {showGapQuestions ? 'A Few More Questions' : playbookDone ? 'Your Playbook' : 'Generating Your Playbook…'}
+          </h1>
+
+          {/* Gap questions panel */}
+          {showGapQuestions && (
+            <div style={{ maxWidth: 640, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {gapQuestions.map((q, i) => {
+                const qLabel = typeof q === 'string' ? q : q.question;
+                const opts = typeof q === 'object' && Array.isArray(q.options) ? q.options : [];
+                return (
+                  <div key={i} style={{ padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.03)' }}>
+                    <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 12px', color: 'rgba(255,255,255,0.9)' }}>{qLabel}</p>
+                    {opts.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {opts.map((opt, oi) => {
+                          const optKey = opt.match(/^([A-E])\)/)?.[1] || String.fromCharCode(65 + oi);
+                          const selected = gapAnswers[i] === optKey;
+                          return (
+                            <button
+                              key={oi}
+                              onClick={() => setGapAnswers((prev) => ({ ...prev, [i]: optKey }))}
+                              style={{
+                                textAlign: 'left', padding: '10px 14px', borderRadius: 8, cursor: 'pointer',
+                                fontSize: 13, fontWeight: selected ? 700 : 400,
+                                border: selected ? '1.5px solid #857BFF' : '1px solid rgba(255,255,255,0.12)',
+                                background: selected ? 'rgba(133,123,255,0.18)' : 'rgba(255,255,255,0.04)',
+                                color: selected ? '#fff' : 'rgba(255,255,255,0.75)',
+                                transition: 'all 0.15s',
+                              }}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <textarea
+                        rows={3}
+                        placeholder="Your answer…"
+                        value={gapAnswers[i] || ''}
+                        onChange={(e) => setGapAnswers((prev) => ({ ...prev, [i]: e.target.value }))}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: 13, resize: 'vertical', outline: 'none', boxSizing: 'border-box' }}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+              <button
+                onClick={handleGapSubmit}
+                disabled={gapQuestions.length > 0 && !gapQuestions.every((_, i) => gapAnswers[i])}
+                style={{ padding: '12px', borderRadius: 10, border: 'none', background: 'linear-gradient(90deg,#857BFF,#BF69A2)', color: '#fff', fontWeight: 800, fontSize: 14, cursor: gapQuestions.every((_, i) => gapAnswers[i]) ? 'pointer' : 'not-allowed', opacity: gapQuestions.every((_, i) => gapAnswers[i]) ? 1 : 0.5 }}
+              >
+                Generate Playbook
+              </button>
+            </div>
+          )}
+
+          {/* Streaming / final playbook text */}
+          {!showGapQuestions && (
+            <div style={{ flex: 1, overflow: 'auto', maxWidth: 800, margin: '0 auto', width: '100%' }}>
+              {playbookStreaming && !playbookText && (
+                <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14, textAlign: 'center', paddingTop: 40 }}>Thinking…</div>
+              )}
+              {playbookText && (
+                <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.8, color: 'rgba(255,255,255,0.85)', margin: 0 }}>
+                  {playbookText}
+                  {playbookStreaming && <span style={{ opacity: 0.5 }}>▍</span>}
+                </pre>
+              )}
+              {playbookDone && playbookResult?.website_audit && (
+                <div style={{ marginTop: 32, padding: '20px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)' }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 10px', color: '#a882ff' }}>Website Audit</h3>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.7, color: 'rgba(255,255,255,0.7)', margin: 0 }}>{playbookResult.website_audit}</pre>
+                </div>
+              )}
+              {playbookDone && (
+                <button onClick={handleRestart} style={{ marginTop: 32, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer' }}>
+                  Start New Journey
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </StageLayout>
+    );
+  }
 
   // ─── RENDER: COMPLETE ──────────────────────────────────
   if (showComplete) {

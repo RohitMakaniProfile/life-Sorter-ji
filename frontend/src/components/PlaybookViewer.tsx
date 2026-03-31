@@ -1,0 +1,669 @@
+import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+// ── Markdown normaliser ──
+const formatSectionMarkdown = (text: string) => {
+  let r = text;
+  r = r.replace(/^\*\*([A-Z][A-Z &\-\/():'0-9,.]+?)\*\*\s*$/gm, (_, l) => `### ${l.trim()}`);
+  r = r.replace(/^(?![#>|*\-])([A-Z][A-Z &\-\/():'0-9,.]{7,})\s*$/gm, (_, l) => `### ${l.trim()}`);
+  r = r.replace(
+    /^(?:#{0,4}\s*)?(?:\*\*)?STEP\s+(\d{1,2})\s*[\u2192\->]+\s*(.+?)(?:\*\*)?\s*$/gm,
+    (_, n, t) => `#### STEP ${n} → ${t.trim()}`
+  );
+  return r;
+};
+
+// ── Parse playbook text into structured steps ──
+const PRIORITY_ORDER = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+
+// Extract explicit [PRIORITY: X] tag from raw title; fallback to position-based
+const detectPriority = (num: number, rawTitle: string): 'HIGH' | 'MEDIUM' | 'LOW' => {
+  const m = rawTitle.match(/\[PRIORITY:\s*(HIGH|MEDIUM|LOW)\]/i);
+  if (m) return m[1].toUpperCase() as 'HIGH' | 'MEDIUM' | 'LOW';
+  // Fallback: position-based (for old playbooks without tag)
+  if (num <= 3) return 'HIGH';
+  if (num <= 7) return 'MEDIUM';
+  return 'LOW';
+};
+
+const SUB_PATTERNS = [
+  { key: 'todo',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:📌\s*)?WHAT TO DO(?:\*\*)?\s*\n/i,                icon: '📌', label: 'What To Do',        color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe' },
+  { key: 'tool',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:🤖\s*)?TOOL\s*[+&]\s*AI SHORTCUT(?:\*\*)?\s*\n/i, icon: '🤖', label: 'Tool + AI Shortcut', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+  { key: 'example', regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:💡\s*)?REAL EXAMPLE(?:\*\*)?\s*\n/i,               icon: '💡', label: 'Real Example',       color: '#b45309', bg: '#fffbeb', border: '#fde68a' },
+  { key: 'edge',    regex: /(?:#{0,4}\s*)?(?:\*\*)?(?:⚡\s*)?THE EDGE(?:\*\*)?\s*\n/i,                   icon: '⚡', label: 'The Edge',           color: '#065f46', bg: '#f0fdf4', border: '#bbf7d0' },
+];
+
+const parseSubsections = (body: string) => {
+  const positions: any[] = [];
+  for (const sub of SUB_PATTERNS) {
+    const m = body.search(sub.regex);
+    if (m !== -1) positions.push({ pos: m, sub });
+  }
+  positions.sort((a, b) => a.pos - b.pos);
+
+  const subsections: any[] = [];
+  if (positions.length === 0) {
+    subsections.push({ icon: '', label: '', content: body, color: '#374151', bg: 'transparent', border: 'transparent' });
+  } else {
+    const preText = body.slice(0, positions[0].pos).trim();
+    if (preText) subsections.push({ icon: '', label: '', content: preText, color: '#374151', bg: 'transparent', border: 'transparent' });
+    for (let j = 0; j < positions.length; j++) {
+      const { sub } = positions[j];
+      const start = positions[j].pos;
+      const end = j + 1 < positions.length ? positions[j + 1].pos : body.length;
+      const content = body.slice(start, end).replace(sub.regex, '').trim();
+      subsections.push({ ...sub, content });
+    }
+  }
+  return subsections;
+};
+
+const parsePlaybookSteps = (rawText: string) => {
+  let text = rawText;
+  let checklist = '';
+
+  // Extract checklist — find it and cut text there
+  const clIdx = text.search(/\n[\s]*WEEK\s*1\s*EXECUTION\s*CHECKLIST/i);
+  if (clIdx !== -1) {
+    const clBodyStart = text.indexOf('\n', clIdx + 1);
+    checklist = clBodyStart !== -1 ? text.slice(clBodyStart + 1).trim() : '';
+    text = text.slice(0, clIdx);
+  }
+
+  // ── Find step header positions ──
+  // Strategy: only match a numbered line that is preceded by ≥2 newlines (blank line gap).
+  // This prevents matching numbered sub-lists inside step content.
+  // Format: N. [anything] or N) [anything] where N is 1–10.
+  // Capture the entire line as the raw title.
+  const STEP_HEADER = /\n{2,}(?:#{0,3}\s*)?(?:\*\*)?(\d{1,2})[.)]\s+([^\n]+?)(?:\*\*)?\s*(?=\n)/g;
+
+  // Each marker: { num, rawTitle, title, headerStart, bodyStart }
+  type Marker = { num: number; rawTitle: string; title: string; headerStart: number; bodyStart: number };
+  const markers: Marker[] = [];
+  let m: RegExpExecArray | null;
+
+  const cleanTitle = (raw: string) => raw
+    .replace(/\[PRIORITY:\s*(?:HIGH|MEDIUM|LOW)\]/gi, '')
+    .replace(/\*\*/g, '')
+    .replace(/^The\s+/i, '')
+    .replace(/^["""'\u201C\u2018\u201E]+|["""'\u201D\u2019]+$/g, '')
+    .trim();
+
+  while ((m = STEP_HEADER.exec(text)) !== null) {
+    const num = parseInt(m[1]);
+    if (num < 1 || num > 10) continue;
+    const rawTitle = m[2];
+    const clean = cleanTitle(rawTitle);
+    if (!clean || clean.length < 3) continue;
+    markers.push({ num, rawTitle, title: clean, headerStart: m.index, bodyStart: m.index + m[0].length });
+  }
+
+  // ── Fallback: if ≤1 markers found, relax the double-newline requirement ──
+  if (markers.length <= 1) {
+    const STEP_RELAXED = /(?:^|\n)(?:#{0,3}\s*)?(?:\*\*)?(\d{1,2})[.)]\s+([^\n]+?)(?:\*\*)?\s*(?=\n)/g;
+    markers.length = 0;
+    while ((m = STEP_RELAXED.exec(text)) !== null) {
+      const num = parseInt(m[1]);
+      if (num < 1 || num > 10) continue;
+      const rawTitle = m[2];
+      const clean = cleanTitle(rawTitle);
+      if (!clean || clean.length < 3) continue;
+      markers.push({ num, rawTitle, title: clean, headerStart: m.index, bodyStart: m.index + m[0].length });
+    }
+  }
+
+  // ── Extract step bodies by slicing between marker header positions ──
+  const steps: any[] = [];
+  for (let i = 0; i < markers.length; i++) {
+    const { num, rawTitle, title, bodyStart } = markers[i];
+    // Body ends where the NEXT step's header gap begins
+    const bodyEnd = i + 1 < markers.length ? markers[i + 1].headerStart : text.length;
+    const body = text.slice(bodyStart, bodyEnd).trim();
+    const subsections = parseSubsections(body);
+    const priority = detectPriority(num, rawTitle);
+    steps.push({ num, title, subsections, priority });
+  }
+
+  // Sort: HIGH first, then MEDIUM, then LOW; within same priority keep original order
+  steps.sort((a, b) => {
+    const pd = PRIORITY_ORDER[a.priority as keyof typeof PRIORITY_ORDER] - PRIORITY_ORDER[b.priority as keyof typeof PRIORITY_ORDER];
+    return pd !== 0 ? pd : a.num - b.num;
+  });
+
+  return { steps, checklist };
+};
+
+// ── Audit parse helpers ──
+const parseOverallScore = (audit: string) => {
+  const m = audit.match(/\*\*Overall:\s*(\d+(?:\.\d+)?)\/10\*\*/i);
+  return m ? parseFloat(m[1]) : null;
+};
+
+const parseAuditScorecard = (audit: string) => {
+  const rows: any[] = [];
+  const tableMatch = audit.match(/\|[^\n]*Score[^\n]*\|[\s\S]*?(?=\n\*\*Overall|\n##)/i);
+  if (!tableMatch) return rows;
+  const lines = tableMatch[0].split('\n').filter(l => l.includes('|') && !l.includes('---'));
+  for (const line of lines.slice(1)) {
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    if (cells.length >= 2) {
+      const scoreMatch = cells[1].match(/(\d+(?:\.\d+)?)/);
+      if (scoreMatch) rows.push({ label: cells[0], score: parseFloat(scoreMatch[1]) });
+    }
+  }
+  return rows;
+};
+
+const parseAuditSection = (audit: string, keyword: string) => {
+  const pattern = new RegExp(`##[^#\\n]*(?:${keyword})[\\s\\S]*?(?=\\n##|$)`, 'i');
+  const m = audit.match(pattern);
+  if (!m) return '';
+  return m[0].replace(/^##[^\n]*\n/, '').trim();
+};
+
+const parseAuditMessagingGaps = (audit: string) => {
+  const section = parseAuditSection(audit, 'Site Loses|Messaging Gap|What Your Site Says|Where Your|Buyer');
+  if (!section) return [];
+  const gaps: any[] = [];
+  const blocks = section.split(/(?=\n\*\*[^*\n]+\*\*)/).filter(Boolean);
+  for (const block of blocks) {
+    const titleMatch = block.match(/\*\*([^*\n]+)\*\*/);
+    const impactMatch = block.match(/Revenue Impact:\s*(HIGH|MEDIUM|LOW)/i);
+    if (titleMatch) {
+      gaps.push({
+        title: titleMatch[1].trim(),
+        impact: impactMatch ? impactMatch[1].toUpperCase() : 'MEDIUM',
+        content: block.replace(/^\*\*[^*\n]+\*\*\n?/, '').trim(),
+      });
+    }
+  }
+  return gaps.slice(0, 5);
+};
+
+const parsePlaybookTitle = (playbook: string) => {
+  // Handle: THE "X" PLAYBOOK or **THE "X" PLAYBOOK** or THE 'X' PLAYBOOK
+  const m = playbook.match(/(?:\*\*)?THE\s+[""\u201C']([^""'\u201D\n]+)[""\u201D']\s+PLAYBOOK(?:\*\*)?/im);
+  return m ? `The "${m[1]}" Playbook` : '';
+};
+
+const parsePlaybookOneLever = (playbook: string) => {
+  // Content between THE PLAYBOOK title and the first --- separator or first numbered step
+  const m = playbook.match(/(?:\*\*)?THE\s+[""\u201C'][^""'\u201D\n]+[""\u201D']\s+PLAYBOOK(?:\*\*)?[\s\n]+([\s\S]*?)(?=\n---|\n\s*\n\s*\d{1,2}[.)]\s)/im);
+  return m ? m[1].trim() : '';
+};
+
+const scoreColor = (score: number) => {
+  if (score >= 7) return '#16a34a';
+  if (score >= 5) return '#d97706';
+  return '#dc2626';
+};
+
+// ── Copy prompt button ──
+const CopyPromptBtn = ({ text }: { text: string }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      style={{
+        background: copied ? '#f0fdf4' : '#f5f3ff',
+        border: `1px solid ${copied ? '#bbf7d0' : '#ddd6fe'}`,
+        color: copied ? '#16a34a' : '#7c3aed',
+        fontSize: 10, fontWeight: 600, borderRadius: 6, padding: '4px 10px',
+        cursor: 'pointer', transition: 'all .2s', fontFamily: 'inherit', flexShrink: 0,
+      }}
+    >
+      {copied ? '✓ Copied' : 'Copy Prompt'}
+    </button>
+  );
+};
+
+// ── Main PlaybookViewer component ──
+export interface PlaybookData {
+  playbook?: string;
+  websiteAudit?: string;
+  contextBrief?: string;
+  icpCard?: string;
+}
+
+const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
+  const [phase, setPhase] = useState<'verdict' | 'quickwin' | 'playbook'>('verdict');
+  const [expandedStep, setExpandedStep] = useState<number | null>(null);
+  const [checks, setChecks] = useState<Record<string, boolean>>({});
+
+  const phases: Array<'verdict' | 'quickwin' | 'playbook'> = ['verdict', 'quickwin', 'playbook'];
+  const phaseLabels = { verdict: 'The Verdict', quickwin: 'Quick Win', playbook: 'Full Playbook' };
+  const pi = phases.indexOf(phase);
+
+  const audit = playbookData.websiteAudit || '';
+  const overallScore = parseOverallScore(audit);
+  const scorecardRows = parseAuditScorecard(audit);
+  const quickWinSection = parseAuditSection(audit, '30-Minute Fix');
+  const bigBuildSection = parseAuditSection(audit, 'Big Build');
+  const messagingGaps = parseAuditMessagingGaps(audit);
+
+  const playbookText = playbookData.playbook || '';
+  const { steps, checklist } = parsePlaybookSteps(playbookText);
+  const playbookTitle = parsePlaybookTitle(playbookText);
+  const oneLever = parsePlaybookOneLever(playbookText);
+
+  const toggleCheck = (k: string) => setChecks(p => ({ ...p, [k]: !p[k] }));
+
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const dayTasks = checklist
+    ? dayNames.flatMap(day => {
+        const m = checklist.match(new RegExp(`${day}:\\s*([^\\n]+)`, 'i'));
+        return m ? [{ day: day.slice(0, 3).toUpperCase(), task: m[1].trim() }] : [];
+      })
+    : [];
+  const checkCount = dayTasks.filter(d => checks[d.day]).length;
+
+  return (
+    <div style={{ fontFamily: 'inherit' }}>
+      {/* Header banner */}
+      <div style={{
+        background: '#fff', borderRadius: 20, padding: '1.1rem 1.4rem', marginBottom: 10,
+        border: '1px solid #e5e7eb', boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div>
+          <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 3 }}>
+            AI Growth Playbook
+          </div>
+          <div style={{ fontSize: '1.05rem', fontWeight: 900, color: '#111827', letterSpacing: '-0.02em', lineHeight: 1.2 }}>
+            {playbookTitle || 'Your Personalised Strategy'}
+          </div>
+        </div>
+        <div style={{ fontSize: '2.2rem', lineHeight: 1, flexShrink: 0 }}>🚀</div>
+      </div>
+
+      {/* Tab navigation */}
+      <div style={{
+        background: '#fff', borderRadius: 14, border: '1px solid #e5e7eb',
+        padding: 4, display: 'flex', gap: 3, marginBottom: 14,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      }}>
+        {phases.map((p, i) => (
+          <button key={p} onClick={() => setPhase(p)} style={{
+            flex: 1, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            padding: '9px 6px', borderRadius: 10, transition: 'all .2s',
+            background: phase === p ? 'linear-gradient(135deg, #7c3aed, #8b5cf6)' : 'transparent',
+          }}>
+            <span style={{
+              width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 9, fontWeight: 700,
+              background: phase === p ? 'rgba(255,255,255,0.25)' : i < pi ? '#7c3aed' : '#e5e7eb',
+              color: phase === p ? '#fff' : i < pi ? '#fff' : '#9ca3af',
+            }}>{i + 1}</span>
+            <span style={{
+              fontSize: 11.5, fontWeight: phase === p ? 700 : 500,
+              color: phase === p ? '#fff' : '#6b7280',
+            }}>{phaseLabels[p]}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── VERDICT TAB ── */}
+      {phase === 'verdict' && (
+        <div>
+          {overallScore !== null && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.4rem', marginBottom: 10, textAlign: 'center',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 500, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+                Website Health Score
+              </div>
+              <div style={{ fontSize: 56, fontWeight: 900, color: scoreColor(overallScore), lineHeight: 1 }}>
+                {overallScore}
+                <span style={{ fontSize: 18, color: '#d1d5db', fontWeight: 400 }}>/10</span>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: scoreColor(overallScore) }}>
+                {overallScore < 5 ? 'Critical — Needs Immediate Attention' : overallScore < 7 ? 'Needs Improvement' : 'Good — Keep Optimizing'}
+              </div>
+            </div>
+          )}
+
+          {scorecardRows.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8, marginBottom: 10 }}>
+              {scorecardRows.map((row, i) => (
+                <div key={i} style={{
+                  background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb',
+                  padding: '12px 8px', textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                }}>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: scoreColor(row.score), lineHeight: 1 }}>
+                    {row.score}<span style={{ fontSize: 11, color: '#d1d5db' }}>/10</span>
+                  </div>
+                  <div style={{ fontSize: 9.5, color: '#9ca3af', marginTop: 3, fontWeight: 500, lineHeight: 1.3 }}>
+                    {row.label.length > 38 ? row.label.slice(0, 36) + '…' : row.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {messagingGaps.length > 0 && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.1rem 1.25rem', marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+                Where You're Losing Buyers
+              </div>
+              {messagingGaps.map((gap: any, i: number) => (
+                <div key={i} style={{
+                  padding: '10px 12px', borderRadius: 10, marginBottom: 7,
+                  background: gap.impact === 'HIGH' ? '#fff8f8' : '#fffbeb',
+                  border: `1px solid ${gap.impact === 'HIGH' ? '#fecaca' : '#fde68a'}`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>{gap.title}</span>
+                    <span style={{
+                      fontSize: 8, fontWeight: 700, letterSpacing: '.04em', flexShrink: 0, marginLeft: 8,
+                      color: gap.impact === 'HIGH' ? '#dc2626' : '#d97706',
+                      background: gap.impact === 'HIGH' ? '#fee2e2' : '#fef3c7',
+                      padding: '3px 7px', borderRadius: 20,
+                    }}>{gap.impact}</span>
+                  </div>
+                  <div className="playbook-markdown" style={{ fontSize: 11.5, color: '#6b7280', lineHeight: 1.6 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{gap.content}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {overallScore === null && scorecardRows.length === 0 && messagingGaps.length === 0 && audit && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.25rem', marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(audit)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          <button onClick={() => setPhase('quickwin')} style={{
+            width: '100%', padding: '13px 24px',
+            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+            border: 'none', borderRadius: 12, cursor: 'pointer',
+            fontSize: 13.5, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+            boxShadow: '0 4px 20px rgba(124,58,237,.25)',
+          }}>
+            See What To Fix First →
+          </button>
+        </div>
+      )}
+
+      {/* ── QUICK WIN TAB ── */}
+      {phase === 'quickwin' && (
+        <div>
+          {quickWinSection ? (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: '1.1rem' }}>⚡</span>
+                <div>
+                  <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>Do This Today — No Developer Needed</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginTop: 2 }}>The 30-Minute Fix</div>
+                </div>
+              </div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(quickWinSection)}</ReactMarkdown>
+              </div>
+            </div>
+          ) : steps[0] && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 6 }}>Start Here — Step 1</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 10 }}>{steps[0].title}</div>
+              {steps[0].subsections.map((sub: any, i: number) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  {sub.label && <div style={{ fontSize: 9, color: sub.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{sub.icon} {sub.label}</div>}
+                  <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {bigBuildSection && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              borderTop: '3px solid #d97706', padding: '1.1rem 1.4rem', marginBottom: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: '1.1rem' }}>🏗️</span>
+                <div>
+                  <div style={{ fontSize: 10, color: '#d97706', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>One Dev Change Worth Your Time</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginTop: 2 }}>The Big Build</div>
+                </div>
+              </div>
+              <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(bigBuildSection)}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          <button onClick={() => setPhase('playbook')} style={{
+            width: '100%', padding: '13px 24px',
+            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+            border: 'none', borderRadius: 12, cursor: 'pointer',
+            fontSize: 13.5, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+            boxShadow: '0 4px 20px rgba(124,58,237,.25)',
+          }}>
+            Show Full 10-Step Playbook →
+          </button>
+        </div>
+      )}
+
+      {/* ── FULL PLAYBOOK TAB ── */}
+      {phase === 'playbook' && (
+        <div>
+          {oneLever && (
+            <div style={{
+              background: '#f5f3ff', borderRadius: 14, border: '1px solid #ddd6fe',
+              padding: '0.9rem 1.1rem', marginBottom: 12, borderLeft: '4px solid #7c3aed',
+            }}>
+              <div style={{ fontSize: 9, color: '#7c3aed', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 5 }}>The One Lever</div>
+              <div style={{ fontSize: 12.5, color: '#3730a3', lineHeight: 1.7 }}>{oneLever}</div>
+            </div>
+          )}
+
+          {steps.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+              {(['HIGH', 'MEDIUM', 'LOW'] as const).map(p => {
+                const count = steps.filter(s => s.priority === p).length;
+                if (!count) return null;
+                const clr = p === 'HIGH' ? '#dc2626' : p === 'MEDIUM' ? '#d97706' : '#16a34a';
+                const bg  = p === 'HIGH' ? '#fff1f2' : p === 'MEDIUM' ? '#fffbeb' : '#f0fdf4';
+                return (
+                  <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 20, background: bg, border: `1px solid ${clr}22` }}>
+                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: clr }} />
+                    <span style={{ fontSize: 10, fontWeight: 700, color: clr }}>{p}</span>
+                    <span style={{ fontSize: 10, color: '#9ca3af' }}>{count} step{count > 1 ? 's' : ''}</span>
+                  </div>
+                );
+              })}
+              <div style={{ marginLeft: 'auto', fontSize: 10, color: '#9ca3af', alignSelf: 'center' }}>
+                {steps.length} total · sorted by priority
+              </div>
+            </div>
+          )}
+
+          {steps.length > 0 ? steps.map((step: any) => {
+            const isOpen = expandedStep === step.num;
+            const toolSub = step.subsections.find((s: any) => s.key === 'tool');
+            const promptMatch = toolSub?.content?.match(/Prompt:\s*"?([\s\S]+?)(?:"\s*$|"(?=\n)|$)/m);
+            const promptText = promptMatch ? promptMatch[1].trim().replace(/^"|"$/g, '') : '';
+
+            const priorityStyle: Record<string, { bg: string; color: string; border: string }> = {
+              HIGH:   { bg: '#fee2e2', color: '#dc2626', border: '#fca5a5' },
+              MEDIUM: { bg: '#fef3c7', color: '#d97706', border: '#fcd34d' },
+              LOW:    { bg: '#f0fdf4', color: '#16a34a', border: '#86efac' },
+            };
+            const ps = priorityStyle[step.priority] || priorityStyle.LOW;
+
+            return (
+              <div key={step.num} style={{
+                background: '#fff', borderRadius: 13, marginBottom: 7,
+                border: `1px solid ${isOpen ? '#ddd6fe' : '#e5e7eb'}`,
+                boxShadow: isOpen ? '0 2px 12px rgba(124,58,237,.08)' : '0 1px 3px rgba(0,0,0,0.04)',
+                overflow: 'hidden', transition: 'box-shadow .2s, border-color .2s',
+              }}>
+                <div onClick={() => setExpandedStep(isOpen ? null : step.num)} style={{
+                  padding: '13px 15px', cursor: 'pointer',
+                  display: 'flex', gap: 11, alignItems: 'center',
+                  background: isOpen ? 'linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%)' : '#fff',
+                }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                    background: '#7c3aed', color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11, fontWeight: 800,
+                  }}>{step.num}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#111827', lineHeight: 1.3 }}>
+                      {step.title}
+                    </div>
+                    <span style={{
+                      display: 'inline-block', marginTop: 4,
+                      fontSize: 8.5, fontWeight: 800, letterSpacing: '.06em',
+                      padding: '2px 7px', borderRadius: 20,
+                      background: ps.bg, color: ps.color, border: `1px solid ${ps.border}`,
+                    }}>{step.priority} PRIORITY</span>
+                  </div>
+                  <div style={{
+                    fontSize: 11, color: '#9ca3af', flexShrink: 0,
+                    transform: isOpen ? 'rotate(180deg)' : 'rotate(0)',
+                    transition: 'transform .25s',
+                  }}>▾</div>
+                </div>
+
+                {isOpen && (
+                  <div style={{ padding: '0 13px 14px', borderTop: '1px solid #f3f4f6' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 10 }}>
+                      {step.subsections.map((sub: any, subi: number) => (
+                        <div key={subi} style={{
+                          borderRadius: 9,
+                          background: sub.bg === 'transparent' ? '#fafafa' : sub.bg,
+                          border: `1px solid ${sub.border === 'transparent' ? '#f0f0f0' : sub.border}`,
+                          padding: '9px 11px',
+                        }}>
+                          {sub.label && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 }}>
+                              <div style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                                fontSize: 9, fontWeight: 800, color: sub.color,
+                                letterSpacing: '.05em', textTransform: 'uppercase',
+                              }}>
+                                {sub.icon} {sub.label}
+                              </div>
+                              {sub.key === 'tool' && promptText && <CopyPromptBtn text={promptText} />}
+                            </div>
+                          )}
+                          <div className="playbook-markdown" style={{ fontSize: '0.84rem', color: '#374151', lineHeight: 1.75 }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          }) : (
+            <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#1e293b', lineHeight: 1.8 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(playbookText)}</ReactMarkdown>
+            </div>
+          )}
+
+          {/* Week 1 Checklist */}
+          {dayTasks.length > 0 && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.1rem 1.25rem', marginTop: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 9, color: '#7c3aed', fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase' }}>Week 1 Execution Checklist</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', marginTop: 2 }}>Monday — Friday</div>
+                </div>
+                <div style={{
+                  background: checkCount === dayTasks.length ? '#dcfce7' : '#f5f3ff',
+                  borderRadius: 9, padding: '7px 11px', textAlign: 'center', minWidth: 46,
+                }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: checkCount === dayTasks.length ? '#16a34a' : '#7c3aed' }}>
+                    {checkCount}/{dayTasks.length}
+                  </div>
+                  <div style={{ fontSize: 8, color: '#9ca3af' }}>Done</div>
+                </div>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: '#f0effa', marginBottom: 10 }}>
+                <div style={{
+                  height: '100%', borderRadius: 3,
+                  background: checkCount === dayTasks.length ? '#16a34a' : 'linear-gradient(90deg, #7c3aed, #8b5cf6)',
+                  width: `${dayTasks.length ? (checkCount / dayTasks.length) * 100 : 0}%`,
+                  transition: 'width .4s ease',
+                }} />
+              </div>
+              {dayTasks.map((item: any) => (
+                <div key={item.day} onClick={() => toggleCheck(item.day)} style={{
+                  display: 'flex', gap: 11, alignItems: 'flex-start',
+                  padding: '9px 11px', borderRadius: 9, marginBottom: 5, cursor: 'pointer',
+                  background: checks[item.day] ? '#f0fdf4' : '#fafafa',
+                  border: `1px solid ${checks[item.day] ? '#bbf7d0' : '#f0f0f0'}`,
+                  transition: 'all .2s',
+                }}>
+                  <div style={{
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0, marginTop: 2,
+                    border: checks[item.day] ? 'none' : '2px solid #d1d5db',
+                    background: checks[item.day] ? '#16a34a' : '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all .2s',
+                  }}>
+                    {checks[item.day] && <span style={{ fontSize: 10, color: '#fff', fontWeight: 700 }}>✓</span>}
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: '#7c3aed', letterSpacing: '.06em', marginRight: 6 }}>{item.day}</span>
+                    <span style={{
+                      fontSize: 12, color: checks[item.day] ? '#9ca3af' : '#374151',
+                      textDecoration: checks[item.day] ? 'line-through' : 'none', lineHeight: 1.5,
+                    }}>{item.task}</span>
+                  </div>
+                </div>
+              ))}
+              {(() => {
+                const quoteMatch = checklist.match(/"([^"]+)"/);
+                return quoteMatch ? (
+                  <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 9, borderLeft: '3px solid #7c3aed', background: '#faf5ff' }}>
+                    <div style={{ fontSize: 11.5, color: '#4c1d95', fontStyle: 'italic', lineHeight: 1.65 }}>"{quoteMatch[1]}"</div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default PlaybookViewer;

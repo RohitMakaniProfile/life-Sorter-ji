@@ -1,63 +1,46 @@
-const API_BASE = import.meta.env.VITE_API_URL || '';
-const S = '/api/v1/agent/session';
-
-// ─── Helper: JSON POST ────────────────────────────────────────────
-async function post(path, body = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
-
-async function get(path) {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
+import { API_ROUTES } from '../../api/routes';
+import { apiGet, apiPost } from '../../api/http';
 
 // ─── Session ──────────────────────────────────────────────────────
-export const createSession = () => post(`${S}`);
+export const createSession = () => apiPost(API_ROUTES.agent.session, {});
 
 // ─── Q1 → Q2 → Q3 ───────────────────────────────────────────────
 export const submitOutcome = (sessionId, outcome, outcomeLabel) =>
-  post(`${S}/outcome`, { session_id: sessionId, outcome, outcome_label: outcomeLabel });
+  apiPost(API_ROUTES.agent.outcome, { session_id: sessionId, outcome, outcome_label: outcomeLabel });
 
 export const submitDomain = (sessionId, domain) =>
-  post(`${S}/domain`, { session_id: sessionId, domain });
+  apiPost(API_ROUTES.agent.domain, { session_id: sessionId, domain });
 
 export const submitTask = (sessionId, task) =>
-  post(`${S}/task`, { session_id: sessionId, task });
+  apiPost(API_ROUTES.agent.task, { session_id: sessionId, task });
 
 // ─── URL & Crawl ─────────────────────────────────────────────────
 export const submitUrl = (sessionId, businessUrl, gbpUrl = '') =>
-  post(`${S}/url`, { session_id: sessionId, business_url: businessUrl, gbp_url: gbpUrl });
+  apiPost(API_ROUTES.agent.url, { session_id: sessionId, business_url: businessUrl, gbp_url: gbpUrl });
 
 export const skipUrl = (sessionId) =>
-  post(`${S}/skip-url`, { session_id: sessionId });
+  apiPost(API_ROUTES.agent.skipUrl, { session_id: sessionId });
 
 export const getCrawlStatus = (sessionId) =>
-  get(`${S}/${sessionId}/crawl-status`);
+  apiGet(API_ROUTES.agent.crawlStatus(sessionId));
 
 // ─── Scale Questions ──────────────────────────────────────────────
 export const getScaleQuestions = (sessionId) =>
-  get(`${S}/${sessionId}/scale-questions`);
+  apiGet(API_ROUTES.agent.scaleQuestions(sessionId));
 
 export const submitScaleAnswers = (sessionId, answers) =>
-  post(`${S}/scale-answers`, { session_id: sessionId, answers });
+  apiPost(API_ROUTES.agent.scaleAnswers, { session_id: sessionId, answers });
 
 // ─── Diagnostic / RCA ─────────────────────────────────────────────
 export const startDiagnostic = (sessionId) =>
-  post(`${S}/start-diagnostic`, { session_id: sessionId });
+  apiPost(API_ROUTES.agent.startDiagnostic, { session_id: sessionId });
 
 export const submitAnswer = (sessionId, questionIndex, answer) =>
-  post(`${S}/answer`, { session_id: sessionId, question_index: questionIndex, answer });
+  apiPost(API_ROUTES.agent.answer, { session_id: sessionId, question_index: questionIndex, answer });
 
 // ─── Precision & Recommendations ──────────────────────────────────
 export const getPrecisionQuestions = (sessionId) =>
-  post(`${S}/precision-questions`, { session_id: sessionId });
+  apiPost(API_ROUTES.agent.precisionQuestions, { session_id: sessionId });
 
 export const getRecommendations = (sessionId) =>
-  post(`${S}/recommend`, { session_id: sessionId });
+  apiPost(API_ROUTES.agent.recommend, { session_id: sessionId });
