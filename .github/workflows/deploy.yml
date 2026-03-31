@@ -52,6 +52,8 @@ jobs:
         run: |
           echo "OPENAI_MODEL=gpt-4.1" >> $GITHUB_ENV
           echo "CLAUDE_MODEL=claude-opus-4-6" >> $GITHUB_ENV
+          echo "OPENROUTER_MODEL=z-ai/glm-5" >> $GITHUB_ENV
+          echo "OPENROUTER_CLAUDE_MODEL=anthropic/claude-sonnet-4-6" >> $GITHUB_ENV
           echo "GEMINI_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
           echo "GEMINI_SCOUT_MODELS=gemini-2.5-flash-lite" >> $GITHUB_ENV
           echo "SKILL_DEBUG_LOGS=true" >> $GITHUB_ENV
@@ -61,6 +63,7 @@ jobs:
 
           # Read LLM/search keys from GitHub secrets.
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
+          echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> $GITHUB_ENV
           echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> $GITHUB_ENV
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
           echo "SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> $GITHUB_ENV
@@ -85,6 +88,7 @@ jobs:
           secret_keys = [
             "DATABASE_URL",
             "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
             "CLAUDE_API_KEY",
             "GEMINI_API_KEY",
             "SERPER_API_KEY",
@@ -136,6 +140,7 @@ jobs:
         env:
           DATABASE_URL: ${{ env.DB_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
