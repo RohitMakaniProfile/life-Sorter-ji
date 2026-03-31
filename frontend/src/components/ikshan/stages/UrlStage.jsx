@@ -109,7 +109,7 @@ export default function UrlStage({
 
       {/* Back to Step 1 */}
       <button className="ik-s2__back" onClick={onBack}>
-        &lsaquo; Step 1
+        &lsaquo; BACK
       </button>
     </div>
   );

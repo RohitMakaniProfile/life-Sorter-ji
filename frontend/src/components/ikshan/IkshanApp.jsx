@@ -14,14 +14,14 @@ import * as api from './api';
 import { coreApi } from '../../api/services/core';
 import './IkshanApp.css';
 
-const IDLE_TIMEOUT = 10_000;
+const IDLE_TIMEOUT = 2_500;
 const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
 const phase2Path = (path) => `/phase2/${path}`;
 
 export default function IkshanApp() {
   const navigate = useNavigate();
   const canvasRef = useRef(null);
-  const [showScreensaver, setShowScreensaver] = useState(true);
+  const [showScreensaver, setShowScreensaver] = useState(false);
   const idleTimerRef = useRef(null);
 
   // ─── Idle timer → show screensaver ────────────────────
@@ -617,24 +617,23 @@ export default function IkshanApp() {
         <div className={`ik-canvas__track ${selectedOutcome ? 'ik-canvas__track--started' : ''}`}>
 
           {/* Column 0: Outcomes */}
-          <div className={`ik-col ${selectedOutcome ? 'ik-col--locked' : ''}`}>
+          <div className="ik-col">
             <div className="ik-col__nodes">
               {outcomeOptions.map((opt) => {
                 const isSelected = selectedOutcome?.id === opt.id;
                 const isHovered = hoveredOutcome === opt.id;
-                const isLocked = !!selectedOutcome;
                 return (
                   <div key={opt.id}
-                    className={`ik-col__node-wrap ${isLocked && !isSelected ? 'ik-col__node-wrap--dimmed' : ''}`}
-                    onMouseEnter={() => !isLocked && setHoveredOutcome(opt.id)}
+                    className={`ik-col__node-wrap ${selectedOutcome && !isSelected ? 'ik-col__node-wrap--dimmed' : ''}`}
+                    onMouseEnter={() => !selectedOutcome && setHoveredOutcome(opt.id)}
                     onMouseLeave={() => setHoveredOutcome(null)}>
                     <FlowNode
                       label={opt.text} subtext={opt.subtext}
                       variant={isSelected ? 'light' : 'dark'}
                       active={isSelected}
-                      onClick={isLocked ? undefined : () => handleOutcomeClick(opt)}
+                      onClick={() => handleOutcomeClick(opt)}
                     />
-                    {isHovered && !isLocked && OUTCOME_DOMAINS[opt.id] && (
+                    {isHovered && !selectedOutcome && OUTCOME_DOMAINS[opt.id] && (
                       <div className="ik-hover-branch">
                         <div className="ik-hover-branch__arrows">
                           <BranchArrows
@@ -669,20 +668,19 @@ export default function IkshanApp() {
                   tgtLabels={domains} />
               </div>
 
-              <div className={`ik-col ik-col--anim ${selectedDomain ? 'ik-col--locked' : ''}`}>
+              <div className={`ik-col ik-col--anim`}>
                 <div className="ik-col__nodes">
                   {domains.map((d) => {
                     const isSel = selectedDomain === d;
                     const isHov = hoveredDomain === d;
-                    const isLocked = !!selectedDomain;
                     return (
                       <div key={d}
-                        className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
-                        onMouseEnter={() => !isLocked && setHoveredDomain(d)}
+                        className={`ik-col__node-wrap ${selectedDomain && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                        onMouseEnter={() => !selectedDomain && setHoveredDomain(d)}
                         onMouseLeave={() => setHoveredDomain(null)}>
                         <FlowNode label={d} variant={isSel ? 'light' : 'dark'} active={isSel}
-                          onClick={isLocked ? undefined : () => handleDomainClick(d)} />
-                        {isHov && !isLocked && DOMAIN_TASKS[d] && (
+                          onClick={() => handleDomainClick(d)} />
+                        {isHov && !selectedDomain && DOMAIN_TASKS[d] && (
                           <div className="ik-hover-branch">
                             <div className="ik-hover-branch__arrows">
                               <BranchArrows
@@ -720,18 +718,17 @@ export default function IkshanApp() {
                       tgtLabels={tasks} />
                   </div>
 
-                  <div className={`ik-col ik-col--anim ${selectedTask ? 'ik-col--locked' : ''}`}>
+                  <div className={`ik-col ik-col--anim`}>
                     <div className="ik-col__nodes">
                       {tasks.map((t) => {
                         const isSel = selectedTask === t;
-                        const isLocked = !!selectedTask;
                         return (
                           <div key={t}
-                            className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
-                            onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                            className={`ik-col__node-wrap ${selectedTask && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                            onMouseEnter={() => !selectedTask && setHoveredTask(t)}
                             onMouseLeave={() => setHoveredTask(null)}>
                             <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
-                              onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                              onClick={() => handleTaskClick(t)} />
                           </div>
                         );
                       })}
@@ -753,36 +750,34 @@ export default function IkshanApp() {
                             tgtLabels={leftCol} />
                         </div>
 
-                        <div className={`ik-col ik-col--anim ${selectedTask ? 'ik-col--locked' : ''}`}>
+                        <div className={`ik-col ik-col--anim`}>
                           <div className="ik-col__nodes">
                             {leftCol.map((t) => {
                               const isSel = selectedTask === t;
-                              const isLocked = !!selectedTask;
                               return (
                                 <div key={t}
-                                  className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
-                                  onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                                  className={`ik-col__node-wrap ${selectedTask && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                                  onMouseEnter={() => !selectedTask && setHoveredTask(t)}
                                   onMouseLeave={() => setHoveredTask(null)}>
                                   <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
-                                    onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                                    onClick={() => handleTaskClick(t)} />
                                 </div>
                               );
                             })}
                           </div>
                         </div>
 
-                        <div className={`ik-col ik-col--anim ik-col--zigzag-right ${selectedTask ? 'ik-col--locked' : ''}`}>
+                        <div className={`ik-col ik-col--anim ik-col--zigzag-right`}>
                           <div className="ik-col__nodes ik-col__nodes--staggered">
                             {rightCol.map((t) => {
                               const isSel = selectedTask === t;
-                              const isLocked = !!selectedTask;
                               return (
                                 <div key={t}
-                                  className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
-                                  onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                                  className={`ik-col__node-wrap ${selectedTask && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                                  onMouseEnter={() => !selectedTask && setHoveredTask(t)}
                                   onMouseLeave={() => setHoveredTask(null)}>
                                   <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
-                                    onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                                    onClick={() => handleTaskClick(t)} />
                                 </div>
                               );
                             })}

@@ -35,8 +35,8 @@
 }
 
 .ik-flow-node--dark {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #151515;
+  border: 1px solid #505050;
   color: #fff;
 }
 

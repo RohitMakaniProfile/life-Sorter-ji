@@ -145,12 +145,12 @@
 
 .ik-col__node-wrap--dimmed {
   opacity: 0.3;
-  pointer-events: none;
+  cursor: pointer;
   transform: scale(0.96);
 }
 
 .ik-col--locked {
-  pointer-events: none;
+  /* no longer blocks interaction */
 }
 
 .ik-col--anim {
