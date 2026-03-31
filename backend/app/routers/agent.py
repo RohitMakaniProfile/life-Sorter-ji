@@ -263,17 +263,33 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
         claude_result = {"status": "question", **tree_q1}
         logger.info("RCA Q1 served from tree (0ms)", session_id=session.session_id)
     else:
-        # Fallback to live LLM call
-        claude_result = await generate_next_rca_question(
+        logger.warning(
+            "RCA Q1 tree miss; attempting LLM generation",
+            session_id=session.session_id,
             outcome=session.outcome or "",
-            outcome_label=session.outcome_label or "",
             domain=session.domain or "",
             task=session.task or "",
-            diagnostic_context=diagnostic or {},
-            rca_history=[],
-            business_profile=session.business_profile or None,
-            gbp_data=session.gbp_data or None,
+            has_diagnostic_context=bool(diagnostic),
         )
+        # Fallback to live LLM call
+        try:
+            claude_result = await generate_next_rca_question(
+                outcome=session.outcome or "",
+                outcome_label=session.outcome_label or "",
+                domain=session.domain or "",
+                task=session.task or "",
+                diagnostic_context=diagnostic or {},
+                rca_history=[],
+                business_profile=session.business_profile or None,
+                gbp_data=session.gbp_data or None,
+            )
+        except Exception as exc:
+            logger.exception(
+                "RCA Q1 LLM generation failed",
+                session_id=session.session_id,
+                error=str(exc),
+            )
+            claude_result = None
 
         # Log Claude RCA call to context pool
         if claude_result and claude_result.get("_meta"):
@@ -318,6 +334,13 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
     logger.warning(
         "Claude RCA unavailable, falling back to static questions",
         session_id=session.session_id,
+        fallback_reason=(
+            "empty_or_invalid_llm_result"
+            if not claude_result
+            else f"llm_status_{claude_result.get('status', 'unknown')}"
+        ),
+        tree_q1_found=bool(tree_q1),
+        has_diagnostic_sections=bool((diagnostic or {}).get("sections")),
     )
     session_store.set_rca_fallback(session.session_id)
 
@@ -341,6 +364,8 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
         "Fallback: static diagnostic sections loaded",
         session_id=session.session_id,
         num_sections=len(dynamic_qs),
+        questions_stored=len(session.dynamic_questions),
+        dynamic_questions_total=session.dynamic_questions_total,
     )
 
     return SetTaskResponse(
@@ -401,6 +426,12 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         "start-diagnostic: generating context-aware first question",
         session_id=session.session_id,
         context_used=context_used,
+        has_diagnostic_context=bool(diagnostic),
+        has_business_profile=bool(business_profile),
+        has_crawl_summary=bool(crawl_summary),
+        previous_dynamic_questions_count=len(session.dynamic_questions or []),
+        previous_dynamic_total=session.dynamic_questions_total,
+        previous_fallback_active=session.rca_fallback_active,
     )
 
     # Keep previous fallback questions in case adaptive question generation fails.
@@ -432,6 +463,12 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         claude_result = {"status": "question", **tree_q1}
         logger.info("start-diagnostic: both served from tree (0ms)", session_id=session.session_id)
     else:
+        logger.warning(
+            "start-diagnostic: tree miss; running LLM fallback path",
+            session_id=session.session_id,
+            tree_filter_found=bool(tree_filter),
+            tree_q1_found=bool(tree_q1),
+        )
         # Fallback to parallel LLM calls
         async def _run_filter():
             """Run task alignment filter — non-blocking, best-effort."""
@@ -441,22 +478,34 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
                     diagnostic_context=diagnostic,
                 )
             except Exception as exc:
-                logger.warning("Task filter error (non-blocking)", error=str(exc))
+                logger.warning(
+                    "Task filter error (non-blocking)",
+                    session_id=session.session_id,
+                    error=str(exc),
+                )
                 return None
 
         async def _run_first_question():
             """Generate first RCA question — critical path."""
-            return await generate_next_rca_question(
-                outcome=session.outcome or "",
-                outcome_label=session.outcome_label or "",
-                domain=session.domain or "",
-                task=session.task or "",
-                diagnostic_context=diagnostic,
-                rca_history=[],
-                business_profile=business_profile,
-                crawl_summary=crawl_summary,
-                gbp_data=session.gbp_data or None,
-            )
+            try:
+                return await generate_next_rca_question(
+                    outcome=session.outcome or "",
+                    outcome_label=session.outcome_label or "",
+                    domain=session.domain or "",
+                    task=session.task or "",
+                    diagnostic_context=diagnostic,
+                    rca_history=[],
+                    business_profile=business_profile,
+                    crawl_summary=crawl_summary,
+                    gbp_data=session.gbp_data or None,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "start-diagnostic: first-question LLM call failed",
+                    session_id=session.session_id,
+                    error=str(exc),
+                )
+                return None
 
         filter_result, claude_result = await asyncio.gather(
             _run_filter(),
@@ -490,6 +539,7 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         logger.warning(
             "start-diagnostic: task filter failed/skipped, using full context",
             session_id=session.session_id,
+            has_filter_result=False,
         )
 
     # Log to context pool
@@ -517,6 +567,8 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
             session_id=session.session_id,
             context_used=context_used,
             question=claude_result["question"][:80],
+            question_options_count=len(claude_result.get("options") or []),
+            source=("tree" if tree_q1 and tree_filter else "llm"),
         )
 
         return StartDiagnosticResponse(
@@ -535,15 +587,44 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         session.dynamic_questions_total = previous_dynamic_total
         session_store.update_session(session)
 
+        first_question_text = previous_dynamic_questions[0]
+        fallback_options: list[str] = []
+        fallback_allows_free_text = True
+        fallback_section = "rca"
+        fallback_section_label = "Diagnostic"
+
+        # Recover rich metadata (options/section) from stored diagnostic context when possible.
+        sections = (diagnostic or {}).get("sections") or []
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            if str(sec.get("question") or "").strip() != first_question_text.strip():
+                continue
+            raw_items = sec.get("items") or []
+            if isinstance(raw_items, list):
+                fallback_options = [str(x) for x in raw_items if str(x).strip()]
+            fallback_allows_free_text = bool(sec.get("allows_free_text", True))
+            fallback_section = str(sec.get("key") or "rca")
+            fallback_section_label = str(sec.get("label") or "Diagnostic")
+            break
+
         first_fallback = DynamicQuestion(
-            question=previous_dynamic_questions[0],
-            options=[],
-            allows_free_text=True,
+            question=first_question_text,
+            options=fallback_options,
+            allows_free_text=fallback_allows_free_text,
+            section=fallback_section,
+            section_label=fallback_section_label,
         )
         logger.warning(
             "start-diagnostic: Claude failed, restored fallback questions",
             session_id=session.session_id,
             restored_count=len(previous_dynamic_questions),
+            fallback_reason=(
+                "empty_or_invalid_llm_result"
+                if not claude_result
+                else f"llm_status_{claude_result.get('status', 'unknown')}"
+            ),
+            restored_options_count=len(fallback_options),
         )
         return StartDiagnosticResponse(
             session_id=session.session_id,
@@ -556,6 +637,12 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
     logger.warning(
         "start-diagnostic: Claude failed, no fallback questions available",
         session_id=session.session_id,
+        fallback_reason=(
+            "empty_or_invalid_llm_result"
+            if not claude_result
+            else f"llm_status_{claude_result.get('status', 'unknown')}"
+        ),
+        diagnostic_sections_count=len((diagnostic or {}).get("sections") or []),
     )
     return StartDiagnosticResponse(
         session_id=session.session_id,
@@ -696,21 +783,38 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
                 q_index=len(session.rca_history),
             )
         else:
-            # Fallback to live LLM call
-            claude_result = await generate_next_rca_question(
-                outcome=session.outcome or "",
-                outcome_label=session.outcome_label or "",
-                domain=session.domain or "",
-                task=session.task or "",
-                diagnostic_context=session.rca_diagnostic_context,
-                rca_history=session.rca_history,
-                business_profile=session.business_profile or None,
-                crawl_summary=session.crawl_summary or None,
-                gbp_data=session.gbp_data or None,
-                filtered_context=session.rca_filtered_context or None,
-                task_execution_summary=session.rca_task_execution_summary or None,
-                rca_running_summary=session.rca_running_summary or None,
+            logger.warning(
+                "RCA next-question tree miss; attempting LLM generation",
+                session_id=session.session_id,
+                q_index=len(session.rca_history),
+                rca_history_len=len(session.rca_history),
+                has_filtered_context=bool(session.rca_filtered_context),
+                has_running_summary=bool(session.rca_running_summary),
             )
+            # Fallback to live LLM call
+            try:
+                claude_result = await generate_next_rca_question(
+                    outcome=session.outcome or "",
+                    outcome_label=session.outcome_label or "",
+                    domain=session.domain or "",
+                    task=session.task or "",
+                    diagnostic_context=session.rca_diagnostic_context,
+                    rca_history=session.rca_history,
+                    business_profile=session.business_profile or None,
+                    crawl_summary=session.crawl_summary or None,
+                    gbp_data=session.gbp_data or None,
+                    filtered_context=session.rca_filtered_context or None,
+                    task_execution_summary=session.rca_task_execution_summary or None,
+                    rca_running_summary=session.rca_running_summary or None,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "RCA next-question LLM generation failed",
+                    session_id=session.session_id,
+                    q_index=len(session.rca_history),
+                    error=str(exc),
+                )
+                claude_result = None
 
         # Log to context pool
         if claude_result and claude_result.get("_meta"):
@@ -782,6 +886,12 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
             logger.warning(
                 "Claude RCA failed mid-flow, completing diagnostic",
                 session_id=session.session_id,
+                q_index=len(session.rca_history),
+                fallback_reason=(
+                    "empty_or_invalid_llm_result"
+                    if not claude_result
+                    else f"llm_status_{claude_result.get('status', 'unknown')}"
+                ),
             )
             session_store.set_rca_complete(body.session_id, "")
             return SubmitDynamicAnswerResponse(
