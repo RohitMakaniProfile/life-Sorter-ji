@@ -5,7 +5,7 @@ import VideoCard from './VideoCard';
 import type { AgentId, PipelineStage } from '../../api/client';
 import { downloadReportAsPdf } from '../../utils/downloadPdf';
 import { downloadMarkdownAsFile } from '../../utils/downloadMarkdown';
-import { getInsightFeedback, setInsightFeedback } from '../../api/client';
+import { getInsightFeedback, setInsightFeedback, getPhase2IsSuperAdmin } from '../../api/client';
 import SidePanel from './SidePanel';
 import type { PipelineState as SharedPipelineState } from '../../types';
 
@@ -541,6 +541,7 @@ export default function ChatUI({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const [contextMessageId, setContextMessageId] = useState<string | undefined>(undefined);
+  const canUseContextPanel = getPhase2IsSuperAdmin();
 
   const resolvedTitle = title ?? 'Chat';
   const resolvedPlaceholder = placeholder ?? 'Ask me anything…';
@@ -611,14 +612,16 @@ export default function ChatUI({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setContextOpen((v) => !v)}
-            className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
-            title="Toggle context panel"
-          >
-            {contextOpen ? 'Hide panel' : 'Show panel'}
-          </button>
+          {canUseContextPanel && (
+            <button
+              type="button"
+              onClick={() => setContextOpen((v) => !v)}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
+              title="Toggle context panel"
+            >
+              {contextOpen ? 'Hide panel' : 'Show panel'}
+            </button>
+          )}
         </div>
       </header>
 
@@ -698,10 +701,12 @@ export default function ChatUI({
                   isLast={i === messages.length - 1}
                   onApprovePlan={onApprovePlan}
                   onOpenLiveContext={() => {
+                    if (!canUseContextPanel) return;
                     setContextMessageId(undefined);
                     setContextOpen(true);
                   }}
                   onOpenContext={(messageId) => {
+                    if (!canUseContextPanel) return;
                     setContextMessageId(messageId);
                     setContextOpen(true);
                   }}
@@ -776,14 +781,16 @@ export default function ChatUI({
       </div>
       </div>
 
-      {/* Context side panel (persisted message context) */}
-      <SidePanel
-        open={contextOpen}
-        title={contextMessageId ? 'Context' : 'Live run'}
-        pipeline={contextMessageId ? null : livePipeline}
-        messageId={contextMessageId}
-        onClose={() => setContextOpen(false)}
-      />
+      {/* Context side panel (super admin only) */}
+      {canUseContextPanel && (
+        <SidePanel
+          open={contextOpen}
+          title={contextMessageId ? 'Context' : 'Live run'}
+          pipeline={contextMessageId ? null : livePipeline}
+          messageId={contextMessageId}
+          onClose={() => setContextOpen(false)}
+        />
+      )}
     </div>
   );
 }
