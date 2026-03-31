@@ -17,6 +17,7 @@ from typing import Any, Optional
 import structlog
 
 from app.db import get_pool
+from app.models.session import LLMCallLog, QuestionAnswer, SessionContext, SessionStage
 
 logger = structlog.get_logger()
 
@@ -96,6 +97,81 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
     if not record:
         return {}
     return dict(record)
+
+
+def _as_stage(value: Any) -> SessionStage:
+    try:
+        return SessionStage(str(value))
+    except Exception:
+        return SessionStage.OUTCOME
+
+
+def _to_question_answers(items: Any) -> list[QuestionAnswer]:
+    out: list[QuestionAnswer] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            QuestionAnswer(
+                question=str(item.get("question") or item.get("q") or ""),
+                answer=str(item.get("answer") or item.get("a") or ""),
+                question_type=str(item.get("question_type") or item.get("type") or "static"),
+            )
+        )
+    return out
+
+
+def _to_llm_logs(items: Any) -> list[LLMCallLog]:
+    out: list[LLMCallLog] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            LLMCallLog(
+                timestamp=str(item.get("timestamp") or ""),
+                service=str(item.get("service") or ""),
+                model=str(item.get("model") or ""),
+                purpose=str(item.get("purpose") or ""),
+                system_prompt=str(item.get("system_prompt") or ""),
+                user_message=str(item.get("user_message") or ""),
+                temperature=float(item.get("temperature") or 0.0),
+                max_tokens=int(item.get("max_tokens") or 0),
+                raw_response=str(item.get("raw_response") or ""),
+                latency_ms=int(item.get("latency_ms") or 0),
+                token_usage=item.get("token_usage") or {},
+                error=str(item.get("error") or ""),
+            )
+        )
+    return out
+
+
+def _row_to_session(record: Any) -> SessionContext:
+    row = _record_to_dict(record)
+    created_at = row.get("created_at") or datetime.utcnow()
+    updated_at = row.get("updated_at") or created_at
+    stage = _as_stage(row.get("stage"))
+    return SessionContext(
+        session_id=str(row.get("session_id") or ""),
+        created_at=created_at,
+        updated_at=updated_at,
+        stage=stage,
+        outcome=row.get("outcome"),
+        outcome_label=row.get("outcome_label"),
+        domain=row.get("domain"),
+        task=row.get("task"),
+        persona_doc_name=row.get("persona_doc_name"),
+        questions_answers=_to_question_answers(row.get("questions_answers")),
+        website_url=row.get("website_url"),
+        gbp_url=row.get("gbp_url"),
+        audience_insights=row.get("audience_insights") or {},
+        crawl_summary=row.get("crawl_summary") or {},
+        business_profile=row.get("business_profile") or {},
+        rca_history=row.get("rca_history") or [],
+        rca_summary=row.get("rca_summary") or "",
+        rca_complete=bool(row.get("rca_complete")),
+        early_recommendations=row.get("early_recommendations") or [],
+        llm_call_log=_to_llm_logs(row.get("llm_call_log")),
+    )
 
 
 def _strip_or_none(value: Optional[str]) -> Optional[str]:
@@ -203,6 +279,27 @@ async def upsert_session(session) -> dict:
             session_id=session.session_id,
             error=str(e),
         )
+        return {"success": False, "error": str(e)}
+
+
+async def get_session_by_id(session_id: str) -> dict:
+    """Fetch one persisted session row and hydrate SessionContext."""
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM user_sessions
+                WHERE session_id = $1
+                """,
+                session_id,
+            )
+        if not row:
+            return {"success": True, "data": None}
+        return {"success": True, "data": _row_to_session(row)}
+    except Exception as e:
+        logger.error("Failed to load session from PostgreSQL", session_id=session_id, error=str(e))
         return {"success": False, "error": str(e)}
 
 
