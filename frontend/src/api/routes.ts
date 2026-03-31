@@ -30,6 +30,7 @@ export const API_ROUTES = {
   aiChat: {
     stream: '/api/v1/ai-chat/stream',
     message: '/api/v1/ai-chat/message',
+    messageBackground: '/api/v1/ai-chat/message/background',
     messages: '/api/v1/ai-chat/messages',
     conversations: '/api/v1/ai-chat/conversations',
     conversationById: (id: string) => `/api/v1/ai-chat/conversations/${encodeURIComponent(id)}`,

@@ -235,8 +235,8 @@ export async function sendMessageStream(opts: SendMessageStreamOptions): Promise
   return readSseStream(response, callbacks);
 }
 
-export async function getPlanStatus(planId: string): Promise<{ planId: string; status: string }> {
-  return apiJson<{ planId: string; status: string }>(
+export async function getPlanStatus(planId: string): Promise<{ planId: string; status: string; runningTaskRefFound?: boolean }> {
+  return apiJson<{ planId: string; status: string; runningTaskRefFound?: boolean }>(
     `${API_ROUTES.aiChat.planStatus}?planId=${encodeURIComponent(planId)}`,
   );
 }
@@ -278,6 +278,39 @@ export async function sendMessage(opts: {
       message: opts.message,
       conversationId: opts.conversationId,
       agentId: opts.agentId,
+    }),
+  );
+}
+
+export async function sendMessageBackground(opts: {
+  message: string;
+  conversationId?: string;
+  agentId?: AgentId;
+  planId?: string;
+}): Promise<{
+  conversationId: string;
+  status?: string;
+  optionSelected?: string;
+  backgroundExecution?: boolean;
+  planId?: string;
+  assistantMessageId?: string;
+  agentId?: AgentId;
+}> {
+  return apiJsonPost<{
+    conversationId: string;
+    status?: string;
+    optionSelected?: string;
+    backgroundExecution?: boolean;
+    planId?: string;
+    assistantMessageId?: string;
+    agentId?: AgentId;
+  }>(
+    API_ROUTES.aiChat.messageBackground,
+    withPhase2Actor({
+      message: opts.message,
+      conversationId: opts.conversationId,
+      agentId: opts.agentId,
+      planId: opts.planId,
     }),
   );
 }

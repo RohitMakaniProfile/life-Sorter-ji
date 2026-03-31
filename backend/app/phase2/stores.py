@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 import traceback
+from urllib.parse import urlparse
 
 from asyncpg import UniqueViolationError
 
@@ -708,6 +709,148 @@ async def create_skill_call(
     return str(row["id"])
 
 
+async def fetch_skill_call_output(skill_call_id: str) -> list[dict[str, Any]]:
+    """Return skill_calls.output JSON array for one row (for scrape resume / checkpoint)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT output FROM skill_calls WHERE id = $1::bigint",
+            int(skill_call_id),
+        )
+    if not row:
+        return []
+    out = _to_obj(row["output"], [])
+    return out if isinstance(out, list) else []
+
+
+def _normalize_url_for_match(url: str) -> str:
+    raw = str(url or "").strip().lower()
+    if not raw:
+        return ""
+    return raw.rstrip("/")
+
+
+def _last_result_data_from_output(output: Any) -> Any:
+    rows = output if isinstance(output, list) else []
+    for entry in reversed(rows):
+        if isinstance(entry, dict) and entry.get("type") == "result":
+            return entry.get("data")
+    return None
+
+
+async def find_latest_scrape_cache_by_url(url: str, *, limit: int = 250) -> dict[str, Any] | None:
+    """
+    Return latest done scrape-playwright call for the same normalized URL with result data.
+    """
+    target = _normalize_url_for_match(url)
+    if not target:
+        return None
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, input, output, updated_at
+            FROM skill_calls
+            WHERE skill_id = 'scrape-playwright'
+              AND state = 'done'
+            ORDER BY updated_at DESC
+            LIMIT $1
+            """,
+            int(max(1, limit)),
+        )
+    for r in rows:
+        in_obj = _to_obj(r["input"], {})
+        args = in_obj.get("args") if isinstance(in_obj, dict) and isinstance(in_obj.get("args"), dict) else {}
+        row_url = _normalize_url_for_match(str(args.get("url") or ""))
+        if row_url != target:
+            continue
+        out = _to_obj(r["output"], [])
+        data = _last_result_data_from_output(out)
+        if data is None:
+            continue
+        return {
+            "id": str(r["id"]),
+            "data": data,
+            "updatedAt": r["updated_at"],
+        }
+    return None
+
+
+def _base_origin(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_pages_from_output(output: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    rows = output if isinstance(output, list) else []
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "page":
+            raw = entry.get("raw")
+            if isinstance(raw, dict) and raw.get("url"):
+                out.append(raw)
+    last_data = _last_result_data_from_output(rows)
+    if isinstance(last_data, dict):
+        pages = last_data.get("pages")
+        if isinstance(pages, list):
+            for p in pages:
+                if isinstance(p, dict) and p.get("url"):
+                    out.append(p)
+    return out
+
+
+async def find_scraped_pages_for_base_url(base_url: str, *, limit_calls: int = 300) -> list[dict[str, Any]]:
+    """
+    Return deduped page objects scraped under the same origin across prior done calls.
+    """
+    base = _base_origin(base_url)
+    if not base:
+        return []
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT input, output, updated_at
+            FROM skill_calls
+            WHERE skill_id = 'scrape-playwright'
+              AND state = 'done'
+            ORDER BY updated_at DESC
+            LIMIT $1
+            """,
+            int(max(1, limit_calls)),
+        )
+    seen: set[str] = set()
+    pages: list[dict[str, Any]] = []
+    for r in rows:
+        in_obj = _to_obj(r["input"], {})
+        args = in_obj.get("args") if isinstance(in_obj, dict) and isinstance(in_obj.get("args"), dict) else {}
+        req_url = str(args.get("url") or "").strip()
+        if req_url and not _normalize_url_for_match(req_url).startswith(_normalize_url_for_match(base)):
+            continue
+        out_obj = _to_obj(r["output"], [])
+        for p in _extract_pages_from_output(out_obj):
+            page_url = _normalize_url_for_match(str(p.get("url") or ""))
+            if not page_url:
+                continue
+            if not page_url.startswith(_normalize_url_for_match(base)):
+                continue
+            if page_url in seen:
+                continue
+            seen.add(page_url)
+            pages.append(p)
+    return pages
+
+
 async def push_skill_output(skill_call_id: str, entry: dict[str, Any]) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -772,8 +915,25 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         output = _to_obj(row["output"], [])
         if not isinstance(output, list):
             output = []
-        if text is not None or data is not None:
-            output.append({"type": "result", "summary": text, "text": text, "data": data, "at": now_iso()})
+        result_data = data
+        if isinstance(data, dict):
+            page_entries = data.get("_pageEntries")
+            if isinstance(page_entries, list):
+                for item in page_entries:
+                    if not isinstance(item, dict):
+                        continue
+                    output.append(
+                        {
+                            "type": "page",
+                            "url": str(item.get("url") or ""),
+                            "raw": item.get("raw"),
+                            "text": str(item.get("text") or ""),
+                            "at": now_iso(),
+                        }
+                    )
+                result_data = {k: v for k, v in data.items() if k != "_pageEntries"}
+        if text is not None or result_data is not None:
+            output.append({"type": "result", "summary": text, "text": text, "data": result_data, "at": now_iso()})
 
         started_at = row["started_at"] or now_dt()
         try:
@@ -920,6 +1080,7 @@ async def get_plan_run(plan_id: str) -> dict[str, Any] | None:
         "conversationId": row["conversation_id"],
         "userMessageId": row["user_message_id"],
         "planMessageId": row["plan_message_id"],
+        "executionMessageId": row.get("execution_message_id") if hasattr(row, "get") else None,
         "status": row["status"],
         "planMarkdown": row["plan_markdown"],
         "planJson": _to_obj(row["plan_json"], {"steps": []}),
@@ -955,6 +1116,9 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     if "planMarkdown" in patch:
         fields.append(f"plan_markdown = ${len(values) + 1}")
         values.append(patch["planMarkdown"])
+    if "executionMessageId" in patch:
+        fields.append(f"execution_message_id = ${len(values) + 1}")
+        values.append(patch["executionMessageId"])
     if "planJson" in patch:
         fields.append(f"plan_json = ${len(values) + 1}::jsonb")
         values.append(_json_dumps(patch["planJson"]))
@@ -966,6 +1130,11 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     q = f"UPDATE plan_runs SET {', '.join(fields)} WHERE id = ${len(values)}"
     pool = get_pool()
     async with pool.acquire() as conn:
+        if "executionMessageId" in patch:
+            try:
+                await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS execution_message_id TEXT")
+            except Exception:
+                pass
         await conn.execute(q, *values)
 
 

@@ -1,0 +1,62 @@
+name: Deploy Scraper to Cloud Run
+
+on:
+  push:
+    branches:
+      - development
+      - production
+    paths:
+      - "scraper/**"
+      - ".github/workflows/deploy-scraper.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIP }}
+          service_account: ${{ secrets.GCP_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set variables
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "SERVICE=ikshan-scraper-dev" >> $GITHUB_ENV
+            echo "REPO=ikshan-scraper-dev" >> $GITHUB_ENV
+          else
+            echo "SERVICE=ikshan-scraper-prod" >> $GITHUB_ENV
+            echo "REPO=ikshan-scraper-prod" >> $GITHUB_ENV
+          fi
+
+      - name: Build & Push Docker Image
+        run: |
+          gcloud builds submit ./scraper \
+            --region asia-south1 \
+            --tag asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
+            --quiet
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE \
+            --image asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
+            --region asia-south1 \
+            --platform managed \
+            --timeout=3600 \
+            --memory=2Gi \
+            --cpu=1 \
+            --concurrency=1 \
+            --min-instances=0 \
+            --allow-unauthenticated

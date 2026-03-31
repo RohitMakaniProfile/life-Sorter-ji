@@ -18,6 +18,9 @@ import urllib.request
 import urllib.robotparser
 from collections import deque
 from datetime import datetime, timezone
+from threading import Lock, Thread
+_PROGRESS_LOCK = Lock()
+
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -56,6 +59,13 @@ SKIP_EXTENSIONS = {
     ".xml",
     ".json",  # sitemaps, API responses — we only scrape HTML pages
 }
+
+
+def norm_crawl_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    return u.rstrip("/") or u
 
 
 def should_skip_url(url: str) -> bool:
@@ -207,7 +217,10 @@ def _progress(obj: dict) -> None:
     if "streamKind" not in obj:
         evt = str(obj.get("event") or "").strip().lower()
         obj["streamKind"] = "data" if evt == "page_data" else "info"
-    print(json.dumps(obj), file=sys.stderr, flush=True)
+    # Parallel workers can emit concurrently; serialize stderr writes so each line
+    # remains a valid standalone JSON object.
+    with _PROGRESS_LOCK:
+        print(json.dumps(obj), file=sys.stderr, flush=True)
 
 
 def _fetch_sitemap_urls(base_url: str, base_domain: str) -> list[str]:
@@ -318,6 +331,37 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
         await asyncio.sleep(0.3)
 
 
+def _hydrate_parallel_resume(
+    resume: dict | None,
+    skip_urls: set[str],
+    base_url: str,
+) -> tuple[deque, set, set, list[str], list[dict]] | None:
+    """
+    Return bootstrapped state from v1 parallel checkpoint, or None for fresh crawl.
+    """
+    if not resume or not isinstance(resume, dict):
+        return None
+    if int(resume.get("v") or 0) != 1 or not resume.get("parallel"):
+        return None
+    to_visit = deque(norm_crawl_url(u) for u in (resume.get("to_visit") or []) if norm_crawl_url(u))
+    discovered = {norm_crawl_url(u) for u in (resume.get("discovered") or []) if norm_crawl_url(u)}
+    scraped = {norm_crawl_url(u) for u in (resume.get("scraped") or []) if norm_crawl_url(u)}
+    scraped_urls = [norm_crawl_url(u) for u in (resume.get("scraped_urls") or []) if norm_crawl_url(u)]
+    failed_list = list(resume.get("failed_urls") or [])
+    if not isinstance(failed_list, list):
+        failed_list = []
+    failed_list = [x for x in failed_list if isinstance(x, dict)]
+    skip_norm = {norm_crawl_url(u) for u in skip_urls if norm_crawl_url(u)}
+    for u in skip_norm:
+        scraped.add(u)
+        if u not in scraped_urls:
+            scraped_urls.append(u)
+    bu = norm_crawl_url(base_url)
+    if bu and bu not in discovered:
+        discovered.add(bu)
+    return to_visit, discovered, scraped, scraped_urls, failed_list
+
+
 async def _crawl_parallel_async(
     base_url: str,
     base_domain: str,
@@ -327,24 +371,61 @@ async def _crawl_parallel_async(
     robots_parser,
     t_start: float,
     headless: bool,
+    *,
+    resume: dict | None = None,
+    skip_urls: set[str] | None = None,
 ) -> dict:
-    to_visit = deque()
-    discovered = set()
-    scraped = set()
-    scraped_urls: list[str] = []
-    failed_list: list[dict] = []
+    skip_norm = {norm_crawl_url(u) for u in (skip_urls or set()) if norm_crawl_url(u)}
+    hydrated = _hydrate_parallel_resume(resume, skip_norm, base_url)
+
+    to_visit: deque
+    discovered: set
+    scraped: set
+    scraped_urls: list[str]
+    failed_list: list[dict]
+
+    if hydrated is not None:
+        to_visit, discovered, scraped, scraped_urls, failed_list = hydrated
+        for u in skip_norm:
+            scraped.add(u)
+            if u not in scraped_urls:
+                scraped_urls.append(u)
+    else:
+        to_visit = deque()
+        discovered = set()
+        scraped = set()
+        scraped_urls = []
+        failed_list = []
+        bu = norm_crawl_url(base_url)
+        if bu:
+            to_visit.append(bu)
+        for u in _fetch_sitemap_urls(base_url, base_domain)[:500]:
+            un = norm_crawl_url(u)
+            if not un:
+                continue
+            if un not in discovered and not should_skip_url(un) and not _is_blog_url(un):
+                if not respect_robots or not robots_parser or robots_parser.can_fetch("*", un):
+                    to_visit.append(un)
+
     lock = asyncio.Lock()
     stop_flag = asyncio.Event()
     discovery_idle_count = 0
     scraper_idle_count = 0
     IDLE_THRESHOLD = 2
 
-    to_visit.append(base_url)
-    for u in _fetch_sitemap_urls(base_url, base_domain)[:500]:
-        u = (u.rstrip("/") or u)
-        if u not in discovered and not should_skip_url(u) and not _is_blog_url(u):
-            if not respect_robots or not robots_parser or robots_parser.can_fetch("*", u):
-                to_visit.append(u)
+    async def _emit_checkpoint() -> None:
+        async with lock:
+            payload = {
+                "v": 1,
+                "parallel": True,
+                "base_url": norm_crawl_url(base_url),
+                "to_visit": list(to_visit),
+                "discovered": list(discovered),
+                "scraped": list(scraped),
+                "scraped_urls": list(scraped_urls),
+                "failed_urls": list(failed_list),
+            }
+        _progress({"event": "checkpoint", "parallel": True, "payload": payload, "streamKind": "info"})
 
     _progress({"event": "started", "parallel": True})
 
@@ -390,7 +471,9 @@ async def _crawl_parallel_async(
                     internal, _ = parse_links(html, url, base_domain)
                     async with lock:
                         for link in internal:
-                            ln = (link.rstrip("/") or link)
+                            ln = norm_crawl_url(link)
+                            if not ln:
+                                continue
                             if ln not in discovered and not should_skip_url(ln) and not _is_blog_url(ln):
                                 if not respect_robots or not robots_parser or robots_parser.can_fetch("*", ln):
                                     to_visit.append(ln)
@@ -422,14 +505,22 @@ async def _crawl_parallel_async(
                     await asyncio.sleep(0.5)
                     continue
                 scraper_idle_count = 0
+                if url in skip_norm:
+                    async with lock:
+                        if url not in scraped_urls:
+                            scraped_urls.append(url)
+                    await _emit_checkpoint()
+                    await asyncio.sleep(0.2)
+                    continue
                 rec = await _scrape_single_page_async(context_scrape, url, 0, base_domain, robots_parser, respect_robots)
                 if rec:
                     async with lock:
                         scraped_urls.append(url)
                     _progress({"event": "page_data", **rec})
+                    await _emit_checkpoint()
                     for link in rec.get("links_internal", []):
-                        ln = (link.rstrip("/") or link)
-                        if _is_blog_url(ln):
+                        ln = norm_crawl_url(link)
+                        if not ln or _is_blog_url(ln):
                             continue
                         async with lock:
                             if ln not in discovered and not should_skip_url(ln):
@@ -467,6 +558,8 @@ def crawl_with_playwright(
     headless: bool,
     deep: bool = False,
     parallel: bool = False,
+    resume_checkpoint: dict | None = None,
+    skip_urls: list[str] | None = None,
 ) -> dict:
     t_start = time.time()
 
@@ -485,14 +578,49 @@ def crawl_with_playwright(
         except Exception:
             robots_parser = None
 
+    skip_set = {norm_crawl_url(u) for u in (skip_urls or []) if norm_crawl_url(u)}
+
     if parallel:
         if async_playwright is None:
             raise RuntimeError("playwright async_api required for parallel crawl")
-        return asyncio.run(
-            _crawl_parallel_async(
-                base_url, base_domain, max_pages, max_depth, respect_robots, robots_parser, t_start, headless
-            )
+        coro = _crawl_parallel_async(
+            base_url,
+            base_domain,
+            max_pages,
+            max_depth,
+            respect_robots,
+            robots_parser,
+            t_start,
+            headless,
+            resume=resume_checkpoint,
+            skip_urls=skip_set,
         )
+        try:
+            return asyncio.run(coro)
+        except RuntimeError:
+            # Some environments can have an active event loop already; run in a fresh loop/thread.
+            result_box: dict[str, dict] = {}
+            err_box: dict[str, BaseException] = {}
+
+            def _runner() -> None:
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result_box["value"] = loop.run_until_complete(coro)
+                except BaseException as e:
+                    err_box["err"] = e
+                finally:
+                    try:
+                        loop.close()
+                    except Exception:
+                        pass
+
+            t = Thread(target=_runner, daemon=True)
+            t.start()
+            t.join()
+            if "err" in err_box:
+                raise err_box["err"]
+            return result_box.get("value") or {}
 
     scraped_urls: list[str] = []
     failed_list: list[dict] = []
@@ -591,11 +719,29 @@ def main():
     parser.add_argument("--no-parallel", action="store_false", dest="parallel")
     parser.add_argument("--no-robots", action="store_true")
     parser.add_argument("--no-headless", action="store_true")
+    parser.add_argument(
+        "--job-json",
+        default=None,
+        help="Optional JSON file with resumeCheckpoint and skipUrls for crawl resume",
+    )
     args = parser.parse_args()
 
     if not HAS_PLAYWRIGHT:
         print(json.dumps({"error": "playwright_not_installed"}), flush=True)
         return
+
+    job: dict = {}
+    if args.job_json:
+        try:
+            with open(args.job_json, encoding="utf-8") as jf:
+                job = json.load(jf)
+            if not isinstance(job, dict):
+                job = {}
+        except Exception:
+            job = {}
+
+    resume_ck = job.get("resumeCheckpoint") if isinstance(job.get("resumeCheckpoint"), dict) else None
+    skip_list = job.get("skipUrls") if isinstance(job.get("skipUrls"), list) else None
 
     result = crawl_with_playwright(
         args.url,
@@ -605,6 +751,8 @@ def main():
         headless=not args.no_headless,
         deep=args.deep,
         parallel=getattr(args, "parallel", False),
+        resume_checkpoint=resume_ck,
+        skip_urls=[str(u) for u in skip_list] if skip_list else None,
     )
 
     if args.output:

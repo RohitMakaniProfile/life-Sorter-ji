@@ -123,6 +123,122 @@ async def send_message(req: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/message/background")
+async def send_message_background(req: Request) -> dict[str, Any]:
+    """
+    Start option-based execution in background (durable across frontend refresh).
+    Currently used for plan approve path.
+    """
+    body = await req.json()
+
+    # Prefer direct approve/cancel by planId when provided.
+    msg = _normalize_option(str(body.get("message") or ""))
+    plan_id_direct = str(body.get("planId") or "").strip()
+    conversation_id_direct = str(body.get("conversationId") or "").strip()
+
+    # Backward-compatible recovery: if planId isn't sent by frontend, resolve the latest
+    # pending plan from conversation history.
+    if not plan_id_direct and conversation_id_direct and msg in ("approve", "cancel"):
+        conv = await get_conversation(conversation_id_direct)
+        if conv:
+            messages = conv.get("messages") or []
+            for m in reversed(messages):
+                if not isinstance(m, dict):
+                    continue
+                if str(m.get("role") or "") != "assistant":
+                    continue
+                pid = str(m.get("planId") or "").strip()
+                if not pid:
+                    continue
+                opts = m.get("options") if isinstance(m.get("options"), list) else []
+                norm_opts = {_normalize_option(str(o)) for o in opts if isinstance(o, str)}
+                # Prefer plans that still expose options; otherwise fallback to latest planId.
+                if msg in norm_opts:
+                    plan_id_direct = pid
+                    break
+                if not plan_id_direct:
+                    plan_id_direct = pid
+
+    if plan_id_direct and conversation_id_direct and msg in ("approve", "cancel"):
+        if msg == "cancel":
+            await update_plan_run(plan_id_direct, {"status": "cancelled"})
+            await append_message(conversation_id_direct, "assistant", "Plan cancelled.", kind="final")
+            return {
+                "mode": "option",
+                "conversationId": conversation_id_direct,
+                "optionSelected": "cancel",
+                "status": "cancelled",
+                "planId": plan_id_direct,
+            }
+        if not str(body.get("agentId") or "").strip():
+            raise HTTPException(status_code=400, detail="agentId is required for approve")
+        plan = await get_plan_run(plan_id_direct)
+        if not plan:
+            raise HTTPException(status_code=404, detail="plan not found")
+        approve_body = {
+            "planId": plan_id_direct,
+            "conversationId": conversation_id_direct,
+            "planMarkdown": str(body.get("planMarkdown") or plan.get("planMarkdown") or ""),
+            "agentId": body.get("agentId"),
+            "sessionId": body.get("sessionId"),
+            "userId": body.get("userId"),
+        }
+        started = await phase2_router.ensure_plan_approval_background(approve_body)
+        return {
+            "mode": "option",
+            "conversationId": conversation_id_direct,
+            "optionSelected": "approve",
+            "status": "accepted",
+            "planId": plan_id_direct,
+            "backgroundExecution": True,
+            **started,
+        }
+
+    matched = await _match_pending_option(body)
+    if not matched:
+        raise HTTPException(status_code=400, detail="No pending option found for background execution")
+
+    last_assistant, selected, already_logged = matched
+    conversation_id = str(body.get("conversationId") or "").strip()
+    if not already_logged:
+        await append_message(conversation_id, "user", selected)
+
+    lower = _normalize_option(selected)
+    plan_id = str(last_assistant.get("planId") or "").strip()
+    if lower == "cancel":
+        if plan_id:
+            await update_plan_run(plan_id, {"status": "cancelled"})
+        await append_message(conversation_id, "assistant", "Plan cancelled.", kind="final")
+        return {
+            "mode": "option",
+            "conversationId": conversation_id,
+            "optionSelected": selected,
+            "status": "cancelled",
+        }
+
+    if lower != "approve" or not plan_id or not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="Only approve option is supported for /message/background")
+
+    approve_body = {
+        "planId": plan_id,
+        "conversationId": conversation_id,
+        "planMarkdown": str(last_assistant.get("content") or ""),
+        "agentId": body.get("agentId"),
+        "sessionId": body.get("sessionId"),
+        "userId": body.get("userId"),
+    }
+    started = await phase2_router.ensure_plan_approval_background(approve_body)
+    return {
+        "mode": "option",
+        "conversationId": conversation_id,
+        "optionSelected": selected,
+        "status": "accepted",
+        "planId": plan_id,
+        "backgroundExecution": True,
+        **started,
+    }
+
+
 @router.post("/stream")
 async def send_message_stream(req: Request) -> StreamingResponse:
     body = await req.json()
@@ -145,20 +261,7 @@ async def send_message_stream(req: Request) -> StreamingResponse:
                 "sessionId": body.get("sessionId"),
                 "userId": body.get("userId"),
             }
-            started = await phase2_router.schedule_plan_approval_background(approve_body)
-
-            async def approve_background_sse():
-                yield _sse(
-                    {
-                        "stage": "thinking",
-                        "label": "Executing in background",
-                        "stageIndex": 0,
-                        "agentId": started.get("agentId"),
-                    }
-                )
-                yield _sse({"done": True, "backgroundExecution": True, **started})
-
-            return StreamingResponse(approve_background_sse(), media_type="text/event-stream")
+            return await phase2_router._approve_plan_stream_body(approve_body)
         if lower == "cancel":
             plan_id = str(last_assistant.get("planId") or "").strip()
             if plan_id:
@@ -194,7 +297,11 @@ async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, An
     row = await get_plan_run(plan_id.strip())
     if not row:
         raise HTTPException(status_code=404, detail="plan not found")
-    return {"planId": plan_id.strip(), "status": row.get("status")}
+    return {
+        "planId": plan_id.strip(),
+        "status": row.get("status"),
+        "runningTaskRefFound": phase2_router.is_plan_background_task_running(plan_id.strip()),
+    }
 
 
 @router.get("/messages")
