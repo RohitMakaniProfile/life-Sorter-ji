@@ -23,24 +23,14 @@ from app.services import user_session_service
 
 logger = structlog.get_logger()
 
-# In-memory session store (replace with Redis/DB in production)
+# Kept only for backward compatibility with delete_session/no-op cache touches.
 _sessions: dict[str, SessionContext] = {}
-
-# Max sessions to keep in memory (LRU eviction)
-MAX_SESSIONS = 1000
 
 
 def create_session() -> SessionContext:
     """Create a new session with a unique ID."""
     session_id = str(uuid.uuid4())
     session = SessionContext(session_id=session_id)
-
-    # Evict oldest sessions if at capacity
-    if len(_sessions) >= MAX_SESSIONS:
-        oldest_id = min(_sessions, key=lambda k: _sessions[k].created_at)
-        del _sessions[oldest_id]
-        logger.info("Evicted oldest session", session_id=oldest_id)
-
     _sessions[session_id] = session
     logger.info("Session created", session_id=session_id)
     _persist_session(session)
@@ -48,8 +38,30 @@ def create_session() -> SessionContext:
 
 
 def get_session(session_id: str) -> Optional[SessionContext]:
-    """Retrieve a session by ID."""
-    return _sessions.get(session_id)
+    """Retrieve session from cache; optionally hydrate from DB outside event loop."""
+    cached = _sessions.get(session_id)
+    if cached:
+        return cached
+
+    # In async request handlers, avoid cross-loop DB access from sync function.
+    # Session is expected to already be warm in-process for active flows.
+    try:
+        asyncio.get_running_loop()
+        return None
+    except RuntimeError:
+        pass
+
+    try:
+        loaded = asyncio.run(user_session_service.get_session_by_id(session_id))
+    except Exception as exc:
+        logger.error("Session load failed", session_id=session_id, error=str(exc))
+        return None
+    if isinstance(loaded, dict) and loaded.get("success"):
+        session = loaded.get("data")
+        if isinstance(session, SessionContext):
+            _sessions[session_id] = session
+            return session
+    return None
 
 
 def update_session(session: SessionContext) -> SessionContext:
@@ -61,21 +73,24 @@ def update_session(session: SessionContext) -> SessionContext:
 
 
 def _persist_session(session: SessionContext) -> None:
-    """Fire-and-forget upsert to PostgreSQL. Non-blocking."""
+    """Write-through persistence to PostgreSQL (source of truth)."""
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(user_session_service.upsert_session(session))
     except RuntimeError:
-        # No running event loop (e.g., tests) — skip persistence
-        pass
+        # No running event loop (e.g., tests / scripts) — persist synchronously.
+        try:
+            asyncio.run(user_session_service.upsert_session(session))
+        except Exception as exc:
+            logger.error("Session persist failed", session_id=session.session_id, error=str(exc))
+    except Exception as exc:
+        logger.error("Session persist failed", session_id=session.session_id, error=str(exc))
 
 
 def delete_session(session_id: str) -> bool:
     """Delete a session."""
-    if session_id in _sessions:
-        del _sessions[session_id]
-        return True
-    return False
+    _sessions.pop(session_id, None)
+    return True
 
 
 def set_outcome(session_id: str, outcome: str, outcome_label: str) -> Optional[SessionContext]:
