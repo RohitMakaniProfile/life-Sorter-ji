@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from app.phase2.ai import AiHelper
 from app.config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
+from app.phase2.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
 import httpx
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
@@ -374,6 +375,77 @@ async def _summarize_multi_page(
     return "\n\n".join(blocks)
 
 
+async def _summarize_multi_page_entries(
+    skill_id: str,
+    data: Any,
+    *,
+    array_path: str | None,
+    content_field: str,
+    url_field: str,
+    fallback_text: str,
+    on_progress: ProgressCb | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    pages = _get_by_path(data, array_path)
+    if not isinstance(pages, list) or not pages:
+        return [], await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
+
+    ai = AiHelper(provider="openai", temperature=0.2)
+    entries: list[dict[str, Any]] = []
+    blocks: list[str] = []
+
+    for idx, item in enumerate(pages, start=1):
+        if not isinstance(item, dict):
+            continue
+        page_url = str(item.get(url_field) or f"(page {idx})")
+        page_content = _clean_text(str(item.get(content_field) or ""))
+        if not page_content:
+            continue
+        page_content = page_content[:14_000]
+        prompt = "\n".join(
+            [
+                f"Skill: {skill_id}",
+                f"Page URL: {page_url}",
+                "Rewrite the page content into concise natural language, preserving all key information and removing redundant words/repetition.",
+                "Do not invent data. Keep it compact and faithful.",
+                "",
+                "Page content:",
+                page_content,
+            ]
+        )
+        try:
+            res = await ai.chat(
+                message=prompt,
+                system_prompt="You compress webpage extraction text into faithful natural-language notes.",
+            )
+            await _emit_summary_token_usage(
+                on_progress,
+                stage=f"skill-summary.{skill_id}.page",
+                input_tokens=res.input_tokens,
+                output_tokens=res.output_tokens,
+            )
+            page_summary = (res.message or "").strip()
+        except Exception:
+            page_summary = page_content
+        if page_summary:
+            entries.append({"url": page_url, "raw": item, "text": page_summary})
+            blocks.append(f"page: {page_url}\ncontent: {page_summary}")
+
+    if not blocks:
+        return [], await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
+    return entries, "\n\n".join(blocks)
+
+
+def _is_homepage_scrape(args: dict[str, Any] | None) -> bool:
+    if not isinstance(args, dict):
+        return False
+    max_pages = int(args.get("maxPages") or 0)
+    max_depth = int(args.get("maxDepth") or 0)
+    deep = bool(args.get("deep")) if "deep" in args else False
+    if max_pages <= 1:
+        return True
+    return max_depth <= 0 and not deep
+
+
 def _platform_scout_heuristic(
     message: str,
     business_url: str,
@@ -580,7 +652,13 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
 async def _emit(on_progress: ProgressCb | None, event: dict[str, Any]) -> None:
     if on_progress is None:
         return
-    await on_progress(event)
+    try:
+        await on_progress(event)
+    except Exception as exc:
+        try:
+            print(f"[skills.service] on_progress-failed | {exc}")
+        except Exception:
+            pass
 
 
 async def _stream_skill_subprocess_stdout(
@@ -656,7 +734,56 @@ async def run_skill(
 
     # Offload Playwright-heavy crawling to dedicated scraper microservice.
     if skill_id == "scrape-playwright":
-        return await _run_scrape_playwright_remote(message=message, args=args or {}, on_progress=on_progress)
+        safe_args = args or {}
+        lookup_url = str(safe_args.get("url") or "").strip() or _extract_url(message)
+        result: SkillRunResult
+        if lookup_url and _is_homepage_scrape(safe_args):
+            cached = await find_latest_scrape_cache_by_url(lookup_url)
+            if cached and cached.get("data") is not None:
+                await _emit(
+                    on_progress,
+                    {
+                        "stage": "running",
+                        "type": "info",
+                        "message": f"cache hit for {lookup_url}",
+                        "meta": {
+                            "event": "cache_hit",
+                            "url": lookup_url,
+                            "cacheSkillCallId": str(cached.get("id") or ""),
+                        },
+                    },
+                )
+                result = SkillRunResult(status="ok", text="", error=None, data=cached.get("data"), duration_ms=0)
+            else:
+                result = await _run_scrape_playwright_remote(message=message, args=safe_args, on_progress=on_progress)
+        else:
+            result = await _run_scrape_playwright_remote(message=message, args=safe_args, on_progress=on_progress)
+
+        if result.status == "ok" and result.data is not None and manifest.summary_mode in ("single", "multi_page"):
+            try:
+                if manifest.summary_mode == "multi_page":
+                    page_entries, summary_text = await _summarize_multi_page_entries(
+                        skill_id=skill_id,
+                        data=result.data,
+                        array_path=manifest.summary_array_path,
+                        content_field=manifest.summary_content_field,
+                        url_field=manifest.summary_url_field,
+                        fallback_text=result.text,
+                        on_progress=on_progress,
+                    )
+                    result.text = summary_text
+                    if page_entries and isinstance(result.data, dict):
+                        result.data = {**result.data, "_pageEntries": page_entries}
+                else:
+                    result.text = await _summarize_single(
+                        skill_id=skill_id,
+                        data=result.data,
+                        fallback_text=result.text,
+                        on_progress=on_progress,
+                    )
+            except Exception:
+                pass
+        return result
 
     script_path = manifest.directory / manifest.entry
     if not script_path.exists():
@@ -767,6 +894,41 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
         if k in args and args[k] is not None:
             payload[k] = args[k]
 
+    existing_pages = await find_scraped_pages_for_base_url(url)
+    existing_urls = sorted(
+        {
+            str(p.get("url") or "").strip().rstrip("/")
+            for p in existing_pages
+            if isinstance(p, dict) and str(p.get("url") or "").strip()
+        }
+    )
+    if existing_urls:
+        await _emit(
+            on_progress,
+            {
+                "stage": "running",
+                "type": "info",
+                "message": f"reusing {len(existing_urls)} previously scraped urls",
+                "meta": {
+                    "event": "reuse_existing_urls",
+                    "url": url,
+                    "reusedCount": len(existing_urls),
+                },
+            },
+        )
+
+    resume_ck = args.get("resumeCheckpoint") if isinstance(args.get("resumeCheckpoint"), dict) else None
+    skip_list = args.get("skipUrls") if isinstance(args.get("skipUrls"), list) else None
+    if resume_ck:
+        payload["resumeCheckpoint"] = resume_ck
+    merged_skip: list[str] = []
+    if skip_list:
+        merged_skip.extend([str(u).strip() for u in skip_list if str(u).strip()])
+    merged_skip.extend(existing_urls)
+    deduped_skip = sorted({u.rstrip("/") or u for u in merged_skip if u})
+    if deduped_skip:
+        payload["skipUrls"] = deduped_skip
+
     done_result: dict[str, Any] | None = None
     err: str | None = None
 
@@ -838,6 +1000,24 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
 
     text = str(done_result.get("text") or "")
     data = done_result.get("data")
+    if isinstance(data, dict):
+        old_pages = existing_pages
+        new_pages = data.get("pages") if isinstance(data.get("pages"), list) else []
+        merged: dict[str, dict[str, Any]] = {}
+        for p in old_pages:
+            if not isinstance(p, dict):
+                continue
+            pu = str(p.get("url") or "").strip().rstrip("/")
+            if pu:
+                merged[pu] = p
+        for p in new_pages:
+            if not isinstance(p, dict):
+                continue
+            pu = str(p.get("url") or "").strip().rstrip("/")
+            if pu:
+                merged[pu] = p
+        if merged:
+            data = {**data, "pages": list(merged.values()), "reusedPageCount": len(old_pages)}
     status = "error" if err else "ok"
 
     return SkillRunResult(

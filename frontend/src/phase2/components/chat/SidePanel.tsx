@@ -2,17 +2,26 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PipelineState, TokenUsage } from '../../types';
-import { getSkillCalls, getTokenUsage, type SkillCallFull } from '../../../api';
+import { getSkillCalls, getTokenUsage, STAGE_LABELS, type SkillCallFull } from '../../../api';
 import TokenUsagePanel from './TokenUsagePanel';
+import ActivityLog from './ActivityLog';
 
 type LiveSkillCard = {
   skillId: string;
+  skillName?: string;
   status: 'running' | 'done' | 'error' | 'unknown';
   args?: unknown;
   outputSummary?: string;
   latestMeta?: unknown;
   latestMessage?: string;
 };
+
+function toSkillTitle(skillId: string): string {
+  return skillId
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default function SidePanel({
   open,
@@ -122,7 +131,20 @@ export default function SidePanel({
         null;
       if (!skillId) continue;
 
-      const existing = cards[skillId] ?? { skillId, status: 'unknown' as const };
+      const skillName =
+        (typeof meta?.skillName === 'string' && meta.skillName.trim())
+          ? meta.skillName.trim()
+          : toSkillTitle(skillId);
+
+      const existing: LiveSkillCard = cards[skillId] ?? {
+        skillId,
+        skillName,
+        status: 'unknown',
+        args: undefined,
+        outputSummary: undefined,
+        latestMeta: undefined,
+        latestMessage: undefined,
+      };
 
       // Status
       const statusFromMeta = meta?.status;
@@ -148,6 +170,7 @@ export default function SidePanel({
 
       cards[skillId] = {
         skillId,
+        skillName,
         status,
         args,
         outputSummary,
@@ -229,6 +252,18 @@ export default function SidePanel({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Live activity (streaming) */}
+        {!messageId && pipeline?.progressEvents?.length ? (
+          <div>
+            <h3 className="text-sm font-semibold mb-2">Live activity</h3>
+            <ActivityLog
+              events={pipeline.progressEvents as any}
+              currentStage={pipeline.currentStage as any}
+              stageLabels={STAGE_LABELS as any}
+            />
+          </div>
+        ) : null}
+
         {/* Skills */}
         <div>
           <h3 className="text-sm font-semibold mb-2">Skills</h3>
@@ -246,13 +281,13 @@ export default function SidePanel({
                           .map((c) => {
                             const last = c.output?.filter((e) => e.type === 'result').pop();
                             const t = (last as any)?.text as string | undefined;
-                            return `### ${c.skillId}\n\n${(t ?? '').trim() || '_No summarized output._'}`;
+                            return `### ${toSkillTitle(c.skillId)}\n\n${(t ?? '').trim() || '_No summarized output._'}`;
                           })
                           .join('\n\n---\n\n');
                       }
                       const cards = liveSkillCards;
                       return cards
-                        .map((c) => `### ${c.skillId}\n\n${(c.outputSummary ?? '').trim() || (c.status === 'running' ? '_Processing…_' : '_No summarized output._')}`)
+                        .map((c) => `### ${c.skillName || toSkillTitle(c.skillId)}\n\n${(c.outputSummary ?? '').trim() || (c.status === 'running' ? '_Processing…_' : '_No summarized output._')}`)
                         .join('\n\n---\n\n');
                     })();
                     void navigator.clipboard?.writeText(text);
@@ -273,13 +308,13 @@ export default function SidePanel({
                             .map((c) => {
                               const last = c.output?.filter((e) => e.type === 'result').pop();
                               const t = (last as any)?.text as string | undefined;
-                              return `### ${c.skillId}\n\n${(t ?? '').trim() || '_No summarized output._'}`;
+                              return `### ${toSkillTitle(c.skillId)}\n\n${(t ?? '').trim() || '_No summarized output._'}`;
                             })
                             .join('\n\n---\n\n')
                         : liveSkillCards
                             .map(
                               (c) =>
-                                `### ${c.skillId}\n\n${(c.outputSummary ?? '').trim() || (c.status === 'running' ? '_Processing…_' : '_No summarized output._')}`
+                                `### ${c.skillName || toSkillTitle(c.skillId)}\n\n${(c.outputSummary ?? '').trim() || (c.status === 'running' ? '_Processing…_' : '_No summarized output._')}`
                             )
                             .join('\n\n---\n\n')}
                     </ReactMarkdown>
@@ -297,7 +332,7 @@ export default function SidePanel({
                 {skillCalls!.map((c) => (
                   <details key={c.id} className="border rounded-lg overflow-hidden">
                     <summary className="cursor-pointer px-3 py-2 text-xs font-semibold flex items-center justify-between">
-                      <span className="truncate">{c.skillId}</span>
+                      <span className="truncate">{toSkillTitle(c.skillId)}</span>
                       <span className="text-[10px] text-slate-500">{c.state}</span>
                     </summary>
                     <div className="px-3 pb-3 pt-2 border-t text-xs space-y-2">
@@ -307,18 +342,12 @@ export default function SidePanel({
                           {JSON.stringify(c.input ?? {}, null, 2)}
                         </pre>
                       </div>
-                      {(() => {
-                        const last = c.output?.filter((e) => e.type === 'result').pop();
-                        const txt = (last as any)?.text as string | undefined;
-                        return txt ? (
-                          <div>
-                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Output summary</div>
-                            <pre className="bg-slate-50 text-slate-800 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-56 overflow-y-auto">
-                              {txt}
-                            </pre>
-                          </div>
-                        ) : null;
-                      })()}
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Raw output</div>
+                        <pre className="bg-slate-900 text-slate-100 rounded p-2 overflow-x-auto max-h-72 overflow-y-auto">
+                          {JSON.stringify(c.output ?? [], null, 2)}
+                        </pre>
+                      </div>
                     </div>
                   </details>
                 ))}
@@ -331,7 +360,7 @@ export default function SidePanel({
               {liveSkillCards.map((c) => (
                 <details key={c.skillId} className="border rounded-lg overflow-hidden bg-white">
                   <summary className="cursor-pointer px-3 py-2 text-xs font-semibold flex items-center justify-between gap-2">
-                    <span className="truncate">{c.skillId}</span>
+                    <span className="truncate">{c.skillName || toSkillTitle(c.skillId)}</span>
                     <span className="shrink-0 text-[10px] text-slate-500">
                       {c.status}
                     </span>

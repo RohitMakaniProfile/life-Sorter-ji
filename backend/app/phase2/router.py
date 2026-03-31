@@ -40,6 +40,7 @@ from .stores import (
     get_token_usage,
     list_agents,
     save_token_usage,
+    fetch_skill_call_output,
     push_skill_output,
     save_stage_outputs,
     set_skill_call_result,
@@ -50,6 +51,23 @@ from .stores import (
 )
 
 router = APIRouter()
+_PLAN_BG_TASKS: dict[str, asyncio.Task] = {}
+
+
+def is_plan_background_task_running(plan_id: str) -> bool:
+    task = _PLAN_BG_TASKS.get(plan_id)
+    return bool(task and not task.done())
+
+
+def _register_plan_bg_task(plan_id: str, task: asyncio.Task) -> None:
+    _PLAN_BG_TASKS[plan_id] = task
+
+    def _cleanup(done_task: asyncio.Task) -> None:
+        current = _PLAN_BG_TASKS.get(plan_id)
+        if current is done_task:
+            _PLAN_BG_TASKS.pop(plan_id, None)
+
+    task.add_done_callback(_cleanup)
 
 
 def _actor_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -71,6 +89,13 @@ def _extract_url_from_message(msg: str) -> str:
     if not m:
         return ""
     return m.group(0).rstrip("),.;]\"'")
+
+
+def _skill_display_name(skill_id: str) -> str:
+    manifest = get_skill(skill_id)
+    if manifest and str(manifest.name or "").strip():
+        return str(manifest.name).strip()
+    return " ".join(part.capitalize() for part in skill_id.replace("_", "-").split("-") if part).strip() or skill_id
 
 
 @lru_cache(maxsize=1)
@@ -148,6 +173,63 @@ def _build_page_nl_prompt(skill_id: str, meta: dict[str, Any]) -> str:
             body,
         ]
     )
+
+
+def _scrape_failure_recoverable(err: str | None) -> bool:
+    if not err:
+        return False
+    e = str(err).lower()
+    if "scraper_base_url not configured" in e or "missing_url" in e:
+        return False
+    return any(
+        part in e
+        for part in (
+            "scraper_stream_ended_without_done",
+            "scraper_http_",
+            "connection",
+            "timeout",
+            "connecterror",
+            "readerror",
+            "remoteprotocol",
+            "playwright_scraper_failed",
+        )
+    )
+
+
+def _latest_parallel_checkpoint_from_output(rows: list[Any]) -> dict[str, Any] | None:
+    for entry in reversed(rows):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") != "checkpoint":
+            continue
+        pl = entry.get("payload")
+        if not isinstance(pl, dict):
+            continue
+        if int(pl.get("v") or 0) != 1 or not pl.get("parallel"):
+            continue
+        return pl
+    return None
+
+
+def _skip_urls_from_scrape_output(rows: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "progress":
+            pl = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            ev = str(entry.get("event") or pl.get("event") or "").strip().lower()
+            if ev == "page_data":
+                u = str(pl.get("url") or "").strip()
+                if u:
+                    seen.add(u.rstrip("/") or u)
+        elif entry.get("type") == "checkpoint":
+            pl = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            for u in pl.get("scraped_urls") or []:
+                su = str(u).strip()
+                if su:
+                    seen.add(su.rstrip("/") or su)
+    return sorted(seen)
 
 
 def _normalize_scout_queries(
@@ -327,6 +409,7 @@ async def _create_plan_draft(
     *,
     body: dict[str, Any],
     emit_progress=None,
+    emit_token=None,
 ) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
     session_id, user_id = _actor_from_payload(body)
@@ -368,6 +451,7 @@ async def _create_plan_draft(
         if not get_skill(sid):
             _log("plan-skill-missing", skill_id=sid)
             return None
+        skill_name = _skill_display_name(sid)
         run_id = f"plan-{plan_message_id}-{sid}-{int(_time.time() * 1000)}"
         _log("plan-skill-start", skill_id=sid, run_id=run_id, args=args)
         skill_call_id = await create_skill_call(conv["id"], plan_message_id, sid, run_id, {"args": args})
@@ -405,8 +489,37 @@ async def _create_plan_draft(
                         pass
             page_worker_task = asyncio.create_task(_page_worker())
 
+        # Stream skill-call start into the plan-building stream so the UI context panel
+        # can show exactly what is running during plan creation.
+        if emit_progress is not None:
+            try:
+                await emit_progress(
+                    {
+                        "stage": "thinking",
+                        "type": "task",
+                        "message": f"Running {skill_name}",
+                        "meta": {
+                            "kind": "skill-call",
+                            "id": run_id,
+                            "skillId": sid,
+                            "skillName": skill_name,
+                            "status": "running",
+                            "input": {"args": args},
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
         async def _on_prog(event: dict[str, Any]) -> None:
             meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+            # Ensure meta always includes skillId for client-side inference.
+            try:
+                if isinstance(meta, dict) and sid:
+                    meta = {**meta, "skillId": sid}
+                    event = {**event, "meta": meta}
+            except Exception:
+                pass
             if str(meta.get("event") or "").strip():
                 _log("plan-skill-progress", skill_id=sid, run_id=run_id, event=meta.get("event"), meta_keys=list(meta.keys()))
             if (
@@ -415,13 +528,34 @@ async def _create_plan_draft(
                 and isinstance(meta, dict)
             ):
                 await page_queue.put(meta)
-            stream_kind = str(meta.get("streamKind") or "info").strip().lower()
-            if stream_kind == "data":
-                await push_skill_output(skill_call_id, {
-                    "type": "progress",
-                    "event": str(meta.get("event")) if meta.get("event") else None,
-                    "payload": meta,
-                })
+            # Persist progress so SSE followers can replay it during background execution.
+            evt = str(meta.get("event") or "").strip().lower()
+            if evt == "checkpoint" and isinstance(meta.get("payload"), dict):
+                try:
+                    await push_skill_output(
+                        skill_call_id,
+                        {"type": "checkpoint", "payload": meta["payload"]},
+                    )
+                except Exception:
+                    pass
+            elif evt in ("started", "discovered", "page", "page_data"):
+                try:
+                    await push_skill_output(
+                        skill_call_id,
+                        {
+                            "type": "progress",
+                            "event": evt,
+                            "payload": meta,
+                        },
+                    )
+                except Exception:
+                    pass
+            # Forward progress to plan stream (UI) for live context panel.
+            if emit_progress is not None:
+                try:
+                    await emit_progress(event)
+                except Exception:
+                    pass
 
         result = await run_skill(sid, input_msg, history=conv.get("messages") or [], args=args, on_progress=_on_prog)
         _log(
@@ -440,6 +574,26 @@ async def _create_plan_draft(
             "error" if result.status == "error" else "done",
             result.text, result.data, result.error,
         )
+        if emit_progress is not None:
+            try:
+                await emit_progress(
+                    {
+                        "stage": "thinking" if result.status != "error" else "error",
+                        "type": "task",
+                        "message": f"{skill_name} {'completed' if result.status != 'error' else 'failed'}",
+                        "meta": {
+                            "kind": "skill-call",
+                            "id": run_id,
+                            "skillId": sid,
+                            "skillName": skill_name,
+                            "status": "done" if result.status != "error" else "error",
+                            "input": {"args": args},
+                            "outputSummary": (result.text or "")[:600],
+                        },
+                    }
+                )
+            except Exception:
+                pass
         return result
 
     scan_args: dict[str, Any] = {"url": url} if url else {}
@@ -573,9 +727,19 @@ async def _create_plan_draft(
     _log("plan-markdown-generation-start", conversation_id=conv.get("id"), plan_message_id=plan_message_id)
     try:
         ai = AiHelper(temperature=0.2)
-        ai_result = await ai.chat(
+
+        async def _on_plan_token(tok: str) -> None:
+            if emit_token is None:
+                return
+            try:
+                await emit_token({"token": tok})
+            except Exception:
+                pass
+
+        ai_result = await ai.chat_stream(
             message=plan_prompt,
             system_prompt="You are a planning assistant. Output only Markdown. No code fences.",
+            on_token=_on_plan_token if emit_token is not None else None,
         )
         plan_markdown = ai_result.message.strip()
         await save_token_usage(
@@ -1022,7 +1186,7 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
             try:
                 _log("plan-stream-worker-start")
                 await emit({"stage": "thinking", "label": "Building plan", "stageIndex": 0})
-                result = await _create_plan_draft(body=body, emit_progress=emit_progress)
+                result = await _create_plan_draft(body=body, emit_progress=emit_progress, emit_token=emit)
                 _log("plan-stream-worker-done", plan_id=result.get("planId"), conversation_id=result.get("conversationId"))
                 await emit({
                     "done": True,
@@ -1093,6 +1257,7 @@ async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, A
     """Start plan execution in a detached asyncio task (survives client disconnect)."""
     conv, plan, resolved, plan_id, session_id = await _prepare_plan_approval(body)
     assistant_message_id = await append_assistant_placeholder(conv["id"])
+    await update_plan_run(plan_id, {"executionMessageId": assistant_message_id})
 
     async def _noop(_: dict[str, Any]) -> None:
         return None
@@ -1113,12 +1278,98 @@ async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, A
             _log("plan-bg-unhandled", error=str(exc), traceback=traceback.format_exc())
             await update_plan_run(plan_id, {"status": "error"})
 
-    asyncio.create_task(_bg())
+    t = asyncio.create_task(_bg())
+    _register_plan_bg_task(plan_id, t)
     return {
         "conversationId": conv["id"],
         "planId": plan_id,
         "assistantMessageId": assistant_message_id,
         "agentId": resolved["agentId"],
+        "runningTaskRefFound": True,
+    }
+
+
+async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Ensure background execution exists for planId.
+    - draft/approved: starts execution (normal path)
+    - executing + live task ref: returns already-running info
+    - executing + missing task ref: recreates detached task using persisted context
+    """
+    plan_id = str(body.get("planId") or "").strip()
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="planId is required")
+    if not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="agentId is required for plan execution")
+
+    plan = await get_plan_run(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="plan not found")
+
+    status = str(plan.get("status") or "")
+    if status in ("draft", "approved"):
+        return await schedule_plan_approval_background(body)
+
+    # Allow retry from failed runs: move error -> approved, then start again.
+    if status == "error":
+        await update_plan_run(plan_id, {"status": "approved"})
+        return await schedule_plan_approval_background(body)
+
+    if status != "executing":
+        raise HTTPException(status_code=409, detail=f"plan is {status}")
+
+    session_id, user_id = _actor_from_payload(body)
+    resolved = await _resolve_agent_and_skill(body)
+    conv = await get_or_create_conversation(
+        body.get("conversationId"),
+        resolved["agentId"],
+        session_id=session_id,
+        user_id=user_id,
+    )
+
+    assistant_message_id = str(plan.get("executionMessageId") or "").strip()
+    if not assistant_message_id:
+        assistant_message_id = await append_assistant_placeholder(conv["id"])
+        await update_plan_run(plan_id, {"executionMessageId": assistant_message_id})
+
+    if is_plan_background_task_running(plan_id):
+        return {
+            "conversationId": conv["id"],
+            "planId": plan_id,
+            "assistantMessageId": assistant_message_id,
+            "agentId": resolved["agentId"],
+            "runningTaskRefFound": True,
+            "alreadyRunning": True,
+        }
+
+    async def _noop(_: dict[str, Any]) -> None:
+        return None
+
+    async def _bg() -> None:
+        try:
+            await execute_plan_approval_work(
+                plan_id=plan_id,
+                conv=conv,
+                plan=plan,
+                resolved=resolved,
+                assistant_message_id=assistant_message_id,
+                session_id=session_id,
+                emit=_noop,
+                emit_progress=_noop,
+            )
+        except Exception as exc:  # pragma: no cover
+            _log("plan-bg-resume-unhandled", error=str(exc), traceback=traceback.format_exc())
+            await update_plan_run(plan_id, {"status": "error"})
+
+    t = asyncio.create_task(_bg())
+    _register_plan_bg_task(plan_id, t)
+    return {
+        "conversationId": conv["id"],
+        "planId": plan_id,
+        "assistantMessageId": assistant_message_id,
+        "agentId": resolved["agentId"],
+        "runningTaskRefFound": True,
+        "resumedFromMissingTaskRef": True,
     }
 
 
@@ -1159,6 +1410,7 @@ async def execute_plan_approval_work(
             step_id = str(step.get("stepId") or f"step-{idx + 1}")
             if not sid:
                 continue
+            skill_name = _skill_display_name(sid)
             if resolved.get("allowedSkillIds") and sid not in (resolved.get("allowedSkillIds") or []):
                 continue
     
@@ -1185,7 +1437,7 @@ async def execute_plan_approval_work(
                 step_args.setdefault("operationType", scope if scope in ("local", "global") else "")
                 step_args.setdefault("coveredRegion", str(result_block.get("coveredRegion") or ""))
     
-            await emit({"stage": "running", "label": f"Running {sid}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
+            await emit({"stage": "running", "label": f"Running {skill_name}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
     
             run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
             call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
@@ -1225,11 +1477,12 @@ async def execute_plan_approval_work(
                 {
                     "stage": "thinking",
                     "type": "task",
-                    "message": f"Running skill: {sid}",
+                    "message": f"Running {skill_name}",
                     "meta": {
                         "kind": "skill-call",
                         "id": run_id,
                         "skillId": sid,
+                        "skillName": skill_name,
                         "status": "running",
                         "input": {"args": step_args},
                     },
@@ -1254,12 +1507,27 @@ async def execute_plan_approval_work(
                         provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
                         session_id=session_id,
                     )
-                stream_kind = str(meta.get("streamKind") or "info").strip().lower()
-                if stream_kind == "data":
-                    await push_skill_output(
-                        call_id,
-                        {"type": "progress", "event": str(meta.get("event")) if meta.get("event") else None, "payload": meta},
-                    )
+                evt_l = str(meta.get("event") or "").strip().lower()
+                if evt_l == "checkpoint" and isinstance(meta.get("payload"), dict):
+                    try:
+                        await push_skill_output(
+                            call_id,
+                            {"type": "checkpoint", "payload": meta["payload"]},
+                        )
+                    except Exception:
+                        pass
+                elif evt_l in ("started", "discovered", "page", "page_data"):
+                    try:
+                        await push_skill_output(
+                            call_id,
+                            {
+                                "type": "progress",
+                                "event": evt_l,
+                                "payload": meta,
+                            },
+                        )
+                    except Exception:
+                        pass
                 evt = str(meta.get("event") or "")
                 page_url = str(meta.get("url") or "").strip()
                 if evt in ("started", "discovered", "page", "page_data") and page_url:
@@ -1277,13 +1545,45 @@ async def execute_plan_approval_work(
                     )
                 await emit_progress(event)
     
-            result = await run_skill(
-                sid,
-                plan.get("planMarkdown") or "",
-                history=conv.get("messages") or [],
-                args=step_args,
-                on_progress=on_progress,
-            )
+            if sid == "scrape-playwright":
+                _SCRAPE_AUTO_RESUME_ATTEMPTS = 2
+                result = None
+                for attempt in range(_SCRAPE_AUTO_RESUME_ATTEMPTS):
+                    attempt_args = dict(step_args)
+                    if attempt > 0 and result is not None and result.status == "error":
+                        out_rows = await fetch_skill_call_output(call_id)
+                        ck = _latest_parallel_checkpoint_from_output(out_rows)
+                        if not ck or not _scrape_failure_recoverable(result.error):
+                            break
+                        skip = _skip_urls_from_scrape_output(out_rows)
+                        attempt_args["resumeCheckpoint"] = ck
+                        if skip:
+                            attempt_args["skipUrls"] = skip
+                        _log(
+                            "scrape-playwright-auto-resume",
+                            attempt=attempt + 1,
+                            plan_id=plan_id,
+                            skill_call_id=call_id,
+                            skip_count=len(skip),
+                            err=str(result.error or "")[:200],
+                        )
+                    result = await run_skill(
+                        sid,
+                        plan.get("planMarkdown") or "",
+                        history=conv.get("messages") or [],
+                        args=attempt_args,
+                        on_progress=on_progress,
+                    )
+                    if result.status != "error":
+                        break
+            else:
+                result = await run_skill(
+                    sid,
+                    plan.get("planMarkdown") or "",
+                    history=conv.get("messages") or [],
+                    args=step_args,
+                    on_progress=on_progress,
+                )
             if page_worker_task is not None:
                 await page_queue.put(None)
                 await page_worker_task
@@ -1294,11 +1594,12 @@ async def execute_plan_approval_work(
                 {
                     "stage": "error" if result.status == "error" else "thinking",
                     "type": "task",
-                    "message": f"Skill {sid} {'failed' if result.status == 'error' else 'completed'}",
+                    "message": f"{skill_name} {'failed' if result.status == 'error' else 'completed'}",
                     "meta": {
                         "kind": "skill-call",
                         "id": run_id,
                         "skillId": sid,
+                        "skillName": skill_name,
                         "status": "error" if result.status == "error" else "done",
                         "input": {"args": step_args},
                         "outputSummary": (result.text or "")[:600],

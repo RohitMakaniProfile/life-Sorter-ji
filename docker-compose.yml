@@ -1,15 +1,6 @@
 version: '3.8'
 
 services:
-  frontend:
-    build:
-      context: ./phase2_frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:80"
-    depends_on:
-      - backend
-
   scraper:
     build:
       context: ./scraper
@@ -19,17 +10,4 @@ services:
     environment:
       - PORT=8081
     shm_size: "1gb"
-    restart: unless-stopped
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - PORT=8000
-      - SCRAPER_BASE_URL=http://scraper:8081
-    env_file:
-      - ./backend/.env
     restart: unless-stopped
