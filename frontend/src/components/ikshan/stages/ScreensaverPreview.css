@@ -10,8 +10,8 @@
   inset: 0;
   z-index: 9999;
   background: #111111;
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.18) 1px, transparent 1px);
+  background-size: 14px 14px;
   display: flex;
   flex-direction: column;
   align-items: center;
