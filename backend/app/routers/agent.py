@@ -403,6 +403,10 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
         context_used=context_used,
     )
 
+    # Keep previous fallback questions in case adaptive question generation fails.
+    previous_dynamic_questions = list(session.dynamic_questions or [])
+    previous_dynamic_total = session.dynamic_questions_total
+
     # Reset RCA history for fresh start
     session.rca_history = []
     session.dynamic_questions = []
@@ -504,6 +508,8 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
 
         session.dynamic_questions = [claude_result["question"]]
         session.dynamic_questions_total = -1
+        # Adaptive mode is active now; don't keep stale fallback flag enabled.
+        session.rca_fallback_active = False
         session_store.update_session(session)
 
         logger.info(
@@ -522,9 +528,33 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
             context_used=context_used,
         )
 
-    # Claude failed — return empty (frontend will fall back to stashed question)
+    # Claude failed — restore prior fallback questions when available so submit_answer
+    # with index 0 does not crash with "Invalid question index".
+    if previous_dynamic_questions:
+        session.dynamic_questions = previous_dynamic_questions
+        session.dynamic_questions_total = previous_dynamic_total
+        session_store.update_session(session)
+
+        first_fallback = DynamicQuestion(
+            question=previous_dynamic_questions[0],
+            options=[],
+            allows_free_text=True,
+        )
+        logger.warning(
+            "start-diagnostic: Claude failed, restored fallback questions",
+            session_id=session.session_id,
+            restored_count=len(previous_dynamic_questions),
+        )
+        return StartDiagnosticResponse(
+            session_id=session.session_id,
+            question=first_fallback,
+            rca_mode=False,
+            context_used=context_used,
+        )
+
+    # Claude failed and no fallback questions exist.
     logger.warning(
-        "start-diagnostic: Claude failed, frontend should use stashed question",
+        "start-diagnostic: Claude failed, no fallback questions available",
         session_id=session.session_id,
     )
     return StartDiagnosticResponse(
