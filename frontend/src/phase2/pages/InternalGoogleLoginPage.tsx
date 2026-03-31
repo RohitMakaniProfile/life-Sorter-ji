@@ -98,7 +98,7 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
             const idToken = String(response?.credential || '').trim();
             if (!idToken) throw new Error('Missing credential from Google');
 
-            const res = await fetch(`${API_BASE}/api/phase2/auth/google/exchange`, {
+            const res = await fetch(`${API_BASE}/api/v1/auth/google/exchange`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ idToken }),

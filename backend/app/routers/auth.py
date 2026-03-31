@@ -22,6 +22,7 @@ from app.services.user_session_service import update_session_auth
 from app.services.session_store import get_session
 from app.services.jwt_service import create_access_token, decode_and_verify_access_token
 from app.phase2.stores import promote_session_conversations
+from app.phase2.auth_google import verify_google_or_firebase_token
 from app.db import get_pool
 from app.config import get_settings
 
@@ -90,6 +91,11 @@ class GoogleAuthRequest(BaseModel):
     email: str
     name: str
     avatar_url: str = ""
+
+
+class GoogleExchangeRequest(BaseModel):
+    idToken: str
+    session_id: str | None = None
 
 
 class GoogleAuthResponse(BaseModel):
@@ -267,6 +273,61 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
             "email": email,
             "name": req.name,
             "avatar_url": req.avatar_url,
+            "session_id": req.session_id,
+        },
+    )
+
+
+@router.post("/google/exchange", response_model=GoogleAuthResponse)
+async def google_exchange_endpoint(req: GoogleExchangeRequest):
+    """Verify a Google / Firebase ID token and return a signed JWT."""
+    try:
+        claims = await verify_google_or_firebase_token(req.idToken)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
+
+    email = str(claims.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="Token has no email claim")
+
+    name = str(claims.get("name") or claims.get("display_name") or "").strip()
+    avatar_url = str(claims.get("picture") or claims.get("photo_url") or "").strip()
+    google_sub = str(claims.get("sub") or claims.get("user_id") or "").strip()
+
+    if req.session_id:
+        await update_session_auth(
+            session_id=req.session_id,
+            google_id=google_sub,
+            google_email=email,
+            google_name=name,
+            google_avatar_url=avatar_url,
+            auth_provider="google",
+        )
+        await promote_session_conversations(req.session_id, email)
+
+    token = create_access_token(
+        subject=email,
+        claims={
+            "provider": "google",
+            "email": email,
+            "name": name,
+            "avatar_url": avatar_url,
+            "session_id": req.session_id,
+        },
+    )
+
+    logger.info("Google exchange successful", email=email, has_session=bool(req.session_id))
+
+    return GoogleAuthResponse(
+        success=True,
+        message=f"Signed in as {name or email}",
+        token=token,
+        user={
+            "user_id": email,
+            "provider": "google",
+            "email": email,
+            "name": name,
+            "avatar_url": avatar_url,
             "session_id": req.session_id,
         },
     )
