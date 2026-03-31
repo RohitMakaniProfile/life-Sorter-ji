@@ -149,27 +149,35 @@ async def scrape_playwright_stream(req: Request) -> StreamingResponse:
             stdout_task = asyncio.create_task(_read_stdout())
 
             try:
-                # Stream progress JSON objects from stderr as SSE events.
-                stderr_buffer = ""
+                # Stream one stderr line at a time.
+                # playwright_scraper emits exactly one JSON object per line to stderr.
                 while True:
-                    chunk = await proc.stderr.read(65536)
-                    if not chunk:
+                    line_b = await proc.stderr.readline()
+                    if not line_b:
                         break
-                    stderr_buffer += chunk.decode("utf-8", errors="replace")
-                    events, stderr_buffer = _extract_json_objects(stderr_buffer)
-                    events = _normalize_event_objects(events)
-                    for evt in events:
-                        yield _sse(evt)
-
-                trailing = stderr_buffer.strip()
-                if trailing:
-                    events, rem = _extract_json_objects(trailing)
-                    events = _normalize_event_objects(events)
-                    for evt in events:
-                        yield _sse(evt)
-                    residue = rem.strip()
-                    if residue:
-                        yield _sse({"event": "info", "message": residue})
+                    line = line_b.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            for evt in _normalize_event_objects([obj]):
+                                yield _sse(evt)
+                            continue
+                    except Exception:
+                        pass
+                    # Best-effort recovery for concatenated/interleaved JSON fragments.
+                    rec_objs, rem = _extract_json_objects(line)
+                    rec_objs = _normalize_event_objects(rec_objs)
+                    if rec_objs:
+                        for evt in rec_objs:
+                            yield _sse(evt)
+                        residue = (rem or "").strip()
+                        if residue:
+                            yield _sse({"event": "info", "message": residue})
+                        continue
+                    # Preserve non-JSON diagnostics without dropping the stream.
+                    yield _sse({"event": "info", "message": line})
 
                 code = await proc.wait()
                 await stdout_task
@@ -193,6 +201,17 @@ async def scrape_playwright_stream(req: Request) -> StreamingResponse:
                         f"scrape-playwright failed with code {code}"
                     )
 
+                # Normalize done payload shape for backend consumer.
+                if (
+                    isinstance(result_payload, dict)
+                    and result_payload.get("data") is None
+                    and result_payload.get("error") is None
+                ):
+                    result_payload = {
+                        "text": str(result_payload.get("text") or ""),
+                        "data": result_payload,
+                        "error": None,
+                    }
                 yield _sse({"event": "done", "result": result_payload})
             finally:
                 try:

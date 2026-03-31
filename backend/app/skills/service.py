@@ -83,6 +83,26 @@ def _parse_progress_meta(raw_line: str) -> dict[str, Any]:
     return {"event": "info", "raw": cleaned}
 
 
+def _extract_json_objects_from_text(text: str) -> tuple[list[dict[str, Any]], str]:
+    out: list[dict[str, Any]] = []
+    dec = json.JSONDecoder()
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i] != "{":
+            i += 1
+        if i >= n:
+            return out, ""
+        try:
+            obj, j = dec.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return out, text[i:]
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = j
+    return out, ""
+
+
 @dataclass
 class SkillManifest:
     id: str
@@ -966,6 +986,27 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
                 if not isinstance(meta, dict):
                     continue
 
+                # Some scraper builds can carry concatenated JSON progress inside an
+                # info.message string. Recover nested events so page_data/checkpoint
+                # are not dropped by upstream parsers.
+                if str(meta.get("event") or "").strip().lower() == "info" and isinstance(meta.get("message"), str):
+                    nested, _ = _extract_json_objects_from_text(str(meta.get("message") or ""))
+                    if nested:
+                        for item in nested:
+                            item["streamKind"] = _progress_stream_kind(item)
+                            event_name = str(item.get("event", "info"))
+                            message_text = str(item.get("url") or item.get("message") or event_name)
+                            await _emit(
+                                on_progress,
+                                {
+                                    "stage": "running",
+                                    "type": "info",
+                                    "message": message_text,
+                                    "meta": item,
+                                },
+                            )
+                        continue
+
                 # done event: {event:"done", result:{text,data,error?}}
                 if str(meta.get("event") or "").strip().lower() == "done" and isinstance(meta.get("result"), dict):
                     done_result = meta["result"]
@@ -1000,6 +1041,12 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
 
     text = str(done_result.get("text") or "")
     data = done_result.get("data")
+    # Backward-compatible fallback: some scraper builds return the payload object
+    # directly instead of nesting it under result.data.
+    if data is None and isinstance(done_result, dict):
+        legacy_keys = {"base_url", "scraped_urls", "failed_urls", "stats", "pages"}
+        if legacy_keys.intersection(done_result.keys()):
+            data = done_result
     if isinstance(data, dict):
         old_pages = existing_pages
         new_pages = data.get("pages") if isinstance(data.get("pages"), list) else []

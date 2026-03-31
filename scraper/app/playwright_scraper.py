@@ -18,7 +18,9 @@ import urllib.request
 import urllib.robotparser
 from collections import deque
 from datetime import datetime, timezone
-from threading import Thread
+from threading import Lock, Thread
+_PROGRESS_LOCK = Lock()
+
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -215,7 +217,10 @@ def _progress(obj: dict) -> None:
     if "streamKind" not in obj:
         evt = str(obj.get("event") or "").strip().lower()
         obj["streamKind"] = "data" if evt == "page_data" else "info"
-    print(json.dumps(obj), file=sys.stderr, flush=True)
+    # Parallel workers can emit concurrently; serialize stderr writes so each line
+    # remains a valid standalone JSON object.
+    with _PROGRESS_LOCK:
+        print(json.dumps(obj), file=sys.stderr, flush=True)
 
 
 def _fetch_sitemap_urls(base_url: str, base_domain: str) -> list[str]:
