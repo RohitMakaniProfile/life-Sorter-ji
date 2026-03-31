@@ -1,10 +1,10 @@
 // Barrel export for ikshan UI components
 export { default as IkshanApp } from './IkshanApp';
-export { default as Navbar } from './Navbar';
-export { default as OutcomeSelection } from './OutcomeSelection';
-export { default as DomainBranching } from './DomainBranching';
-export { default as UrlInputStage } from './UrlInputStage';
-export { default as ProblemAreas } from './ProblemAreas';
-export { default as DeeperDive } from './DeeperDive';
-export { default as FlowNode } from './FlowNode';
-export { default as ToolCard } from './ToolCard';
+export { default as Navbar } from './components/Navbar';
+export { default as FlowNode } from './components/FlowNode';
+export { default as ToolCard } from './components/ToolCard';
+export { default as BranchArrows } from './components/BranchArrows';
+export { default as StageLayout } from './components/StageLayout';
+export { default as UrlStage } from './stages/UrlStage';
+export { default as DeeperDiveStage } from './stages/DeeperDiveStage';
+export { default as DiagnosticStage } from './stages/DiagnosticStage';

@@ -16,13 +16,13 @@
   flex-direction: column;
   align-items: center;
   overflow: hidden;
-  animation: ss-fade-in 0.6s ease;
-  transition: opacity 0.5s ease;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
 }
 
-.ss-overlay--fading {
+.ss-overlay--hidden {
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
 }
 
 @keyframes ss-fade-in {
@@ -34,7 +34,7 @@
 
 .ss-hint {
   position: absolute;
-  bottom: 36px;
+  bottom: 64px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -82,10 +82,19 @@
 }
 
 .ss-title__accent {
-  background: linear-gradient(135deg, #a882ff, #7c4dff);
+  background: linear-gradient(90deg, rgba(133, 123, 255, 0.9), #BF69A2, rgba(133, 123, 255, 0.9), #BF69A2);
+  background-size: 300% 100%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  animation: ss-gradient-flow 4s ease infinite;
+  filter: drop-shadow(0 0 12px rgba(133, 123, 255, 0.5)) drop-shadow(0 0 24px rgba(191, 105, 162, 0.3));
+}
+
+@keyframes ss-gradient-flow {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* ─── Scrolling canvas ────────────────────────────────────── */
@@ -101,18 +110,10 @@
 
 .ss-track {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 0;
   padding: 24px 40px 48px;
-  animation: ss-auto-scroll 12s linear infinite;
-  animation-play-state: running;
-}
-
-/* Gentle auto-scroll to show the expanding journey */
-@keyframes ss-auto-scroll {
-  0%   { transform: translateX(10%); }
-  30%  { transform: translateX(10%); }
-  100% { transform: translateX(-15%); }
+  justify-content: center;
 }
 
 /* ─── Column ──────────────────────────────────────────────── */
@@ -125,15 +126,21 @@
   padding: 0 4px;
 }
 
+/* Static column — no pop animation, stays in place */
+.ss-col--static {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  animation: ss-fade-in 0.5s ease both;
+}
+
 .ss-col--arrows {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   padding: 0 2px;
-}
-
-.ss-col--spacer {
-  min-width: 200px;
 }
 
 .ss-col__nodes {
@@ -157,7 +164,6 @@
 /* ─── Node wrapper ────────────────────────────────────────── */
 
 .ss-node-wrap {
-  animation: ss-node-in 0.35s ease both;
   transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
@@ -166,16 +172,13 @@
   transform: scale(0.95);
 }
 
-@keyframes ss-node-in {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
 /* ─── Branch arrows SVG (one-to-many, matches IkshanApp) ──── */
 
 .ss-branch-svg {
   flex-shrink: 0;
   display: block;
+  width: 70px;
+  height: 100%;
 }
 
 .ss-branch__path {
@@ -184,94 +187,92 @@
   animation: ss-draw-line 0.6s ease forwards;
 }
 
-.ss-single-arrow {
-  flex-shrink: 0;
-  display: block;
-}
-
 @keyframes ss-draw-line {
   to { stroke-dashoffset: 0; }
 }
 
-/* ─── Mock URL form ───────────────────────────────────────── */
+.ss-single-arrow {
+  display: none;
+}
 
-.ss-url-mock {
+/* ─── L-Band (news-channel ticker at bottom) ─────────────── */
+
+.ss-lband {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 18px 22px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  min-width: 280px;
-  max-width: 340px;
-  animation: ss-url-glow 2s ease-in-out infinite alternate;
+  align-items: stretch;
+  height: 44px;
+  z-index: 20;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 100%);
 }
 
-@keyframes ss-url-glow {
-  from { border-color: rgba(168, 130, 255, 0.15); }
-  to   { border-color: rgba(168, 130, 255, 0.45); }
-}
-
-.ss-url-mock__label {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.ss-url-mock__input {
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
+.ss-lband__label {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  min-height: 38px;
-}
-
-.ss-url-mock__typing {
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.6);
-  overflow: hidden;
-  white-space: nowrap;
-  border-right: none;
-  width: 0;
-  animation: ss-typing 2s steps(16) 0.3s forwards;
-}
-
-.ss-url-mock__cursor {
-  width: 2px;
-  height: 16px;
-  background: rgba(168, 130, 255, 0.8);
-  border-radius: 1px;
-  animation: ss-blink 0.6s step-end infinite;
-  margin-left: 1px;
-}
-
-@keyframes ss-typing {
-  from { width: 0; }
-  to   { width: 10em; }
-}
-
-@keyframes ss-blink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0; }
-}
-
-.ss-url-mock__btn {
-  padding: 10px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #a882ff, #7c4dff);
+  gap: 8px;
+  padding: 0 20px 0 24px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a78bfa 100%);
   color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-  animation: ss-btn-pulse 2s ease-in-out infinite;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 100%, 0 100%);
+  padding-right: 32px;
 }
 
-@keyframes ss-btn-pulse {
-  0%, 100% { opacity: 0.7; transform: scale(1); }
-  50%      { opacity: 1; transform: scale(1.02); }
+.ss-lband__label-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  animation: ss-lband-dot-pulse 1.5s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(255,255,255,0.6);
+}
+
+@keyframes ss-lband-dot-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.ss-lband__ticker {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  background: rgba(15, 15, 20, 0.85);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.ss-lband__ticker-track {
+  display: flex;
+  white-space: nowrap;
+  animation: ss-ticker-scroll 25s linear infinite;
+}
+
+.ss-lband__ticker-item {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.3px;
+  padding: 0 6px;
+}
+
+.ss-lband__ticker-sep {
+  color: rgba(139, 92, 246, 0.6);
+  margin: 0 12px;
+  font-size: 8px;
+  vertical-align: middle;
+}
+
+@keyframes ss-ticker-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
 }
 
 /* ─── Responsive: smaller nodes on mobile ─────────────────── */

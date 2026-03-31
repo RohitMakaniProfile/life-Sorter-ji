@@ -1,38 +1,57 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import Navbar from './Navbar';
-import FlowNode from './FlowNode';
-import ToolCard from './ToolCard';
-import ScreensaverPreview from './ScreensaverPreview';
+import Navbar from './components/Navbar';
+import FlowNode from './components/FlowNode';
+import BranchArrows from './components/BranchArrows';
+import StageLayout from './components/StageLayout';
+import ScreensaverPreview from './stages/ScreensaverPreview';
+import UrlStage from './stages/UrlStage';
+import DeeperDiveStage from './stages/DeeperDiveStage';
+import DiagnosticStage from './stages/DiagnosticStage';
 import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
+import { getToolsForSelection } from './toolService';
 import * as api from './api';
 import './IkshanApp.css';
 
-/**
- * HORIZONTAL JOURNEY CANVAS
- *
- * The entire screen is one horizontally-scrolling canvas.
- * Each selection adds a new column to the right, connected by arrows.
- * Mouse wheel scrolls left/right. All previous nodes stay visible —
- * the user sees their full journey trail.
- *
- * Columns:
- *   0: Outcomes (Q1)   — always shown
- *   1: Domains (Q2)    — after outcome selected
- *   2: Tasks (Q3)      — after domain selected
- *   3: URL form        — after task selected
- *   4: Deeper Dive     — after URL submit/skip
- *   5: Diagnostic      — after scale answers
- *   6+: Precision / Complete
- */
+const IDLE_TIMEOUT = 10_000;
+
+// ★ DEMO MODE — set to true to skip LLM calls and see the full UI with dummy data
+const DEMO_MODE = true;
+
+const DEMO_DIAGNOSTIC_QUESTIONS = [
+  { question: 'What is the biggest bottleneck in your current workflow?', options: ['Manual data entry', 'Slow approvals', 'Lack of visibility', 'Too many tools'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
+  { question: 'How do you currently measure success for this task?', options: ['Revenue metrics', 'Time saved', 'Customer feedback', 'We don\'t measure it'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
+  { question: 'What is your team size working on this?', options: ['Just me', '2-5 people', '6-15 people', '15+'], allows_free_text: true, section: 'rca', section_label: 'Diagnostic' },
+];
+
+const DEMO_PRECISION_QUESTIONS = [
+  { type: 'contradiction', question: 'You mentioned manual data entry is your bottleneck, but your website shows automated forms. Are these actually connected to your CRM?', options: ['Yes, fully connected', 'Partially', 'No, they are separate', 'I\'m not sure'], section_label: 'Precision', insight: 'We noticed a gap between your public-facing automation and internal workflow.' },
+  { type: 'blind_spot', question: 'Based on your answers, it seems you may not be tracking lead response time. Would faster response help close more deals?', options: ['Definitely yes', 'Possibly', 'Not a priority right now', 'We already track this'], section_label: 'Precision', insight: 'Companies that respond within 5 minutes convert 21x more leads.' },
+];
 
 export default function IkshanApp() {
   const canvasRef = useRef(null);
   const [showScreensaver, setShowScreensaver] = useState(true);
+  const idleTimerRef = useRef(null);
+
+  // ─── Idle timer → show screensaver ────────────────────
+  useEffect(() => {
+    if (showScreensaver) return;
+    const resetIdle = () => {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => setShowScreensaver(true), IDLE_TIMEOUT);
+    };
+    resetIdle();
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel', 'scroll'];
+    events.forEach((e) => window.addEventListener(e, resetIdle));
+    return () => {
+      clearTimeout(idleTimerRef.current);
+      events.forEach((e) => window.removeEventListener(e, resetIdle));
+    };
+  }, [showScreensaver]);
 
   // ─── Session ──────────────────────────────────────────
   const sessionIdRef = useRef(null);
   const sessionPromiseRef = useRef(null);
-
   const ensureSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
     if (!sessionPromiseRef.current) {
@@ -51,13 +70,12 @@ export default function IkshanApp() {
   const [hoveredDomain, setHoveredDomain] = useState(null);
   const [hoveredTask, setHoveredTask] = useState(null);
 
-  // Post-task stages
+  // URL stage
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [toolPage, setToolPage] = useState(0);
-  const TOOLS_PER_PAGE = 3;
-  const [urlTab, setUrlTab] = useState('website');
   const [urlValue, setUrlValue] = useState('');
-  const [email, setEmail] = useState('');
+  const [gbpValue, setGbpValue] = useState('');
+  const [urlTab, setUrlTab] = useState('website');
   const [urlSubmitting, setUrlSubmitting] = useState(false);
   const [earlyTools, setEarlyTools] = useState([]);
 
@@ -72,7 +90,6 @@ export default function IkshanApp() {
   const [diagnosticData, setDiagnosticData] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [questionIndex, setQuestionIndex] = useState(0);
-  const [acknowledgment, setAcknowledgment] = useState('');
   const [loading, setLoading] = useState(false);
 
   // Precision
@@ -82,7 +99,6 @@ export default function IkshanApp() {
 
   // Complete
   const [showComplete, setShowComplete] = useState(false);
-
   const [error, setError] = useState(null);
 
   // ─── Horizontal wheel scroll ──────────────────────────
@@ -99,22 +115,27 @@ export default function IkshanApp() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // Auto-scroll so newest column is roughly centered
   const scrollToEnd = useCallback(() => {
     const el = canvasRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
-      // Scroll so the rightmost content is in view with some breathing room
-      const target = el.scrollWidth - el.clientWidth;
-      el.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+      el.scrollTo({ left: el.scrollWidth - el.clientWidth, behavior: 'smooth' });
     });
   }, []);
 
   // ─── Derived data ─────────────────────────────────────
   const domains = selectedOutcome ? (OUTCOME_DOMAINS[selectedOutcome.id] || []) : [];
   const tasks = selectedDomain ? (DOMAIN_TASKS[selectedDomain] || []) : [];
-  const hoverDomains = hoveredOutcome ? (OUTCOME_DOMAINS[hoveredOutcome] || []) : [];
-  const hoverTasks = hoveredDomain ? (DOMAIN_TASKS[hoveredDomain] || []) : [];
+
+  // ─── Helpers to clear downstream state ────────────────
+  const clearPostTask = () => {
+    setShowUrlForm(false);
+    setShowDeeperDive(false);
+    setShowDiagnostic(false);
+    setShowPrecision(false);
+    setShowComplete(false);
+    setEarlyTools([]);
+  };
 
   // ─── Handlers ─────────────────────────────────────────
 
@@ -122,15 +143,9 @@ export default function IkshanApp() {
     setSelectedOutcome(outcome);
     setSelectedDomain(null);
     setSelectedTask(null);
-    setShowUrlForm(false);
-    setShowDeeperDive(false);
-    setShowDiagnostic(false);
-    setShowPrecision(false);
-    setShowComplete(false);
-    setEarlyTools([]);
+    clearPostTask();
     setHoveredOutcome(null);
     setTimeout(scrollToEnd, 50);
-
     try {
       const sid = await ensureSession();
       await api.submitOutcome(sid, outcome.id, `${outcome.text} (${outcome.subtext})`);
@@ -140,15 +155,9 @@ export default function IkshanApp() {
   const handleDomainClick = async (domain) => {
     setSelectedDomain(domain);
     setSelectedTask(null);
-    setShowUrlForm(false);
-    setShowDeeperDive(false);
-    setShowDiagnostic(false);
-    setShowPrecision(false);
-    setShowComplete(false);
-    setEarlyTools([]);
+    clearPostTask();
     setHoveredDomain(null);
     setTimeout(scrollToEnd, 50);
-
     try {
       const sid = await ensureSession();
       await api.submitDomain(sid, domain);
@@ -162,63 +171,56 @@ export default function IkshanApp() {
     setShowDiagnostic(false);
     setShowPrecision(false);
     setShowComplete(false);
-    setEarlyTools([]);
     setToolPage(0);
     setHoveredTask(null);
     setTimeout(scrollToEnd, 50);
 
+    // Local tool lookup — no backend call
+    const { tools } = getToolsForSelection(selectedOutcome.id, selectedDomain, task);
+    if (tools.length > 0) {
+      setEarlyTools(tools.map((t) => {
+        const rawDesc = t.best_use_case || t.description || '';
+        const desc = rawDesc.length > 120 ? rawDesc.slice(0, 117) + '...' : rawDesc;
+        let bullets = [];
+        if (t.key_pros) {
+          const raw = Array.isArray(t.key_pros)
+            ? t.key_pros
+            : t.key_pros.split('\n').map(s => s.replace(/^[•\-\s]+/, '').trim()).filter(Boolean);
+          bullets = raw.slice(0, 3).map(b => b.length > 70 ? b.slice(0, 67) + '...' : b);
+        }
+        return { name: t.name, rating: t.rating || null, description: desc, bullets, tag: t.category || 'RECOMMENDED', url: t.url };
+      }));
+    } else {
+      setEarlyTools([]);
+    }
+
+    // Fire-and-forget backend task submission (for session tracking)
     try {
       const sid = await ensureSession();
-      // Submit task to session (fire and forget, don't block tools)
       api.submitTask(sid, task).then((data) => setDiagnosticData(data)).catch(() => {});
-
-      // Fetch instant tool recommendations based on Q1/Q2/Q3
-      const toolsData = await api.getInstantTools(
-        selectedOutcome.id, selectedDomain, task
-      );
-      if (toolsData.tools && toolsData.tools.length > 0) {
-        setEarlyTools(toolsData.tools.map((t) => {
-          // Concise description: prefer best_use_case (short), fallback to description truncated
-          const rawDesc = t.best_use_case || t.description || '';
-          const desc = rawDesc.length > 100 ? rawDesc.slice(0, 97) + '...' : rawDesc;
-
-          // Max 3 bullet points, each ≤60 chars
-          let bullets = [];
-          if (t.key_pros) {
-            const raw = Array.isArray(t.key_pros)
-              ? t.key_pros
-              : t.key_pros.split('\n').map(s => s.replace(/^[•\-\s]+/, '').trim()).filter(Boolean);
-            bullets = raw.slice(0, 3).map(b => b.length > 60 ? b.slice(0, 57) + '...' : b);
-          }
-
-          return {
-            name: t.name,
-            rating: t.rating || null,
-            description: desc,
-            bullets,
-            tag: t.category || 'RECOMMENDED',
-            url: t.url,
-          };
-        }));
-      }
-    } catch (err) { console.warn('Task submit / instant-tools:', err.message); }
-
+    } catch (err) { console.warn('Task submit:', err.message); }
     setTimeout(scrollToEnd, 100);
   };
 
   const handleUrlSubmit = async (e) => {
     e.preventDefault();
-    if (!urlValue.trim()) return;
-    let finalUrl = urlValue.trim();
-    if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
+    if (!urlValue.trim() && !gbpValue.trim()) return;
     setUrlSubmitting(true);
     try {
       const sid = await ensureSession();
-      await api.submitUrl(sid, finalUrl);
+      if (urlValue.trim()) {
+        let finalUrl = urlValue.trim();
+        if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
+        await api.submitUrl(sid, finalUrl);
+      }
+      if (gbpValue.trim()) {
+        let finalGbp = gbpValue.trim();
+        if (!/^https?:\/\//i.test(finalGbp)) finalGbp = `https://${finalGbp}`;
+        await api.submitUrl(sid, finalGbp);
+      }
       await moveToScaleQuestions();
-    } catch (err) {
-      setError('Failed to submit URL.');
-    } finally { setUrlSubmitting(false); }
+    } catch (err) { setError('Failed to submit URL.'); }
+    finally { setUrlSubmitting(false); }
   };
 
   const handleUrlSkip = async () => {
@@ -254,12 +256,18 @@ export default function IkshanApp() {
   const handleScaleSubmit = async () => {
     setLoading(true);
     try {
+      if (DEMO_MODE) {
+        setCurrentQuestion(DEMO_DIAGNOSTIC_QUESTIONS[0]);
+        setQuestionIndex(0);
+        setShowDiagnostic(true);
+        setTimeout(scrollToEnd, 50);
+        return;
+      }
       const sid = await ensureSession();
       await api.submitScaleAnswers(sid, scaleAnswers);
       const diagData = await api.startDiagnostic(sid);
       if (diagData.question) {
         setCurrentQuestion(diagData.question);
-        setAcknowledgment(diagData.acknowledgment || '');
         setQuestionIndex(0);
       } else if (diagnosticData?.questions?.length) {
         setCurrentQuestion(diagnosticData.questions[0]);
@@ -274,6 +282,21 @@ export default function IkshanApp() {
   const handleDiagnosticAnswer = async (answer) => {
     setLoading(true);
     try {
+      if (DEMO_MODE) {
+        const nextIdx = questionIndex + 1;
+        if (nextIdx < DEMO_DIAGNOSTIC_QUESTIONS.length) {
+          setCurrentQuestion(DEMO_DIAGNOSTIC_QUESTIONS[nextIdx]);
+          setQuestionIndex(nextIdx);
+        } else {
+          // Move to precision questions
+          setPrecisionQuestions(DEMO_PRECISION_QUESTIONS);
+          setPrecisionIndex(0);
+          setCurrentQuestion(DEMO_PRECISION_QUESTIONS[0]);
+          setShowPrecision(true);
+          setTimeout(scrollToEnd, 50);
+        }
+        return;
+      }
       const sid = await ensureSession();
       const data = await api.submitAnswer(sid, questionIndex, answer);
       if (data.all_answered) {
@@ -282,7 +305,6 @@ export default function IkshanApp() {
           setPrecisionQuestions(precData.questions);
           setPrecisionIndex(0);
           setCurrentQuestion(precData.questions[0]);
-          setAcknowledgment(data.acknowledgment || '');
           setShowPrecision(true);
         } else {
           setShowComplete(true);
@@ -290,16 +312,26 @@ export default function IkshanApp() {
         setTimeout(scrollToEnd, 50);
       } else if (data.next_question) {
         setCurrentQuestion(data.next_question);
-        setAcknowledgment(data.acknowledgment || '');
         setQuestionIndex((i) => i + 1);
       }
-    } catch (err) { console.error('Diagnostic answer error:', err); setError(`Failed to submit answer: ${err.message}`); }
+    } catch (err) { setError(`Failed to submit answer: ${err.message}`); }
     finally { setLoading(false); }
   };
 
   const handlePrecisionAnswer = async (answer) => {
     setLoading(true);
     try {
+      if (DEMO_MODE) {
+        const nextIdx = precisionIndex + 1;
+        if (nextIdx < precisionQuestions.length) {
+          setPrecisionIndex(nextIdx);
+          setCurrentQuestion(precisionQuestions[nextIdx]);
+        } else {
+          setShowComplete(true);
+          setTimeout(scrollToEnd, 50);
+        }
+        return;
+      }
       const sid = await ensureSession();
       await api.submitAnswer(sid, precisionIndex, answer);
       const nextIdx = precisionIndex + 1;
@@ -316,430 +348,112 @@ export default function IkshanApp() {
 
   const handleRestart = () => {
     setSelectedOutcome(null); setSelectedDomain(null); setSelectedTask(null);
-    setShowUrlForm(false); setShowDeeperDive(false); setShowDiagnostic(false);
-    setShowPrecision(false); setShowComplete(false); setEarlyTools([]);
-    setDiagnosticData(null); setError(null); setHoveredOutcome(null);
-    setHoveredDomain(null); setHoveredTask(null);
+    clearPostTask();
+    setDiagnosticData(null); setError(null);
+    setHoveredOutcome(null); setHoveredDomain(null); setHoveredTask(null);
     sessionIdRef.current = null; sessionPromiseRef.current = null;
     if (canvasRef.current) canvasRef.current.scrollLeft = 0;
   };
 
-  // ─── Arrow SVG (reusable single connector) ─────────────
-  const Arrow = () => (
-    <svg className="ik-arrow" viewBox="0 0 80 20">
-      <defs>
-        <marker id="ik-arrowhead" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto" markerUnits="strokeWidth">
-          <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1" />
-        </marker>
-      </defs>
-      <line x1="4" y1="10" x2="68" y2="10"
-        stroke="rgba(255,255,255,0.15)" strokeWidth="6" />
-      <line x1="4" y1="10" x2="68" y2="10"
-        stroke="rgba(255,255,255,0.75)" strokeWidth="1.5" markerEnd="url(#ik-arrowhead)" />
-    </svg>
-  );
-
-  // ─── Branching arrows (one source → multiple targets) ─
-  // Measure actual node heights: outcomes have subtext (~56px), domains/tasks single-line (~36px)
-  // We use per-column heights for better alignment.
-  const NODE_GAP = 8;
-
-  const measureNodeH = (labels, hasSubtext) => {
-    // padding: 10px top + 10px bottom = 20px
-    // single line: font 12px * 1.3 line-height = ~16px → total ~36px
-    // with subtext: +10px subtext + 2px margin = ~48px
-    // multi-line text (>22 chars at 220px wide): ~52px
-    return labels.map((label) => {
-      const baseH = 20; // padding
-      const labelLines = Math.ceil((label.length || 10) / 22);
-      const labelH = labelLines * 16;
-      const subtextH = hasSubtext ? 14 : 0;
-      return baseH + labelH + subtextH;
-    });
-  };
-
-  const colHeight = (nodeHeights) =>
-    nodeHeights.reduce((sum, h) => sum + h, 0) + Math.max(0, nodeHeights.length - 1) * NODE_GAP;
-
-  const nodeYCenters = (nodeHeights, totalH) => {
-    const col = colHeight(nodeHeights);
-    const offset = (totalH - col) / 2;
-    let y = offset;
-    return nodeHeights.map((h) => {
-      const center = y + h / 2;
-      y += h + NODE_GAP;
-      return center;
-    });
-  };
-
-  const BranchArrows = ({ count, sourceIndex, sourceTotal, srcLabels, srcHasSubtext, tgtLabels, tgtHasSubtext }) => {
-    if (count <= 0) return null;
-
-    const srcNodeH = srcLabels ? measureNodeH(srcLabels, srcHasSubtext) : Array(sourceTotal || 1).fill(46);
-    const tgtNodeH = tgtLabels ? measureNodeH(tgtLabels, tgtHasSubtext) : Array(count).fill(46);
-
-    const srcColH = colHeight(srcNodeH);
-    const tgtColH = colHeight(tgtNodeH);
-    const h = Math.max(srcColH, tgtColH, 50);
-    const w = 100;
-    const spineX = 35;          // x where the vertical spine sits
-    const R = 10;               // max corner radius
-    const endX = w - 10;        // leave room for arrowhead
-
-    const srcCenters = nodeYCenters(srcNodeH, h);
-    const tgtCenters = nodeYCenters(tgtNodeH, h);
-    const srcY = srcCenters[sourceIndex !== undefined ? sourceIndex : 0];
-
-    return (
-      <svg className="ik-branch-arrows" viewBox={`0 0 ${w} ${h}`} style={{ height: `${h}px` }}>
-        <defs>
-          <marker id="ik-bhead" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto" markerUnits="strokeWidth">
-            <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1" />
-          </marker>
-        </defs>
-        {tgtCenters.map((tgtY, i) => {
-          const dy = tgtY - srcY;
-          const absDy = Math.abs(dy);
-          let d;
-
-          if (absDy < 2) {
-            // Nearly straight — just a horizontal line
-            d = `M 0,${srcY} L ${endX},${tgtY}`;
-          } else {
-            const r = Math.min(R, absDy / 2);
-            if (dy > 0) {
-              // Target is below source
-              d = [
-                `M 0,${srcY}`,
-                `L ${spineX - r},${srcY}`,
-                `A ${r},${r} 0 0,1 ${spineX},${srcY + r}`,
-                `L ${spineX},${tgtY - r}`,
-                `A ${r},${r} 0 0,0 ${spineX + r},${tgtY}`,
-                `L ${endX},${tgtY}`,
-              ].join(' ');
-            } else {
-              // Target is above source
-              d = [
-                `M 0,${srcY}`,
-                `L ${spineX - r},${srcY}`,
-                `A ${r},${r} 0 0,0 ${spineX},${srcY - r}`,
-                `L ${spineX},${tgtY + r}`,
-                `A ${r},${r} 0 0,1 ${spineX + r},${tgtY}`,
-                `L ${endX},${tgtY}`,
-              ].join(' ');
-            }
-          }
-
-          return (
-            <g key={i}>
-              <path d={d}
-                fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="5"
-                className="ik-branch-arrows__path" style={{ animationDelay: `${i * 40}ms` }}
-              />
-              <path d={d}
-                fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.5"
-                markerEnd="url(#ik-bhead)"
-                className="ik-branch-arrows__path" style={{ animationDelay: `${i * 40}ms` }}
-              />
-            </g>
-          );
-        })}
-      </svg>
-    );
-  };
-
-  // ─── Scale questions pagination ───────────────────────
-  const SCALE_PER_PAGE = 2;
-  const scalePages = Math.ceil(scaleQuestions.length / SCALE_PER_PAGE);
-  const currentScaleQs = scaleQuestions.slice(scalePage * SCALE_PER_PAGE, (scalePage + 1) * SCALE_PER_PAGE);
-  const isScaleLastPage = scalePage === scalePages - 1;
-
-  // ─── "Go back to Step 1" handler ───────────────────────
   const handleBackToStep1 = () => {
     setSelectedTask(null);
-    setShowUrlForm(false);
-    setShowDeeperDive(false);
-    setShowDiagnostic(false);
-    setShowPrecision(false);
-    setShowComplete(false);
-    setEarlyTools([]);
-    setUrlValue('');
-    setEmail('');
+    clearPostTask();
+    setUrlValue(''); setGbpValue('');
   };
 
-  // ─── RENDER ───────────────────────────────────────────
+  const clearError = () => setError(null);
 
-  // ── DIAGNOSTIC SIGNALS VIEW ───────────────────────────
-  if (showDiagnostic && currentQuestion) {
+  // ─── RENDER: COMPLETE ──────────────────────────────────
+  if (showComplete) {
     return (
-      <div className="ik-app">
-        <Navbar />
-
-        {/* Header */}
-        <div className="ik-diag__header">
-          <h1 className="ik-diag__title">Diagnostic Signals</h1>
-          <p className="ik-diag__subtitle">Which of these symptoms are you currently experiencing</p>
-        </div>
-
-        {/* Question area */}
-        <div className="ik-diag">
-          <div className="ik-diag__card">
-            <p className="ik-diag__question">{currentQuestion.question}</p>
-            <div className="ik-diag__options">
-              {currentQuestion.options.map((opt, i) => (
-                <button key={i}
-                  className={`ik-diag__option ${scaleAnswers[questionIndex] === opt ? 'ik-diag__option--selected' : ''}`}
-                  onClick={() => {
-                    setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
-                    handleDiagnosticAnswer(opt);
-                  }}>
-                  <span className="ik-diag__option-num">{String.fromCharCode(65 + i)}</span>
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Loading overlay */}
-          {loading && <div className="ik-diag__loading">Thinking…</div>}
-        </div>
-
-        {/* Chat bar at bottom */}
-        <div className="ik-diag-chat">
-          <input className="ik-diag-chat__input" type="text" placeholder="Type your own answer or message Clawbot..."
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.target.value.trim()) {
-                handleDiagnosticAnswer(e.target.value.trim());
-                e.target.value = '';
-              }
-            }} />
-          <button className="ik-diag-chat__btn"
-            onClick={(e) => {
-              const input = e.currentTarget.previousElementSibling;
-              if (input.value.trim()) {
-                handleDiagnosticAnswer(input.value.trim());
-                input.value = '';
-              }
-            }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      <StageLayout error={error} onClearError={clearError}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', gap: '24px', textAlign: 'center', color: '#fff' }}>
+          <div style={{ fontSize: '48px' }}>&#10003;</div>
+          <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.5px' }}>Analysis Complete</h1>
+          <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.6)', maxWidth: '480px', lineHeight: 1.7 }}>
+            Your diagnostic journey is complete. Based on your answers, we have enough context to generate your personalized playbook and tool recommendations.
+          </p>
+          <button
+            onClick={handleRestart}
+            style={{ marginTop: '12px', padding: '12px 32px', borderRadius: '10px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', border: 'none', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}
+          >
+            Start New Journey
           </button>
         </div>
-
-        {error && (
-          <div className="ik-app__error" onClick={() => setError(null)}>
-            <span>{error}</span>
-            <button className="ik-app__error-close">&times;</button>
-          </div>
-        )}
-      </div>
+      </StageLayout>
     );
   }
 
-  // ── DEEPER DIVE (Scale Questions) VIEW ────────────────
+  // ─── RENDER: DIAGNOSTIC ───────────────────────────────
+  if (showDiagnostic && currentQuestion) {
+    const answerHandler = showPrecision ? handlePrecisionAnswer : handleDiagnosticAnswer;
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <DiagnosticStage
+          currentQuestion={currentQuestion}
+          questionIndex={showPrecision ? precisionIndex : questionIndex}
+          scaleAnswers={scaleAnswers}
+          onAnswer={(opt) => {
+            setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
+            answerHandler(opt);
+          }}
+          loading={loading}
+        />
+      </StageLayout>
+    );
+  }
+
+  // ─── RENDER: DEEPER DIVE ──────────────────────────────
   if (showDeeperDive) {
     return (
-      <div className="ik-app">
-        <Navbar />
-        <div className="ik-dive">
-          <h1 className="ik-dive__title">Business Context</h1>
-          <p className="ik-dive__subtitle">Help us understand your situation to give better recommendations</p>
-
-          <div className="ik-dive__body">
-            {/* Dashed arrow */}
-            <svg className="ik-dive__arrow" viewBox="0 0 200 20">
-              <defs>
-                <marker id="ik-dd-head" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
-                  <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1" />
-                </marker>
-              </defs>
-              <line x1="0" y1="10" x2="190" y2="10"
-                stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" strokeDasharray="6,4"
-                markerEnd="url(#ik-dd-head)" />
-            </svg>
-
-            {/* 2 question cards side by side */}
-            {scaleQuestions.length > 0 ? (
-              <div className="ik-dive__cards">
-                {currentScaleQs.map((q, qi) => {
-                  const qIdx = scalePage * SCALE_PER_PAGE + qi;
-                  return (
-                    <div key={qIdx} className="ik-dive__card">
-                      <p className="ik-dive__question">{q.question}</p>
-                      <div className="ik-dive__options">
-                        {q.options.map((opt, oi) => (
-                          <button key={oi}
-                            className={`ik-dive__option ${
-                              (q.multi_select
-                                ? (scaleAnswers[qIdx] || []).includes(opt)
-                                : scaleAnswers[qIdx] === opt)
-                                ? 'ik-dive__option--sel' : ''
-                            }`}
-                            onClick={() => handleScaleSelect(qIdx, opt, q.multi_select)}>
-                            {opt}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="ik-dive__cards">
-                <div className="ik-dive__card">
-                  <p className="ik-dive__question">Loading questions…</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Nav row pinned at bottom */}
-          <div className="ik-dive__nav">
-            {scalePage > 0 && (
-              <button className="ik-dive__nav-btn" onClick={() => setScalePage((p) => p - 1)}>
-                &lsaquo; Previous
-              </button>
-            )}
-            <div style={{ flex: 1 }} />
-            <span className="ik-dive__page">{scalePage + 1} / {scalePages || 1}</span>
-            <div style={{ flex: 1 }} />
-            {!isScaleLastPage ? (
-              <button className="ik-dive__nav-btn ik-dive__nav-btn--primary"
-                onClick={() => setScalePage((p) => p + 1)}>
-                Next &rsaquo;
-              </button>
-            ) : (
-              <button className="ik-dive__nav-btn ik-dive__nav-btn--primary"
-                onClick={handleScaleSubmit} disabled={loading}>
-                {loading ? 'Processing…' : 'Continue'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <div className="ik-app__error" onClick={() => setError(null)}>
-            <span>{error}</span>
-            <button className="ik-app__error-close">&times;</button>
-          </div>
-        )}
-      </div>
+      <StageLayout error={error} onClearError={clearError}>
+        <DeeperDiveStage
+          scaleQuestions={scaleQuestions}
+          scaleAnswers={scaleAnswers}
+          onSelect={handleScaleSelect}
+          scalePage={scalePage}
+          onPageChange={setScalePage}
+          onSubmit={handleScaleSubmit}
+          loading={loading}
+        />
+      </StageLayout>
     );
   }
 
-  // ── POST-Q3 FULL-PAGE VIEW ────────────────────────────
+  // ─── RENDER: URL STAGE ────────────────────────────────
   if (showUrlForm) {
     return (
-      <div className="ik-app">
-        <Navbar />
-
-        <div className="ik-s2">
-          {/* Hero */}
-          <h1 className="ik-s2__title">
-            Get Business <span className="ik-s2__accent ik-s2__accent--orange">Audit</span> report and{' '}
-            <span className="ik-s2__accent ik-s2__accent--purple">Playbook</span>
-          </h1>
-
-          {/* Domain node → arrow → URL form */}
-          <div className="ik-s2__flow">
-            <div className="ik-s2__node">
-              <FlowNode label={selectedDomain} variant="light" active />
-            </div>
-
-            <svg className="ik-s2__arrow" viewBox="0 0 120 20">
-              <defs>
-                <marker id="ik-s2-head" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
-                  <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
-                </marker>
-              </defs>
-              <line x1="4" y1="10" x2="110" y2="10"
-                stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" markerEnd="url(#ik-s2-head)" />
-            </svg>
-
-            <div className="ik-s2__form-wrap">
-              <div className="ik-inline-form">
-                <p className="ik-inline-form__hint">Enter your business website or Google Business Profile URL</p>
-                <form onSubmit={handleUrlSubmit}>
-                  <input className="ik-inline-form__input" type="text"
-                    placeholder="yourcompany.com or Google Business Profile URL"
-                    value={urlValue} onChange={(e) => setUrlValue(e.target.value)} autoFocus />
-                  <button className="ik-inline-form__submit" type="submit"
-                    disabled={urlSubmitting || !urlValue.trim()}>
-                    {urlSubmitting ? 'Analyzing...' : 'Analyze My Business'}
-                  </button>
-                </form>
-                <button className="ik-inline-form__skip" onClick={handleUrlSkip} disabled={urlSubmitting}>
-                  Skip — without URLs, we'll give general recommendations
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Tools carousel */}
-          {earlyTools.length > 0 && (() => {
-            const totalPages = Math.ceil(earlyTools.length / TOOLS_PER_PAGE);
-            const pageTools = earlyTools.slice(toolPage * TOOLS_PER_PAGE, (toolPage + 1) * TOOLS_PER_PAGE);
-            return (
-              <div className="ik-s2__tools">
-                <h2 className="ik-s2__tools-heading">Best Tools For You</h2>
-                <div className="ik-carousel">
-                  <button className="ik-carousel__btn ik-carousel__btn--left"
-                    onClick={() => setToolPage((p) => p - 1)}
-                    disabled={toolPage === 0}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
-                  </button>
-                  <div className="ik-carousel__track">
-                    {pageTools.map((tool, i) => (
-                      <ToolCard key={toolPage * TOOLS_PER_PAGE + i} name={tool.name} rating={tool.rating}
-                        description={tool.description} bullets={tool.bullets}
-                        tag={tool.tag} url={tool.url} />
-                    ))}
-                  </div>
-                  <button className="ik-carousel__btn ik-carousel__btn--right"
-                    onClick={() => setToolPage((p) => p + 1)}
-                    disabled={toolPage >= totalPages - 1}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
-                  </button>
-                </div>
-                <div className="ik-carousel__dots">
-                  {Array.from({ length: totalPages }).map((_, i) => (
-                    <button key={i}
-                      className={`ik-carousel__dot ${i === toolPage ? 'ik-carousel__dot--active' : ''}`}
-                      onClick={() => setToolPage(i)} />
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Back to Step 1 */}
-          <button className="ik-s2__back" onClick={handleBackToStep1}>
-            &lsaquo; Step 1
-          </button>
-        </div>
-
-        {/* Error toast */}
-        {error && (
-          <div className="ik-app__error" onClick={() => setError(null)}>
-            <span>{error}</span>
-            <button className="ik-app__error-close">&times;</button>
-          </div>
-        )}
-      </div>
+      <StageLayout error={error} onClearError={clearError}>
+        <UrlStage
+          selectedDomain={selectedDomain}
+          urlValue={urlValue}
+          gbpValue={gbpValue}
+          onUrlChange={setUrlValue}
+          onGbpChange={setGbpValue}
+          urlTab={urlTab}
+          onTabChange={setUrlTab}
+          onSubmit={handleUrlSubmit}
+          onSkip={handleUrlSkip}
+          urlSubmitting={urlSubmitting}
+          earlyTools={earlyTools}
+          toolPage={toolPage}
+          onToolPageChange={setToolPage}
+          onBack={handleBackToStep1}
+        />
+      </StageLayout>
     );
   }
 
-  // ── STEP 1: HORIZONTAL JOURNEY CANVAS ─────────────────
-
+  // ─── RENDER: HORIZONTAL JOURNEY CANVAS ────────────────
   return (
     <div className="ik-app">
-      {/* Screensaver preview overlay */}
-      {showScreensaver && (
-        <ScreensaverPreview onDismiss={() => setShowScreensaver(false)} />
-      )}
+      <ScreensaverPreview active={showScreensaver} onDismiss={(outcome) => {
+        setShowScreensaver(false);
+        if (outcome) handleOutcomeClick(outcome);
+      }} />
 
       <Navbar />
 
-      {/* Hero title — fixed at top */}
       <div className="ik-hero">
         <h1 className="ik-hero__title">
           Deploy 100+ <span className="ik-hero__accent">AI Agents</span> to Grow Your Business
@@ -747,11 +461,10 @@ export default function IkshanApp() {
         <p className="ik-hero__sub">Select what Matters most to you right now</p>
       </div>
 
-      {/* Horizontal scrolling canvas */}
       <div className="ik-canvas" ref={canvasRef}>
         <div className={`ik-canvas__track ${selectedOutcome ? 'ik-canvas__track--started' : ''}`}>
 
-          {/* ── COLUMN 0: Outcomes ───────────────────── */}
+          {/* Column 0: Outcomes */}
           <div className={`ik-col ${selectedOutcome ? 'ik-col--locked' : ''}`}>
             <div className="ik-col__nodes">
               {outcomeOptions.map((opt) => {
@@ -769,12 +482,22 @@ export default function IkshanApp() {
                       active={isSelected}
                       onClick={isLocked ? undefined : () => handleOutcomeClick(opt)}
                     />
-                    {/* Hover preview: show domains */}
                     {isHovered && !isLocked && OUTCOME_DOMAINS[opt.id] && (
-                      <div className="ik-hover-preview">
-                        {OUTCOME_DOMAINS[opt.id].map((d) => (
-                          <div key={d} className="ik-hover-preview__item">{d}</div>
-                        ))}
+                      <div className="ik-hover-branch">
+                        <div className="ik-hover-branch__arrows">
+                          <BranchArrows
+                            count={OUTCOME_DOMAINS[opt.id].length}
+                            sourceIndex={0}
+                            srcLabels={[opt.text]}
+                            srcHasSubtext
+                            tgtLabels={OUTCOME_DOMAINS[opt.id]}
+                          />
+                        </div>
+                        <div className="ik-hover-branch__nodes">
+                          {OUTCOME_DOMAINS[opt.id].map((d) => (
+                            <FlowNode key={d} label={d} variant="dark" />
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -783,20 +506,17 @@ export default function IkshanApp() {
             </div>
           </div>
 
-          {/* ── ARROW: Outcome → Domains ─────────────── */}
+          {/* Arrows + Domains */}
           {selectedOutcome && (
             <>
               <div className="ik-col ik-col--arrows">
                 <BranchArrows count={domains.length}
                   sourceIndex={outcomeOptions.findIndex(o => o.id === selectedOutcome.id)}
-                  sourceTotal={outcomeOptions.length}
                   srcLabels={outcomeOptions.map(o => o.text)}
-                  srcHasSubtext={true}
-                  tgtLabels={domains}
-                  tgtHasSubtext={false} />
+                  srcHasSubtext
+                  tgtLabels={domains} />
               </div>
 
-              {/* ── COLUMN 1: Domains ────────────────── */}
               <div className={`ik-col ik-col--anim ${selectedDomain ? 'ik-col--locked' : ''}`}>
                 <div className="ik-col__nodes">
                   {domains.map((d) => {
@@ -811,13 +531,20 @@ export default function IkshanApp() {
                         <FlowNode label={d} variant={isSel ? 'light' : 'dark'} active={isSel}
                           onClick={isLocked ? undefined : () => handleDomainClick(d)} />
                         {isHov && !isLocked && DOMAIN_TASKS[d] && (
-                          <div className="ik-hover-preview">
-                            {DOMAIN_TASKS[d].slice(0, 5).map((t) => (
-                              <div key={t} className="ik-hover-preview__item">{t}</div>
-                            ))}
-                            {DOMAIN_TASKS[d].length > 5 && (
-                              <div className="ik-hover-preview__more">+{DOMAIN_TASKS[d].length - 5} more</div>
-                            )}
+                          <div className="ik-hover-branch">
+                            <div className="ik-hover-branch__arrows">
+                              <BranchArrows
+                                count={DOMAIN_TASKS[d].length}
+                                sourceIndex={0}
+                                srcLabels={[d]}
+                                tgtLabels={DOMAIN_TASKS[d]}
+                              />
+                            </div>
+                            <div className="ik-hover-branch__nodes">
+                              {DOMAIN_TASKS[d].map((t) => (
+                                <FlowNode key={t} label={t} variant="dark" />
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -828,50 +555,101 @@ export default function IkshanApp() {
             </>
           )}
 
-          {/* ── ARROW: Domain → Tasks ────────────────── */}
+          {/* Arrows + Tasks */}
           {selectedDomain && (
             <>
-              <div className="ik-col ik-col--arrows">
-                <BranchArrows count={tasks.length}
-                  sourceIndex={domains.indexOf(selectedDomain)}
-                  sourceTotal={domains.length}
-                  srcLabels={domains}
-                  srcHasSubtext={false}
-                  tgtLabels={tasks}
-                  tgtHasSubtext={false} />
-              </div>
+              {tasks.length <= 6 ? (
+                /* ── Normal single-column layout ── */
+                <>
+                  <div className="ik-col ik-col--arrows">
+                    <BranchArrows count={tasks.length}
+                      sourceIndex={domains.indexOf(selectedDomain)}
+                      srcLabels={domains}
+                      tgtLabels={tasks} />
+                  </div>
 
-              {/* ── COLUMN 2: Tasks ──────────────────── */}
-              <div className={`ik-col ik-col--anim ${selectedTask ? 'ik-col--locked' : ''}`}>
-                <div className="ik-col__nodes">
-                  {tasks.map((t) => {
-                    const isSel = selectedTask === t;
-                    const isLocked = !!selectedTask;
+                  <div className={`ik-col ik-col--anim ${selectedTask ? 'ik-col--locked' : ''}`}>
+                    <div className="ik-col__nodes">
+                      {tasks.map((t) => {
+                        const isSel = selectedTask === t;
+                        const isLocked = !!selectedTask;
+                        return (
+                          <div key={t}
+                            className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                            onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                            onMouseLeave={() => setHoveredTask(null)}>
+                            <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
+                              onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                /* ── Zigzag two-column layout for 7+ tasks ── */
+                <>
+                  {(() => {
+                    const leftCol = tasks.filter((_, i) => i % 2 === 0);
+                    const rightCol = tasks.filter((_, i) => i % 2 === 1);
                     return (
-                      <div key={t}
-                        className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
-                        onMouseEnter={() => !isLocked && setHoveredTask(t)}
-                        onMouseLeave={() => setHoveredTask(null)}>
-                        <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
-                          onClick={isLocked ? undefined : () => handleTaskClick(t)} />
-                      </div>
+                      <>
+                        <div className="ik-col ik-col--arrows">
+                          <BranchArrows count={leftCol.length}
+                            sourceIndex={domains.indexOf(selectedDomain)}
+                            srcLabels={domains}
+                            tgtLabels={leftCol} />
+                        </div>
+
+                        <div className={`ik-col ik-col--anim ${selectedTask ? 'ik-col--locked' : ''}`}>
+                          <div className="ik-col__nodes">
+                            {leftCol.map((t) => {
+                              const isSel = selectedTask === t;
+                              const isLocked = !!selectedTask;
+                              return (
+                                <div key={t}
+                                  className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                                  onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                                  onMouseLeave={() => setHoveredTask(null)}>
+                                  <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
+                                    onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className={`ik-col ik-col--anim ik-col--zigzag-right ${selectedTask ? 'ik-col--locked' : ''}`}>
+                          <div className="ik-col__nodes ik-col__nodes--staggered">
+                            {rightCol.map((t) => {
+                              const isSel = selectedTask === t;
+                              const isLocked = !!selectedTask;
+                              return (
+                                <div key={t}
+                                  className={`ik-col__node-wrap ${isLocked && !isSel ? 'ik-col__node-wrap--dimmed' : ''}`}
+                                  onMouseEnter={() => !isLocked && setHoveredTask(t)}
+                                  onMouseLeave={() => setHoveredTask(null)}>
+                                  <FlowNode label={t} variant={isSel ? 'light' : 'dark'} active={isSel}
+                                    onClick={isLocked ? undefined : () => handleTaskClick(t)} />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </>
                     );
-                  })}
-                </div>
-              </div>
+                  })()}
+                </>
+              )}
             </>
           )}
 
-          {/* ── Post-Q3 stages rendered in full-page view above ── */}
-
-          {/* End spacer so last column can center */}
           <div className="ik-col ik-col--spacer" />
         </div>
       </div>
 
-      {/* Error toast */}
       {error && (
-        <div className="ik-app__error" onClick={() => setError(null)}>
+        <div className="ik-app__error" onClick={clearError}>
           <span>{error}</span>
           <button className="ik-app__error-close">&times;</button>
         </div>

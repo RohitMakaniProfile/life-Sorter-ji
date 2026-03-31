@@ -21,14 +21,15 @@ export default function ToolCard({ name, rating, description, bullets = [], tag,
           </span>
         )}
       </div>
-      {tag && <span className="ik-tool-card__tag">{tag}</span>}
-      <p className="ik-tool-card__desc">{description}</p>
-      {bullets.length > 0 && (
-        <ul className="ik-tool-card__bullets">
-          {bullets.map((b, i) => <li key={i}>{b}</li>)}
-        </ul>
-      )}
-      <span className="ik-tool-card__cta">Learn more &rarr;</span>
+      <div className="ik-tool-card__body">
+        {tag && <span className="ik-tool-card__tag">{tag}</span>}
+        <p className="ik-tool-card__desc">{description}</p>
+        {bullets.length > 0 && (
+          <ul className="ik-tool-card__bullets">
+            {bullets.map((b, i) => <li key={i}>{b}</li>)}
+          </ul>
+        )}
+      </div>
     </a>
   );
 }

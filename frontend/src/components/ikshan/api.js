@@ -55,10 +55,6 @@ export const startDiagnostic = (sessionId) =>
 export const submitAnswer = (sessionId, questionIndex, answer) =>
   post(`${S}/answer`, { session_id: sessionId, question_index: questionIndex, answer });
 
-// ─── Instant Tools (by Q1/Q2/Q3 selection) ───────────────────────
-export const getInstantTools = (outcome, domain, task, limit = 10) =>
-  post(`${S}/instant-tools`, { outcome, domain, task, limit });
-
 // ─── Precision & Recommendations ──────────────────────────────────
 export const getPrecisionQuestions = (sessionId) =>
   post(`${S}/precision-questions`, { session_id: sessionId });
