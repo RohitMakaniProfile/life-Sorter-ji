@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import FlowNode from './components/FlowNode';
 import BranchArrows from './components/BranchArrows';
@@ -14,8 +15,11 @@ import { coreApi } from '../../api/services/core';
 import './IkshanApp.css';
 
 const IDLE_TIMEOUT = 10_000;
+const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
+const phase2Path = (path) => `/phase2/${path}`;
 
 export default function IkshanApp() {
+  const navigate = useNavigate();
   const canvasRef = useRef(null);
   const [showScreensaver, setShowScreensaver] = useState(true);
   const idleTimerRef = useRef(null);
@@ -347,17 +351,22 @@ export default function IkshanApp() {
     finally { setLoading(false); }
   };
 
-  const handleRestart = () => {
-    setSelectedOutcome(null); setSelectedDomain(null); setSelectedTask(null);
-    clearPostTask();
-    setDiagnosticData(null); setError(null);
-    setHoveredOutcome(null); setHoveredDomain(null); setHoveredTask(null);
-    setShowPlaybook(false); setPlaybookText(''); setPlaybookDone(false);
-    setPlaybookResult(null); setGapQuestions([]); setGapAnswers({}); setShowGapQuestions(false);
-    setCrawlStatus(''); crawlSummaryRef.current = null;
-    if (crawlPollRef.current) { clearInterval(crawlPollRef.current); crawlPollRef.current = null; }
-    sessionIdRef.current = null; sessionPromiseRef.current = null;
-    if (canvasRef.current) canvasRef.current.scrollLeft = 0;
+  const getWebsiteUrl = () => {
+    let u = (urlValue || '').trim();
+    if (u && !/^https?:\/\//i.test(u)) u = `https://${u}`;
+    return u;
+  };
+
+  /** Phase 2 uses JWT for identity; Phase 1 agent session is not required. URL comes from URL stage. */
+  const handleDeepAnalysis = () => {
+    const url = getWebsiteUrl();
+    const userLine = url ? `${url}\n\nDo deep analysis.` : '';
+    navigate(phase2Path('new'), {
+      state: {
+        agentId: RESEARCH_ORCHESTRATOR_AGENT_ID,
+        ...(userLine ? { initialMessage: userLine } : {}),
+      },
+    });
   };
 
   const handleBackToStep1 = () => {
@@ -495,8 +504,8 @@ export default function IkshanApp() {
                 </div>
               )}
               {playbookDone && (
-                <button onClick={handleRestart} style={{ marginTop: 32, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer' }}>
-                  Start New Journey
+                <button onClick={handleDeepAnalysis} style={{ marginTop: 32, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer' }}>
+                  Do Deep Analysis
                 </button>
               )}
             </div>
@@ -517,10 +526,10 @@ export default function IkshanApp() {
             Your diagnostic journey is complete. Based on your answers, we have enough context to generate your personalized playbook and tool recommendations.
           </p>
           <button
-            onClick={handleRestart}
+            onClick={handleDeepAnalysis}
             style={{ marginTop: '12px', padding: '12px 32px', borderRadius: '10px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', border: 'none', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}
           >
-            Start New Journey
+            Do Deep Analysis
           </button>
         </div>
       </StageLayout>
