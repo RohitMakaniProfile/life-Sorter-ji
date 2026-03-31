@@ -4,13 +4,15 @@ AGENT ROUTER — AI Agent with Dynamic Persona & Session Context
 ═══════════════════════════════════════════════════════════════
 Endpoints for the AI agent flow:
 
-POST  /api/v1/agent/session                     — Create a new session
-PATCH /api/v1/agent/session/{id}                — Update simple session fields
-POST  /api/v1/agent/session/{id}/advance        — Execute workflow step
-GET   /api/v1/agent/session/{id}/status         — Lightweight progress status
-GET   /api/v1/agent/session/{id}                — Get full session context
-GET   /api/v1/agent/session/{id}/context-pool   — Full LLM/debug context
-GET   /api/v1/agent/session/{id}/website-snapshot — Structured crawl snapshot
+POST /api/v1/agent/session              — Create a new session
+POST /api/v1/agent/session/outcome      — Record Q1 (outcome)
+POST /api/v1/agent/session/domain       — Record Q2 (domain)
+POST /api/v1/agent/session/task         — Record Q3 (task) + early recs + generate dynamic Qs
+POST /api/v1/agent/session/answer       — Submit dynamic question answer
+POST /api/v1/agent/session/website      — Submit website for audience analysis
+POST /api/v1/agent/session/recommend    — Get final personalized recommendations
+GET  /api/v1/agent/session/{id}         — Get full session context
+GET  /api/v1/agent/personas             — List available persona domains
 """
 
 import asyncio
@@ -24,9 +26,8 @@ from app.config import get_settings
 from app.middleware.rate_limit import limiter
 from app.services import session_store, agent_service
 from app.services.crawl_service import detect_url_type, run_background_crawl
-from app.services.persona_doc_service import get_doc_for_domain, get_diagnostic_sections
+from app.services.persona_doc_service import get_available_personas, get_doc_for_domain, get_diagnostic_sections
 from app.services.claude_rca_service import generate_next_rca_question, generate_precision_questions, generate_task_alignment_filter
-from app.services.rca_tree_service import get_first_question, get_task_filter, get_next_from_tree, load_tree
 from app.models.session import (
     SessionStage,
     GenerateDynamicQuestionsRequest,
@@ -41,7 +42,7 @@ from app.models.session import (
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/agent", tags=["Agent"])
+router = APIRouter(prefix="/agent", tags=["agent"])
 
 
 # ── Request/Response Models ────────────────────────────────────
@@ -50,6 +51,17 @@ router = APIRouter(prefix="/agent", tags=["Agent"])
 class CreateSessionResponse(BaseModel):
     session_id: str
     stage: str
+
+
+class SetOutcomeRequest(BaseModel):
+    session_id: str
+    outcome: str           # e.g., 'lead-generation'
+    outcome_label: str     # e.g., 'Lead Generation (Marketing, SEO & Social)'
+
+
+class SetDomainRequest(BaseModel):
+    session_id: str
+    domain: str            # e.g., 'Content & Social Media'
 
 
 class SetTaskRequest(BaseModel):
@@ -62,11 +74,8 @@ class EarlyToolRecommendation(BaseModel):
     description: str
     url: Optional[str] = None
     category: str = ""       # 'extension', 'gpt', 'company'
-    rating: Optional[str] = None
+    rating: Optional[float] = None
     why_relevant: str = ""   # Brief relevance note based on Q1-Q3
-    implementation_stage: str = ""   # When to implement in their workflow
-    issue_solved: str = ""           # What issue this tool addresses
-    ease_of_use: str = ""            # How easy to adopt given current process
 
 
 class SetTaskResponse(BaseModel):
@@ -85,22 +94,22 @@ class SetTaskResponse(BaseModel):
 
 class SubmitWebsiteRequest(BaseModel):
     session_id: str
-    website_url: str
+    website_url: str          # e.g., 'https://example.com'
 
 
 class AudienceInsight(BaseModel):
-    intended_audience: str = ""
-    actual_audience: str = ""
-    mismatch_analysis: str = ""
-    recommendations: list[str] = []
+    intended_audience: str = ""     # Who they seem to be targeting
+    actual_audience: str = ""       # Who their content actually reaches
+    mismatch_analysis: str = ""     # Gap between intended and actual
+    recommendations: list[str] = [] # Actionable suggestions
 
 
 class WebsiteAnalysisResponse(BaseModel):
     session_id: str
     website_url: str
     audience_insights: AudienceInsight
-    business_summary: str = ""
-    analysis_note: str = ""
+    business_summary: str = ""      # Brief overview of the business
+    analysis_note: str = ""         # Message for the user
 
 
 class SessionContextResponse(BaseModel):
@@ -123,46 +132,6 @@ class SessionContextResponse(BaseModel):
     scale_questions_complete: bool = False
 
 
-class SessionPatchRequest(BaseModel):
-    outcome: Optional[str] = None
-    outcome_label: Optional[str] = None
-    domain: Optional[str] = None
-    task: Optional[str] = None
-    business_url: Optional[str] = None
-    gbp_url: Optional[str] = None
-    skip_url: Optional[bool] = None
-    scale_answers: Optional[dict[str, Any]] = None
-    dynamic_question: Optional[str] = None
-    dynamic_answer: Optional[str] = None
-    stage: Optional[str] = None
-
-
-class SessionAdvanceRequest(BaseModel):
-    action: str = "auto"  # auto | task_setup | submit_answer | scale_questions | website_analysis | start_diagnostic | precision_questions | recommend
-    task: Optional[str] = None
-    question_index: Optional[int] = None
-    answer: Optional[str] = None
-    website_url: Optional[str] = None
-
-
-class SessionAdvanceResponse(BaseModel):
-    session_id: str
-    action: str
-    stage: str
-    result: dict[str, Any] = {}
-    snapshot: SessionContextResponse
-
-
-class SessionStatusResponse(BaseModel):
-    session_id: str
-    stage: str
-    crawl_status: str = ""
-    crawl_summary: Optional[dict[str, Any]] = None
-    rca_complete: bool = False
-    scale_questions_complete: bool = False
-    playbook_stage: str = ""
-
-
 # ── Endpoints ──────────────────────────────────────────────────
 
 
@@ -177,6 +146,38 @@ async def create_session(request: Request):
     )
 
 
+@router.post("/session/outcome", response_model=CreateSessionResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def set_outcome(request: Request, body: SetOutcomeRequest = Body(...)):
+    """Record Q1: Outcome / Growth Bucket selection."""
+    session = session_store.set_outcome(
+        body.session_id, body.outcome, body.outcome_label
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return CreateSessionResponse(
+        session_id=session.session_id,
+        stage=session.stage.value,
+    )
+
+
+@router.post("/session/domain", response_model=CreateSessionResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def set_domain(request: Request, body: SetDomainRequest = Body(...)):
+    """Record Q2: Domain / Sub-Category selection."""
+    session = session_store.set_domain(body.session_id, body.domain)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return CreateSessionResponse(
+        session_id=session.session_id,
+        stage=session.stage.value,
+    )
+
+
+@router.post("/session/task", response_model=SetTaskResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def set_task_and_generate_questions(request: Request, body: SetTaskRequest = Body(...)):
     """
     Record Q3: Task selection.
@@ -227,7 +228,7 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
                     description=t.get("description", ""),
                     url=t.get("url"),
                     category=t.get("category", ""),
-                    rating=str(t.get("rating", "")) if t.get("rating") is not None else None,
+                    rating=t.get("rating"),
                     why_relevant=t.get("best_use_case", ""),
                 )
                 for t in instant_result["tools"]
@@ -251,20 +252,32 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
             error=str(e),
         )
 
-    # ── First RCA question: try pre-generated tree first, then LLM fallback ──
-    tree_q1 = get_first_question(
-        outcome=session.outcome or "",
-        domain=session.domain or "",
-        task=session.task or "",
-    )
+    # ── First Claude RCA question ──────────────────────────────
+    # Run task filter PARALLEL with first RCA question for speed.
+    # First RCA uses unfiltered context (fine — it's a wide-form opener).
+    # Filtered context is stored in session for Q2+ where it matters.
 
-    if tree_q1:
-        # Instant hit from pre-generated tree — 0ms instead of 15-40s
-        claude_result = {"status": "question", **tree_q1}
-        logger.info("RCA Q1 served from tree (0ms)", session_id=session.session_id)
-    else:
-        # Fallback to live LLM call
-        claude_result = await generate_next_rca_question(
+    async def _run_task_filter():
+        if not diagnostic:
+            return None, None
+        result = await generate_task_alignment_filter(
+            task=session.task or "",
+            diagnostic_context=diagnostic,
+        )
+        if result:
+            fc = result.get("filtered_items")
+            ts = result.get("task_execution_summary", "")
+            session_store.set_filtered_context(
+                session.session_id,
+                filtered_items=fc or {},
+                deferred_items=result.get("deferred_items", []),
+                task_execution_summary=ts or "",
+            )
+            return fc, ts
+        return None, None
+
+    async def _get_first_rca():
+        return await generate_next_rca_question(
             outcome=session.outcome or "",
             outcome_label=session.outcome_label or "",
             domain=session.domain or "",
@@ -272,12 +285,12 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
             diagnostic_context=diagnostic or {},
             rca_history=[],
             business_profile=session.business_profile or None,
-            gbp_data=session.gbp_data or None,
         )
 
-        # Log Claude RCA call to context pool
-        if claude_result and claude_result.get("_meta"):
-            session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
+    # Run both in parallel
+    (filtered_context, task_execution_summary), claude_result = await asyncio.gather(
+        _run_task_filter(), _get_first_rca()
+    )
 
     if claude_result and claude_result.get("status") == "question":
         # Claude gave us the first adaptive question
@@ -371,16 +384,17 @@ class StartDiagnosticResponse(BaseModel):
     context_used: list[str] = []   # What context influenced the question
 
 
+@router.post("/session/start-diagnostic", response_model=StartDiagnosticResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body(...)):
     """
     Generate the first diagnostic question with FULL context:
     crawl summary + business profile + Q1/Q2/Q3.
 
-    NEW: Runs Task Alignment Filter first to focus the RCA context
-    on METHOD/SPEED/QUALITY dimensions of the specific task.
-
     Called after scale questions are done (and crawl may have completed).
     Replaces the stashed first question with a context-aware one.
+    Only regenerates if crawl data is available (otherwise the stashed
+    question from /session/task is already good enough — saves 2-4s).
     """
     session = session_store.get_session(body.session_id)
     if not session:
@@ -397,100 +411,42 @@ async def start_diagnostic(request: Request, body: StartDiagnosticRequest = Body
     if crawl_summary and crawl_summary.get("points"):
         context_used.append("crawl_summary")
 
-    logger.info(
-        "start-diagnostic: generating context-aware first question",
-        session_id=session.session_id,
-        context_used=context_used,
-    )
-
     # Reset RCA history for fresh start
     session.rca_history = []
     session.dynamic_questions = []
     session_store.update_session(session)
 
-    # ── Step 3: Task Filter + First Question — try tree first, then LLM ──
-
-    # Try pre-generated tree for both
-    tree_filter = get_task_filter(
-        outcome=session.outcome or "",
-        domain=session.domain or "",
-        task=session.task or "",
-    )
-    tree_q1 = get_first_question(
-        outcome=session.outcome or "",
-        domain=session.domain or "",
-        task=session.task or "",
-    )
-
-    if tree_filter and tree_q1:
-        # Both from tree — instant (0ms)
-        filter_result = tree_filter
-        claude_result = {"status": "question", **tree_q1}
-        logger.info("start-diagnostic: both served from tree (0ms)", session_id=session.session_id)
-    else:
-        # Fallback to parallel LLM calls
-        async def _run_filter():
-            """Run task alignment filter — non-blocking, best-effort."""
-            try:
-                return await generate_task_alignment_filter(
-                    task=session.task or "",
-                    diagnostic_context=diagnostic,
-                )
-            except Exception as exc:
-                logger.warning("Task filter error (non-blocking)", error=str(exc))
-                return None
-
-        async def _run_first_question():
-            """Generate first RCA question — critical path."""
-            return await generate_next_rca_question(
-                outcome=session.outcome or "",
-                outcome_label=session.outcome_label or "",
-                domain=session.domain or "",
-                task=session.task or "",
-                diagnostic_context=diagnostic,
-                rca_history=[],
-                business_profile=business_profile,
-                crawl_summary=crawl_summary,
-                gbp_data=session.gbp_data or None,
-            )
-
-        filter_result, claude_result = await asyncio.gather(
-            _run_filter(),
-            _run_first_question(),
-        )
-
-    # Store filter result if it succeeded (will be used in subsequent questions)
-    if filter_result:
-        if filter_result.get("_meta"):
-            session_store.add_llm_call_log(session.session_id, **filter_result["_meta"])
-
-        session_store.set_filtered_context(
-            session.session_id,
-            filtered_items=filter_result.get("filtered_items", {}),
-            deferred_items=filter_result.get("deferred_items", []),
-            task_execution_summary=filter_result.get("task_execution_summary", ""),
-            validation=filter_result.get("_validation"),
-        )
-        context_used.append("task_filter")
-
-        validation = filter_result.get("_validation", {})
+    # Only regenerate if we have NEW context (crawl/business_profile)
+    # that wasn't available when set_task generated the first question.
+    # Otherwise, skip the LLM call — frontend uses the stashed question.
+    if not context_used:
         logger.info(
-            "start-diagnostic: task filter applied",
+            "start-diagnostic: no new context, skipping LLM call (use stashed question)",
             session_id=session.session_id,
-            method=validation.get("method_count", 0),
-            speed=validation.get("speed_count", 0),
-            quality=validation.get("quality_count", 0),
-            empty_categories=validation.get("empty_categories", []),
         )
-    else:
-        logger.warning(
-            "start-diagnostic: task filter failed/skipped, using full context",
+        return StartDiagnosticResponse(
             session_id=session.session_id,
+            rca_mode=False,
         )
 
-    # Log to context pool
-    if claude_result and claude_result.get("_meta"):
-        session_store.add_llm_call_log(session.session_id, **claude_result["_meta"])
+    logger.info(
+        "start-diagnostic: regenerating with crawl context",
+        session_id=session.session_id,
+        context_used=context_used,
+    )
+
+    claude_result = await generate_next_rca_question(
+        outcome=session.outcome or "",
+        outcome_label=session.outcome_label or "",
+        domain=session.domain or "",
+        task=session.task or "",
+        diagnostic_context=diagnostic,
+        rca_history=[],
+        business_profile=business_profile,
+        crawl_summary=crawl_summary,
+        filtered_context=session.rca_filtered_context or None,
+        task_execution_summary=session.rca_task_execution_summary or None,
+    )
 
     if claude_result and claude_result.get("status") == "question":
         first_q = DynamicQuestion(
@@ -551,11 +507,12 @@ class PrecisionQuestionsResponse(BaseModel):
     available: bool = False     # True if questions were generated
 
 
+@router.post("/session/precision-questions", response_model=PrecisionQuestionsResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def get_precision_questions(request: Request, body: PrecisionQuestionsRequest = Body(...)):
     """
-    Generate 3 precision questions that cross-reference crawl data with
-    the user's diagnostic answers to find contradictions, blind spots,
-    and unlock opportunities.
+    Generate 2 precision questions that cross-reference crawl data with
+    the user's diagnostic answers to find contradictions and blind spots.
     """
     session = session_store.get_session(body.session_id)
     if not session:
@@ -582,10 +539,6 @@ async def get_precision_questions(request: Request, body: PrecisionQuestionsRequ
         crawl_raw=session.crawl_raw or None,
         business_profile=session.business_profile or None,
     )
-
-    # Log precision questions to context pool
-    if result and len(result) > 0 and result[0].get("_meta"):
-        session_store.add_llm_call_log(session.session_id, **result[0]["_meta"])
 
     if not result:
         return PrecisionQuestionsResponse(
@@ -618,6 +571,49 @@ async def get_precision_questions(request: Request, body: PrecisionQuestionsRequ
     )
 
 
+# ── Fallback RCA question generator (when Claude skips too early) ──
+
+_FALLBACK_RCA_QUESTIONS = [
+    {
+        "question": "What does your current process for this task look like — are you doing it manually, using a tool, or haven't started yet?",
+        "options": ["Doing it manually", "Using a basic tool but it's not working well", "Haven't started — not sure where to begin", "Something else"],
+        "section": "rca",
+        "section_label": "Current Approach",
+        "insight": "80% of inefficiency comes from wrong tools, not wrong effort.",
+    },
+    {
+        "question": "What's the biggest friction point right now — is it taking too long, not getting results, or you're unsure if you're doing it right?",
+        "options": ["It's taking way too long", "I'm doing it but results are poor", "I'm not confident in my approach", "Something else"],
+        "section": "rca",
+        "section_label": "Core Friction",
+        "insight": "Top performers fix the bottleneck, not all the steps.",
+    },
+    {
+        "question": "If this task worked perfectly, what would change in your business in the next 30 days?",
+        "options": ["More revenue / sales", "More time freed up for other things", "Better customer experience", "Something else"],
+        "section": "rca",
+        "section_label": "Impact Assessment",
+        "insight": "Clarity on impact helps prioritize the right fix.",
+    },
+]
+
+
+def _generate_fallback_rca_question(session, questions_asked: int) -> DynamicQuestion:
+    """Generate a fallback diagnostic question when Claude fails or tries to complete early."""
+    idx = min(questions_asked, len(_FALLBACK_RCA_QUESTIONS) - 1)
+    fb = _FALLBACK_RCA_QUESTIONS[idx]
+    return DynamicQuestion(
+        question=fb["question"],
+        options=fb["options"],
+        allows_free_text=True,
+        section=fb["section"],
+        section_label=fb["section_label"],
+        insight=fb["insight"],
+    )
+
+
+@router.post("/session/answer", response_model=SubmitDynamicAnswerResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerRequest = Body(...)):
     """
     Submit an answer to a diagnostic question.
@@ -643,55 +639,34 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
         # Refresh session after adding answer
         session = session_store.get_session(body.session_id)
 
-        # ── Step 6: Deferred context expansion ─────────────────
-        # After 3 RCA questions, check if answers suggest broader scope
-        if len(session.rca_history) >= 3 and not session.rca_context_expanded:
-            session_store.expand_rca_context(body.session_id)
-            session = session_store.get_session(body.session_id)
-
-        # Try pre-generated tree first, then LLM fallback
-        tree_result = get_next_from_tree(
+        # Ask Claude for the next question
+        claude_result = await generate_next_rca_question(
             outcome=session.outcome or "",
+            outcome_label=session.outcome_label or "",
             domain=session.domain or "",
             task=session.task or "",
+            diagnostic_context=session.rca_diagnostic_context,
             rca_history=session.rca_history,
+            business_profile=session.business_profile or None,
+            crawl_summary=session.crawl_summary or None,
+            filtered_context=session.rca_filtered_context or None,
+            task_execution_summary=session.rca_task_execution_summary or None,
         )
 
-        if tree_result:
-            # Instant hit from tree — 0ms instead of 15s
-            claude_result = tree_result
-            logger.info(
-                "RCA answer served from tree (0ms)",
+        # ── HARD GUARD: minimum 3 questions before allowing "complete" ──
+        questions_asked = len(session.rca_history)
+        if (claude_result
+            and claude_result.get("status") == "complete"
+            and questions_asked < 3):
+            logger.warning(
+                "Claude tried to complete early — overriding to force continuation",
                 session_id=session.session_id,
-                q_index=len(session.rca_history),
+                questions_asked=questions_asked,
             )
-        else:
-            # Fallback to live LLM call
-            claude_result = await generate_next_rca_question(
-                outcome=session.outcome or "",
-                outcome_label=session.outcome_label or "",
-                domain=session.domain or "",
-                task=session.task or "",
-                diagnostic_context=session.rca_diagnostic_context,
-                rca_history=session.rca_history,
-                business_profile=session.business_profile or None,
-                crawl_summary=session.crawl_summary or None,
-                gbp_data=session.gbp_data or None,
-                filtered_context=session.rca_filtered_context or None,
-                task_execution_summary=session.rca_task_execution_summary or None,
-                rca_running_summary=session.rca_running_summary or None,
-            )
-
-        # Log to context pool
-        if claude_result and claude_result.get("_meta"):
-            session_store.add_llm_call_log(body.session_id, **claude_result["_meta"])
+            # Override: turn "complete" into None so we generate a fallback question
+            claude_result = None
 
         if claude_result and claude_result.get("status") == "question":
-            # Store the running summary (compressed context for next turn)
-            cumulative = claude_result.get("cumulative_insight", "")
-            if cumulative:
-                session_store.set_rca_running_summary(body.session_id, cumulative)
-
             next_q = DynamicQuestion(
                 question=claude_result["question"],
                 options=claude_result.get("options", []),
@@ -723,13 +698,7 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
         elif claude_result and claude_result.get("status") == "complete":
             # Claude says we have enough — move to recommendation
             summary = claude_result.get("summary", "")
-            raw_handoff = claude_result.get("handoff", "")
-            # handoff may come as a list of bullet points — join into string
-            if isinstance(raw_handoff, list):
-                handoff = "\n".join(f"• {item}" for item in raw_handoff)
-            else:
-                handoff = raw_handoff or ""
-            session_store.set_rca_complete(body.session_id, summary, handoff=handoff)
+            session_store.set_rca_complete(body.session_id, summary)
 
             logger.info(
                 "Claude RCA: diagnostic complete",
@@ -748,7 +717,28 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
             )
 
         else:
-            # Claude failed mid-flow — mark as complete and move on
+            # Claude failed or was overridden by min-3 guard
+            if questions_asked < 3:
+                # Generate a fallback question from diagnostic context
+                fallback_q = _generate_fallback_rca_question(session, questions_asked)
+                session.dynamic_questions.append(fallback_q.question)
+                session_store.update_session(session)
+
+                logger.info(
+                    "RCA fallback question generated (min-3 guard)",
+                    session_id=session.session_id,
+                    q_index=questions_asked,
+                    question=fallback_q.question[:80],
+                )
+
+                return SubmitDynamicAnswerResponse(
+                    session_id=session.session_id,
+                    next_question=fallback_q,
+                    all_answered=False,
+                    rca_mode=True,
+                )
+
+            # >= 3 questions asked and Claude failed — safe to complete
             logger.warning(
                 "Claude RCA failed mid-flow, completing diagnostic",
                 session_id=session.session_id,
@@ -793,6 +783,8 @@ async def submit_dynamic_answer(request: Request, body: SubmitDynamicAnswerReque
     )
 
 
+@router.post("/session/recommend", response_model=GetRecommendationsResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def get_recommendations(request: Request, body: GetRecommendationsRequest = Body(...)):
     """
     Generate final personalized tool recommendations based on
@@ -822,17 +814,7 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
         domain=session.domain or "",
         task=session.task or "",
         questions_answers=qa_list,
-        crawl_summary=session.crawl_summary or {},
-        crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
-        business_profile=session.business_profile or {},
-        rca_diagnostic_context=session.rca_diagnostic_context or {},
-        rca_summary=session.rca_summary or "",
-        gbp_data=session.gbp_data or None,
     )
-
-    # Log to context pool
-    if recs.get("_meta"):
-        session_store.add_llm_call_log(body.session_id, **recs["_meta"])
 
     # Store in session
     session_store.set_recommendations(
@@ -851,9 +833,6 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
             category="extension",
             free=ext.get("free"),
             why_recommended=ext.get("why_recommended", ""),
-            implementation_stage=ext.get("implementation_stage", ""),
-            issue_solved=ext.get("issue_solved", ""),
-            ease_of_use=ext.get("ease_of_use", ""),
         )
         for ext in recs.get("extensions", [])
     ]
@@ -866,9 +845,6 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
             category="gpt",
             rating=gpt.get("rating"),
             why_recommended=gpt.get("why_recommended", ""),
-            implementation_stage=gpt.get("implementation_stage", ""),
-            issue_solved=gpt.get("issue_solved", ""),
-            ease_of_use=gpt.get("ease_of_use", ""),
         )
         for gpt in recs.get("gpts", [])
     ]
@@ -880,9 +856,6 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
             url=co.get("url"),
             category="company",
             why_recommended=co.get("why_recommended", ""),
-            implementation_stage=co.get("implementation_stage", ""),
-            issue_solved=co.get("issue_solved", ""),
-            ease_of_use=co.get("ease_of_use", ""),
         )
         for co in recs.get("companies", [])
     ]
@@ -900,174 +873,32 @@ async def get_recommendations(request: Request, body: GetRecommendationsRequest 
     )
 
 
+# ── Instant Q1×Q2×Q3 Tool Lookup ──────────────────────────────
+
+class InstantToolsRequest(BaseModel):
+    outcome: str
+    domain: str
+    task: str
+    limit: int = 10
 
 
-def _get_session_or_404(session_id: str):
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
-
-
-def _get_snapshot_or_404(session_id: str) -> SessionContextResponse:
-    summary = session_store.get_session_summary(session_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return SessionContextResponse(**summary)
-
-
-@router.patch("/session/{session_id}", response_model=SessionContextResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def patch_session(request: Request, session_id: str, body: SessionPatchRequest = Body(...)):
-    """
-    Consolidated state update endpoint for simple session fields.
-    Keeps legacy step endpoints intact while enabling simplified frontend flow.
-    """
-    _get_session_or_404(session_id)
-
-    if body.outcome is not None or body.outcome_label is not None:
-        if not body.outcome or not body.outcome_label:
-            raise HTTPException(status_code=400, detail="Both outcome and outcome_label are required")
-        session_store.set_outcome(session_id, body.outcome, body.outcome_label)
-
-    if body.domain is not None:
-        session_store.set_domain(session_id, body.domain)
-
-    if body.task is not None:
-        # Patch path sets only task/stage; heavy generation remains in /advance
-        session_store.set_task(session_id, body.task)
-
-    if body.scale_answers is not None:
-        session_store.set_business_profile(session_id, body.scale_answers)
-
-    if body.business_url:
-        normalized = body.business_url.strip()
-        if normalized and not normalized.startswith("http://") and not normalized.startswith("https://"):
-            normalized = "https://" + normalized
-        url_type = detect_url_type(normalized) if normalized else "website"
-        session_store.set_website_url(session_id, normalized, url_type)
-        session_store.set_crawl_status(session_id, "in_progress")
-        asyncio.create_task(run_background_crawl(session_id, normalized))
-
-    if body.gbp_url:
-        session = _get_session_or_404(session_id)
-        normalized_gbp = body.gbp_url.strip()
-        if normalized_gbp and not normalized_gbp.startswith("http://") and not normalized_gbp.startswith("https://"):
-            normalized_gbp = "https://" + normalized_gbp
-        session.gbp_url = normalized_gbp
-        session_store.update_session(session)
-
-    if body.skip_url:
-        session = _get_session_or_404(session_id)
-        session.website_url = None
-        session.crawl_status = "skipped"
-        session_store.update_session(session)
-
-    if body.dynamic_answer:
-        question = body.dynamic_question or f"RCA Question {len(_get_session_or_404(session_id).rca_history) + 1}"
-        session_store.add_rca_answer(session_id, question, body.dynamic_answer)
-
-    if body.stage:
-        session = _get_session_or_404(session_id)
-        try:
-            session.stage = SessionStage(body.stage)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid stage: {body.stage}") from exc
-        session_store.update_session(session)
-
-    return _get_snapshot_or_404(session_id)
-
-
-@router.post("/session/{session_id}/advance", response_model=SessionAdvanceResponse)
+@router.post("/session/instant-tools")
 @limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
-async def advance_session(request: Request, session_id: str, body: SessionAdvanceRequest = Body(...)):
+async def get_instant_tools(request: Request, body: InstantToolsRequest = Body(...)):
     """
-    Consolidated workflow progression endpoint.
-    Runs heavyweight transitions while returning a fresh session snapshot.
+    Zero-latency tool lookup by Q1 (outcome) × Q2 (domain) × Q3 (task).
+    Returns pre-mapped tool recommendations from the static JSON mapping.
+    No LLM, no RAG — pure dictionary lookup in <1ms.
     """
-    session = _get_session_or_404(session_id)
-    action = (body.action or "auto").strip().lower()
+    from app.services.instant_tool_service import get_tools_for_q1_q2_q3
 
-    if action == "auto":
-        if session.stage in {SessionStage.DYNAMIC_QUESTIONS, SessionStage.SCALE_QUESTIONS, SessionStage.TASK}:
-            action = "start_diagnostic"
-        elif session.rca_complete:
-            action = "recommend"
-        else:
-            action = "precision_questions"
-
-    if action == "task_setup":
-        if not body.task:
-            raise HTTPException(status_code=400, detail="task is required for action=task_setup")
-        result_model = await set_task_and_generate_questions(
-            request,
-            SetTaskRequest(session_id=session_id, task=body.task),
-        )
-        result = result_model.model_dump()
-    elif action == "submit_answer":
-        if body.question_index is None or body.answer is None:
-            raise HTTPException(status_code=400, detail="question_index and answer are required for action=submit_answer")
-        result_model = await submit_dynamic_answer(
-            request,
-            SubmitDynamicAnswerRequest(
-                session_id=session_id,
-                question_index=body.question_index,
-                answer=body.answer,
-            ),
-        )
-        result = result_model.model_dump()
-    elif action == "scale_questions":
-        result_model = await get_scale_questions_endpoint(request, session_id)
-        result = result_model.model_dump()
-    elif action == "website_analysis":
-        if not body.website_url:
-            raise HTTPException(status_code=400, detail="website_url is required for action=website_analysis")
-        result_model = await submit_website(
-            request,
-            SubmitWebsiteRequest(session_id=session_id, website_url=body.website_url),
-        )
-        result = result_model.model_dump()
-    elif action == "start_diagnostic":
-        result_model = await start_diagnostic(request, StartDiagnosticRequest(session_id=session_id))
-        result = result_model.model_dump()
-    elif action == "precision_questions":
-        result_model = await get_precision_questions(request, PrecisionQuestionsRequest(session_id=session_id))
-        result = result_model.model_dump()
-    elif action == "recommend":
-        result_model = await get_recommendations(request, GetRecommendationsRequest(session_id=session_id))
-        result = result_model.model_dump()
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported action. Use one of: auto, task_setup, submit_answer, "
-                "scale_questions, website_analysis, start_diagnostic, precision_questions, recommend"
-            ),
-        )
-
-    snapshot = _get_snapshot_or_404(session_id)
-    return SessionAdvanceResponse(
-        session_id=session_id,
-        action=action,
-        stage=snapshot.stage,
-        result=result,
-        snapshot=snapshot,
+    result = get_tools_for_q1_q2_q3(
+        outcome=body.outcome,
+        domain=body.domain,
+        task=body.task,
+        limit=body.limit,
     )
-
-
-@router.get("/session/{session_id}/status", response_model=SessionStatusResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_session_status(request: Request, session_id: str):
-    session = _get_session_or_404(session_id)
-    return SessionStatusResponse(
-        session_id=session_id,
-        stage=session.stage.value,
-        crawl_status=session.crawl_status or "",
-        crawl_summary=session.crawl_summary if session.crawl_status == "complete" else None,
-        rca_complete=bool(session.rca_complete),
-        scale_questions_complete=bool(session.scale_questions_complete),
-        playbook_stage=session.playbook_stage or "",
-    )
+    return result
 
 
 @router.get("/session/{session_id}", response_model=SessionContextResponse)
@@ -1081,62 +912,6 @@ async def get_session_context(request: Request, session_id: str):
     return SessionContextResponse(**summary)
 
 
-# ── Context Pool — LLM Transparency Panel ──────────────────────
-
-
-@router.get("/session/{session_id}/context-pool")
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_context_pool(request: Request, session_id: str):
-    """
-    Return the full context pool for this session:
-    - Session profile (outcome, domain, task, stage)
-    - Business profile & crawl data
-    - All LLM call logs with prompts, responses, and metadata
-    - RCA history
-    """
-    session = session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return {
-        "session_id": session.session_id,
-        "stage": session.stage.value,
-        "profile": {
-            "outcome": session.outcome,
-            "outcome_label": session.outcome_label,
-            "domain": session.domain,
-            "task": session.task,
-            "persona_doc": session.persona_doc_name,
-        },
-        "business_profile": session.business_profile,
-        "crawl_status": session.crawl_status,
-        "crawl_summary": session.crawl_summary,
-        "crawl_raw": session.crawl_raw,
-        "crawl_progress": session.crawl_progress,
-        "rca_diagnostic_context": session.rca_diagnostic_context or {},
-        "rca_history": session.rca_history,
-        "rca_complete": session.rca_complete,
-        "rca_summary": session.rca_summary,
-        "questions_answers": [
-            {"question": qa.question, "answer": qa.answer, "type": qa.question_type}
-            for qa in session.questions_answers
-        ],
-        "llm_call_log": [
-            entry.model_dump() for entry in session.llm_call_log
-        ],
-        "early_recommendations_count": len(session.early_recommendations),
-        # ── Playbook tracking ──
-        "playbook_stage": session.playbook_stage or "not_started",
-        "playbook_complete": session.playbook_complete,
-        "playbook_agent1_output": session.playbook_agent1_output or "",
-        "playbook_agent2_output": session.playbook_agent2_output or "",
-        "playbook_agent3_output": session.playbook_agent3_output or "",
-        "playbook_agent4_output": session.playbook_agent4_output or "",
-        "playbook_agent5_output": session.playbook_agent5_output or "",
-        "playbook_latencies": session.playbook_latencies or {},
-    }
-
-
 # ── Scale Questions — Business Context Classification ──────────
 
 # Static scale questions asked between URL input and Opus deep-dive.
@@ -1144,7 +919,6 @@ async def get_context_pool(request: Request, session_id: str):
 # ── Dynamic current stack options by domain ─────────────────────
 # Industry-standard tooling options that change based on the user's domain.
 CURRENT_STACK_BY_DOMAIN = {
-    # ── Lead Generation Domains ──────────────────────────────
     "Content & Social Media": [
         "Canva + Buffer / Later — design & scheduling",
         "Hootsuite / Sprout Social — social management suite",
@@ -1154,165 +928,86 @@ CURRENT_STACK_BY_DOMAIN = {
         "Nothing yet — posting manually or not at all",
     ],
     "SEO & Organic Visibility": [
-        "Google Search Console + GA4 — basic tracking only",
+        "Google Search Console + Sheets — basic tracking",
         "Semrush / Ahrefs — dedicated SEO platform",
         "Yoast / RankMath — WordPress SEO plugin",
-        "Surfer SEO / Clearscope — content optimization",
-        "Screaming Frog + Moz — technical SEO audit",
+        "HubSpot / Moz — inbound marketing suite",
+        "Custom analytics (GA4 + Looker Studio / Data Studio)",
         "Nothing yet — no SEO tracking in place",
     ],
     "Paid Media & Ads": [
-        "Google Ads + Meta Ads Manager — native dashboards",
-        "Triple Whale / Hyros — ad attribution & ROAS",
-        "AdEspresso / Revealbot — ad optimization & rules",
-        "Google Analytics + UTM tracking — manual reporting",
+        "Meta Ads Manager + Google Ads — native dashboards only",
+        "Triple Whale / Hyros — ad attribution platform",
+        "Google Analytics + UTM tracking — manual ROAS",
         "Agency-managed — limited visibility into spend",
+        "AdEspresso / Revealbot — ad optimization tool",
         "Nothing yet — haven't started paid ads",
     ],
     "B2B Lead Generation": [
         "LinkedIn Sales Navigator — manual prospecting",
         "Apollo.io / ZoomInfo — lead database + outreach",
-        "Clay / Instantly — enrichment + cold email at scale",
         "HubSpot CRM + sequences — inbound + outbound",
+        "Clay / Instantly — data enrichment + cold email",
         "Google Sheets + email — manual outreach tracking",
         "Nothing yet — leads come through referrals only",
     ],
-
-    # ── Sales & Retention Domains ────────────────────────────
     "Sales Execution & Enablement": [
         "WhatsApp Business + Google Sheets — manual CRM",
-        "HubSpot / Pipedrive — deal pipeline & tracking",
+        "HubSpot / Pipedrive — deal pipeline management",
         "Salesforce + CPQ — enterprise sales stack",
         "Freshsales / Zoho CRM — SMB sales suite",
-        "Gong / Chorus — conversation intelligence",
+        "Notion / Airtable — custom sales tracker",
         "Nothing yet — no structured sales process",
     ],
     "Lead Management & Conversion": [
         "Google Sheets / Excel — manual lead tracking",
-        "HubSpot / Zoho CRM — lead scoring + nurture flows",
+        "HubSpot / Zoho CRM — lead scoring + nurture",
         "Salesforce + Pardot — enterprise lead management",
-        "Freshsales / LeadSquared — SMB lead conversion",
+        "Freshsales / Leadsquared — SMB lead conversion",
         "WhatsApp Business + manual follow-up",
         "Nothing yet — leads aren't systematically tracked",
     ],
     "Customer Success & Reputation": [
         "Google Reviews + manual responses",
-        "Zendesk / Freshdesk — support ticketing system",
-        "Intercom / Drift — live chat & conversations",
+        "Zendesk / Freshdesk — support ticketing",
+        "Intercom / Drift — conversational support",
         "HubSpot Service Hub — CRM-integrated support",
-        "Trustpilot / G2 / Birdeye — review management",
+        "Trustpilot / G2 — review management platform",
         "Nothing yet — no structured support system",
     ],
-    "Repeat Sales": [
-        "Mailchimp / Klaviyo — email marketing & re-engagement",
-        "WhatsApp Business — manual repeat outreach",
-        "Shopify + loyalty plugin (Smile.io, Yotpo)",
-        "HubSpot / Zoho — CRM workflows for upsell",
-        "Google Sheets — manual customer reorder tracking",
-        "Nothing yet — no repeat purchase strategy",
-    ],
-
-    # ── Business Strategy Domains ────────────────────────────
     "Business Intelligence & Analytics": [
         "Google Sheets / Excel — manual dashboards",
-        "Google Analytics + Looker Studio (Data Studio)",
-        "Power BI / Tableau — enterprise BI & visualization",
-        "Mixpanel / Amplitude — product & user analytics",
-        "Metabase / Redash — open-source SQL dashboards",
+        "Google Analytics + Data Studio / Looker",
+        "Power BI / Tableau — enterprise BI",
+        "Mixpanel / Amplitude — product analytics",
+        "Metabase / Redash — open-source BI",
         "Nothing yet — decisions based on gut feel",
     ],
-    "Market Strategy & Innovation": [
-        "Google Trends + manual research — ad-hoc insights",
-        "Semrush / SimilarWeb — competitor & market analysis",
-        "Crayon / Klue — competitive intelligence platform",
-        "ChatGPT / Perplexity — AI-powered research",
-        "Industry reports + newsletters — passive tracking",
-        "Nothing yet — not tracking market shifts",
-    ],
-    "Financial Health & Risk": [
-        "Google Sheets / Excel — manual bookkeeping",
-        "QuickBooks / Xero — accounting & invoicing",
-        "Zoho Books / FreshBooks — SMB finance suite",
-        "SAP / Oracle NetSuite — enterprise ERP",
-        "Tally / Wave — basic accounting software",
-        "Nothing yet — no financial tracking system",
-    ],
-    "Org Efficiency & Hiring": [
-        "Google Docs / Sheets — manual SOPs & tracking",
-        "Notion / Confluence — knowledge base & wiki",
-        "Slack / Microsoft Teams — internal communication",
-        "Monday.com / Asana — project management",
-        "Jira / ClickUp — task & workflow management",
-        "Nothing yet — no process documentation",
-    ],
-    "Improve Yourself": [
-        "Google Calendar + Notes app — basic planning",
-        "Notion / Obsidian — personal knowledge management",
-        "ChatGPT / Claude — AI assistant for writing & ideas",
-        "Todoist / TickTick — task & habit tracking",
-        "LinkedIn + Medium — personal branding content",
-        "Nothing yet — no productivity system in place",
-    ],
-
-    # ── Save Time / Automation Domains ───────────────────────
-    "Sales & Content Automation": [
-        "Zapier / Make (Integromat) — no-code automation",
-        "HubSpot / ActiveCampaign — marketing automation",
-        "Mailchimp + Google Sheets — semi-manual workflows",
-        "n8n / Pabbly — self-hosted automation platform",
-        "Custom scripts (Python, Apps Script) — developer-built",
-        "Nothing yet — all workflows are manual",
-    ],
-    "Finance Legal & Admin": [
-        "Google Sheets / Excel — manual data entry & tracking",
-        "QuickBooks / Xero — accounting & invoicing",
-        "DocuSign / PandaDoc — contract & e-signature",
-        "Zoho Invoice / FreshBooks — billing automation",
-        "SAP / Oracle — enterprise finance & procurement",
-        "Nothing yet — paper-based or email-based process",
-    ],
-    "Customer Support Ops": [
-        "WhatsApp Business + manual replies",
-        "Zendesk / Freshdesk — ticketing & knowledge base",
-        "Intercom / Tidio — live chat & chatbot",
-        "HubSpot Service Hub — CRM-integrated support",
-        "Email / phone — no ticketing system",
-        "Nothing yet — no dedicated support workflow",
-    ],
-    "Recruiting & HR Ops": [
-        "LinkedIn Recruiter + Google Sheets — manual tracking",
-        "Greenhouse / Lever — applicant tracking system (ATS)",
-        "Workday / BambooHR — HR management platform",
-        "Naukri / Indeed — job boards + manual screening",
-        "Zoho Recruit / Freshteam — SMB recruiting suite",
-        "Nothing yet — hiring is ad-hoc / word-of-mouth",
-    ],
-    "Personal & Team Productivity": [
-        "Google Workspace (Docs, Sheets, Drive) — manual workflow",
-        "Notion / Obsidian — notes & knowledge management",
-        "Slack + Asana / Trello — communication + tasks",
-        "Microsoft 365 (Teams, OneDrive, Excel)",
-        "Zapier / Make — automation between apps",
-        "Nothing yet — using email & paper for everything",
+    "default": [
+        "Google Workspace (Sheets, Docs, Drive) — manual workflows",
+        "Notion / Airtable — flexible project management",
+        "Specialized SaaS tools (CRM, marketing, support)",
+        "Enterprise suite (Salesforce, SAP, Microsoft 365)",
+        "Custom-built / developer tools (APIs, scripts, Zapier)",
+        "Nothing yet — doing everything manually",
     ],
 }
 
-def _get_scale_questions(domain: str = "", **_kwargs) -> list[dict]:
+# (CONSTRAINT_OPTIONS_BY_STAGE removed — replaced by Channel Selection questions)
+
+
+def _get_scale_questions(domain: str = "") -> list[dict]:
     """
-    Build the scale questions dynamically.
-    6 questions for Channel Selection & Conversion Lever.
-    The last question (current_stack) loads dynamic options based on domain from Q1-Q3.
+    Build the Channel Selection & Conversion Lever questions dynamically.
+    - 6 questions focused on buying process, revenue, sales cycle,
+      existing assets, buyer behavior, and current stack.
+    - Current Stack options change per domain (Q1/Q2/Q3 context).
+    - Existing Assets is multi-select.
     """
-    # Pick domain-specific stack options (fallback to generic if domain not mapped)
-    _default_stack = [
-        "Canva + Buffer / Later — design & scheduling",
-        "Hootsuite / Sprout Social — social management suite",
-        "Adobe Creative Cloud + native platform tools",
-        "ChatGPT / Jasper — AI content generation",
-        "HubSpot / Semrush — content marketing platform",
-        "Nothing yet — posting manually or not at all",
-    ]
-    stack_options = CURRENT_STACK_BY_DOMAIN.get(domain, _default_stack)
+    # Pick domain-specific stack options
+    stack_options = CURRENT_STACK_BY_DOMAIN.get(
+        domain, CURRENT_STACK_BY_DOMAIN["default"]
+    )
 
     return [
         {
@@ -1374,7 +1069,7 @@ def _get_scale_questions(domain: str = "", **_kwargs) -> list[dict]:
             "id": "buyer_behavior",
             "question": "When customers look for a solution like yours, what do they usually do?",
             "options": [
-                'Search Google or AI tools for the category (e.g., "best project management tool")',
+                "Search Google or AI tools for the category",
                 "Ask peers, colleagues, or communities for recommendations",
                 "They don't know this category exists — we have to educate them",
                 "They compare us against 2–3 well-known competitors",
@@ -1409,6 +1104,19 @@ class ScaleQuestionsResponse(BaseModel):
     total: int
 
 
+class SubmitScaleAnswersRequest(BaseModel):
+    session_id: str
+    answers: dict[str, Any]   # {"buying_process": "...", "existing_assets": ["...", "..."], ...}
+
+
+class SubmitScaleAnswersResponse(BaseModel):
+    session_id: str
+    business_profile: dict[str, Any]
+    message: str
+
+
+@router.get("/session/{session_id}/scale-questions", response_model=ScaleQuestionsResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def get_scale_questions_endpoint(request: Request, session_id: str):
     """
     Return the business scale / context classification questions.
@@ -1443,82 +1151,199 @@ async def get_scale_questions_endpoint(request: Request, session_id: str):
     )
 
 
+@router.post("/session/scale-answers", response_model=SubmitScaleAnswersResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def submit_scale_answers(request: Request, body: SubmitScaleAnswersRequest = Body(...)):
+    """
+    Record all scale question answers at once.
+
+    Builds a business_profile{} and stores it in the session.
+    This profile is injected into the Opus system prompt to calibrate
+    the depth and complexity of diagnostic questions.
+    """
+    session = session_store.get_session(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build business profile from answers (use dynamic questions for validation)
+    domain = session.domain or ""
+    dynamic_qs = _get_scale_questions(domain=domain)
+    valid_ids = {q["id"] for q in dynamic_qs}
+
+    business_profile = {}
+    for qid, answer in body.answers.items():
+        if qid in valid_ids:
+            business_profile[qid] = answer
+
+    # Store in session
+    session_store.set_business_profile(body.session_id, business_profile)
+
+    logger.info(
+        "Scale questions answered, business profile set",
+        session_id=body.session_id,
+        profile_keys=list(business_profile.keys()),
+    )
+
+    return SubmitScaleAnswersResponse(
+        session_id=body.session_id,
+        business_profile=business_profile,
+        message="Got it — I now understand your business context. Let's dive deeper.",
+    )
+
+
+@router.get("/personas")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def list_personas(request: Request):
+    """List all available persona domains with document mappings."""
+    personas = get_available_personas()
+    return {"personas": personas, "count": len(personas)}
+
+
 # ── Business URL & Crawl Endpoints ─────────────────────────────
 
 
-# ── Website Snapshot — rich crawl data for display while playbook generates ──
-
-
-class WebsiteSnapshotResponse(BaseModel):
+class SubmitUrlRequest(BaseModel):
     session_id: str
-    available: bool = False
-    homepage_title: str = ""
-    homepage_description: str = ""
-    homepage_h1s: list[str] = []
-    pages_found: int = 0
-    page_types: list[str] = []           # ["about", "pricing", "blog", ...]
-    tech_stack: list[str] = []           # ["React", "Stripe", "Google Analytics", ...]
-    cta_patterns: list[str] = []         # ["Book a Demo", "Sign Up Free", ...]
-    social_links: list[str] = []         # ["instagram.com/...", ...]
-    seo_health: dict = {}                # {"has_meta": true, "has_viewport": true, "has_sitemap": false}
-    js_rendered: bool = False
-    nav_links: list[str] = []            # Top nav items
-    crawl_summary_points: list[str] = [] # 5-bullet summary from LLM
+    business_url: str          # e.g., 'https://example.com' or 'instagram.com/brand'
 
 
-@router.get("/session/{session_id}/website-snapshot", response_model=WebsiteSnapshotResponse)
-@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
-async def get_website_snapshot(request: Request, session_id: str):
+class SubmitUrlResponse(BaseModel):
+    session_id: str
+    business_url: str
+    url_type: str              # "website" or "social_profile"
+    crawl_started: bool
+    message: str
+
+
+class CrawlStatusResponse(BaseModel):
+    session_id: str
+    crawl_status: str          # "in_progress", "complete", "failed", ""
+    crawl_summary: Optional[dict] = None
+
+
+@router.post("/session/url", response_model=SubmitUrlResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def submit_business_url(request: Request, body: SubmitUrlRequest = Body(...)):
     """
-    Return structured website insights from crawl_raw.
-    No LLM call — instant response. Frontend shows this while playbook generates.
+    Submit business URL immediately after tool recommendations.
 
-    Available as soon as crawl_status == "complete".
+    1. Stores the URL in the session
+    2. Detects URL type (website vs social profile)
+    3. Fires an async background crawl (does NOT block the response)
+    4. Returns immediately so the frontend can advance to Scale Questions
+
+    The crawl runs in parallel. Frontend polls /session/{id}/crawl-status
+    to check completion before starting Opus deep-dive questions.
+    """
+    session = session_store.get_session(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Normalize URL
+    url = body.business_url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+
+    # Detect URL type
+    url_type = detect_url_type(url)
+
+    # Store in session
+    session_store.set_website_url(body.session_id, url, url_type)
+    session_store.set_crawl_status(body.session_id, "in_progress")
+
+    # Fire background crawl (non-blocking)
+    asyncio.create_task(run_background_crawl(body.session_id, url))
+
+    logger.info(
+        "Business URL submitted, background crawl started",
+        session_id=body.session_id,
+        url=url,
+        url_type=url_type,
+    )
+
+    return SubmitUrlResponse(
+        session_id=body.session_id,
+        business_url=url,
+        url_type=url_type,
+        crawl_started=True,
+        message="Analyzing your business in the background — let's continue!",
+    )
+
+
+@router.get("/session/{session_id}/crawl-status", response_model=CrawlStatusResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_crawl_status(request: Request, session_id: str):
+    """
+    Poll crawl status. Frontend calls this to check if the background
+    crawl has completed before starting the Opus deep-dive questions.
+
+    Returns:
+      - crawl_status: "in_progress" | "complete" | "failed" | ""
+      - crawl_summary: populated only when status is "complete"
     """
     session = session_store.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.crawl_status != "complete" or not session.crawl_raw:
-        return WebsiteSnapshotResponse(session_id=session_id, available=False)
-
-    raw = session.crawl_raw
-    homepage = raw.get("homepage", {})
-
-    # Extract page types from crawled pages
-    pages_crawled = raw.get("pages_crawled", [])
-    page_types = list({p.get("type", "other") for p in pages_crawled if p.get("type") and p.get("type") != "other"})
-
-    # Get summary points if available
-    summary_points = []
-    if session.crawl_summary and isinstance(session.crawl_summary, dict):
-        summary_points = session.crawl_summary.get("points", [])
-
-    return WebsiteSnapshotResponse(
+    return CrawlStatusResponse(
         session_id=session_id,
-        available=True,
-        homepage_title=homepage.get("title", ""),
-        homepage_description=homepage.get("meta_desc", ""),
-        homepage_h1s=homepage.get("h1s", []),
-        pages_found=len(pages_crawled),
-        page_types=sorted(page_types),
-        tech_stack=raw.get("tech_signals", []),
-        cta_patterns=raw.get("cta_patterns", []),
-        social_links=raw.get("social_links", []),
-        seo_health=raw.get("seo_basics", {}),
-        js_rendered=raw.get("js_rendered", False),
-        nav_links=homepage.get("nav_links", [])[:15],
-        crawl_summary_points=summary_points,
+        crawl_status=session.crawl_status or "",
+        crawl_summary=session.crawl_summary if session.crawl_status == "complete" else None,
     )
 
 
+@router.post("/session/skip-url")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def skip_business_url(request: Request, body: dict = Body(...)):
+    """
+    User chose to skip URL submission.
+    Records the skip and allows flow to continue with generic recommendations.
+    """
+    session_id = body.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Mark as skipped — no crawl, no URL
+    session.website_url = None
+    session.crawl_status = "skipped"
+    session_store.update_session(session)
+
+    logger.info("User skipped URL submission", session_id=session_id)
+
+    return {
+        "session_id": session_id,
+        "message": "No problem — we'll give general recommendations instead of personalized ones.",
+    }
+
+
+@router.post("/session/website", response_model=WebsiteAnalysisResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...)):
+    """
+    Submit business website URL for audience analysis.
+
+    Called during Stage 2 of RCA. Fetches the website, analyzes
+    the content to determine:
+    - Who the business is targeting (intended audience)
+    - Who the content actually reaches (actual audience)
+    - Any mismatch between the two
+    - Actionable recommendations
+
+    This creates an 'aha' moment for the user — showing them
+    a gap they may not have been aware of.
+    """
     session = session_store.get_session(body.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Store the website URL
     session_store.set_website_url(body.session_id, body.website_url)
 
+    # Analyze the website for audience insights
     try:
         analysis = await agent_service.analyze_website_audience(
             website_url=body.website_url,
@@ -1542,6 +1367,7 @@ async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...
             "business_summary": "",
         }
 
+    # Store insights in session
     session_store.set_audience_insights(body.session_id, analysis)
 
     audience_insights = AudienceInsight(
@@ -1569,5 +1395,102 @@ async def submit_website(request: Request, body: SubmitWebsiteRequest = Body(...
         ),
     )
 
+
+# ── ICP + Business Insights Endpoint ──────────────────────────
+
+
+class ICPInsight(BaseModel):
+    point: str              # Sharp insight text
+    highlight: str = ""     # Key phrase to highlight in the UI
+
+
+class ICPAnalysis(BaseModel):
+    ideal_customer_profile: str = ""   # Who their ICP should be
+    targeting_verdict: str = ""        # What a customer feels landing on their site
+    improvement_areas: list[str] = []  # Where to improve the business URL/site
+
+
+class BusinessInsightsResponse(BaseModel):
+    session_id: str
+    insights: list[ICPInsight] = []    # 5-6 sharp points
+    icp_analysis: Optional[ICPAnalysis] = None
+    hook: str = ""                     # Catchy hook line before CTA
+    available: bool = False
+
+
+@router.post("/session/insights")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def get_business_insights(request: Request, body: dict = Body(...)):
+    """
+    Generate 5-6 sharp business insights + ICP analysis + catchy hook.
+
+    Combines:
+    - All Q&A history (outcome, domain, task, diagnostic, scale)
+    - Crawl data (website analysis)
+    - Business profile
+
+    Returns structured insights for the final report.
+    """
+    session_id = body.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    session = session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build context
+    crawl_data = session.crawl_summary or {}
+    business_profile = session.business_profile or {}
+    rca_history = session.rca_history or []
+
+    if not rca_history and not crawl_data.get("points"):
+        return BusinessInsightsResponse(
+            session_id=session_id, available=False
+        ).model_dump()
+
+    result = await agent_service.generate_business_insights(
+        outcome_label=session.outcome_label or "",
+        domain=session.domain or "",
+        task=session.task or "",
+        rca_history=rca_history,
+        business_profile=business_profile,
+        crawl_summary=crawl_data,
+        crawl_raw=session.crawl_raw if hasattr(session, 'crawl_raw') else None,
+    )
+
+    if not result:
+        return BusinessInsightsResponse(
+            session_id=session_id, available=False
+        ).model_dump()
+
+    insights = [
+        {"point": i.get("point", ""), "highlight": i.get("highlight", "")}
+        for i in result.get("insights", [])
+    ]
+
+    icp = result.get("icp_analysis")
+    icp_data = None
+    if icp:
+        icp_data = {
+            "ideal_customer_profile": icp.get("ideal_customer_profile", ""),
+            "targeting_verdict": icp.get("targeting_verdict", ""),
+            "improvement_areas": icp.get("improvement_areas", []),
+        }
+
+    logger.info(
+        "Business insights generated",
+        session_id=session_id,
+        insights_count=len(insights),
+        has_icp=bool(icp_data),
+    )
+
+    return {
+        "session_id": session_id,
+        "insights": insights,
+        "icp_analysis": icp_data,
+        "hook": result.get("hook", ""),
+        "available": True,
+    }
 
 

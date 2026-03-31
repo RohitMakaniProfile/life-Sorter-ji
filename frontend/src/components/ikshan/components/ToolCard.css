@@ -1,0 +1,97 @@
+.ik-tool-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  max-width: 320px;
+  padding: 0;
+  border-radius: 14px;
+  border: 1.5px solid #d4a017;
+  box-shadow: 0 0 8px rgba(212, 160, 23, 0.25);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  text-decoration: none;
+  transition: all 0.25s ease;
+  flex-shrink: 0;
+}
+
+.ik-tool-card:hover {
+  border-color: #f0c430;
+  box-shadow: 0 0 16px rgba(240, 196, 48, 0.4), 0 4px 20px rgba(212, 160, 23, 0.2);
+  transform: translateY(-3px);
+}
+
+.ik-tool-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #252525;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px 16px;
+}
+
+.ik-tool-card__name {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.2px;
+  color: #ffffff;
+}
+
+.ik-tool-card__rating {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8b931;
+  background: rgba(232, 185, 49, 0.12);
+  padding: 3px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.ik-tool-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  flex: 1;
+}
+
+.ik-tool-card__tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(143, 115, 0, 0.25);
+  color: #e8b931;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  align-self: flex-start;
+}
+
+.ik-tool-card__desc {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+}
+
+.ik-tool-card__bullets {
+  list-style: disc;
+  padding: 0 0 0 16px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ik-tool-card__bullets li {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.ik-tool-card__bullets li::marker {
+  color: rgba(255, 255, 255, 0.35);
+}
