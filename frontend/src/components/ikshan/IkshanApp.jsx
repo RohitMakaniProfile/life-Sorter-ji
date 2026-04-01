@@ -8,6 +8,8 @@ import ScreensaverPreview from './stages/ScreensaverPreview';
 import UrlStage from './stages/UrlStage';
 import DeeperDiveStage from './stages/DeeperDiveStage';
 import DiagnosticStage from './stages/DiagnosticStage';
+import PlaybookViewer from '../PlaybookViewer';
+import OtpModal from './components/OtpModal';
 import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
 import { getToolsForSelection } from './toolService';
 import * as api from './api';
@@ -106,6 +108,10 @@ export default function IkshanApp() {
   const [gapQuestions, setGapQuestions] = useState([]);
   const [gapAnswers, setGapAnswers] = useState({});
   const [showGapQuestions, setShowGapQuestions] = useState(false);
+
+  // OTP gate
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(false);
 
   // ─── Horizontal wheel scroll ──────────────────────────
   useEffect(() => {
@@ -386,6 +392,19 @@ export default function IkshanApp() {
     });
   };
 
+  // Pending sid to stream after OTP verification
+  const pendingStreamSidRef = useRef(null);
+
+  // Gate before streaming — show OTP modal if not yet verified
+  const gateBeforeStream = (sid) => {
+    if (otpVerified) {
+      streamPlaybook(sid);
+    } else {
+      pendingStreamSidRef.current = sid;
+      setShowOtpModal(true);
+    }
+  };
+
   const handleStartPlaybook = async () => {
     setShowPlaybook(true);
     setPlaybookStreaming(true);
@@ -395,17 +414,25 @@ export default function IkshanApp() {
     setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
-      // Wait for background crawl to finish before generating playbook
       await waitForCrawl();
       const startData = await coreApi.playbookStart({ session_id: sid });
       if (startData.gap_questions?.length) {
+        // Show gap questions first — OTP comes after
         setGapQuestions(startData.gap_questions_parsed || startData.gap_questions);
         setShowGapQuestions(true);
         setPlaybookStreaming(false);
         return;
       }
-      await streamPlaybook(sid);
+      // No gap questions — gate on OTP then stream
+      gateBeforeStream(sid);
     } catch (err) { setError('Failed to start playbook.'); setPlaybookStreaming(false); }
+  };
+
+  const handleOtpVerified = () => {
+    setOtpVerified(true);
+    setShowOtpModal(false);
+    const sid = pendingStreamSidRef.current;
+    if (sid) streamPlaybook(sid);
   };
 
   const handleGapSubmit = async () => {
@@ -418,9 +445,21 @@ export default function IkshanApp() {
         return `${qNum}-${gapAnswers[i] || ''}`;
       }).join(', ');
       await coreApi.playbookGapAnswers({ session_id: sid, answers: answersStr });
-      await streamPlaybook(sid);
+      // Gap questions done — now gate on OTP before streaming
+      setPlaybookStreaming(false);
+      gateBeforeStream(sid);
     } catch (err) { setError('Failed to submit answers.'); setPlaybookStreaming(false); }
   };
+
+  // ─── RENDER: OTP MODAL ────────────────────────────────
+  if (showOtpModal) {
+    return (
+      <OtpModal
+        sessionId={sessionIdRef.current || ''}
+        onVerified={handleOtpVerified}
+      />
+    );
+  }
 
   // ─── RENDER: PLAYBOOK ─────────────────────────────────
   if (showPlaybook) {
@@ -485,27 +524,43 @@ export default function IkshanApp() {
             </div>
           )}
 
-          {/* Streaming / final playbook text */}
+          {/* Streaming / final playbook */}
           {!showGapQuestions && (
             <div style={{ flex: 1, overflow: 'auto', maxWidth: 800, margin: '0 auto', width: '100%' }}>
+              {/* Loading state */}
               {playbookStreaming && !playbookText && (
                 <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14, textAlign: 'center', paddingTop: 40 }}>Thinking…</div>
               )}
-              {playbookText && (
+
+              {/* Streaming in progress — show raw text with cursor */}
+              {playbookText && !playbookDone && (
                 <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.8, color: 'rgba(255,255,255,0.85)', margin: 0 }}>
                   {playbookText}
-                  {playbookStreaming && <span style={{ opacity: 0.5 }}>▍</span>}
+                  <span style={{ opacity: 0.5 }}>▍</span>
                 </pre>
               )}
-              {playbookDone && playbookResult?.website_audit && (
-                <div style={{ marginTop: 32, padding: '20px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)' }}>
-                  <h3 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 10px', color: '#a882ff' }}>Website Audit</h3>
-                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.7, color: 'rgba(255,255,255,0.7)', margin: 0 }}>{playbookResult.website_audit}</pre>
+
+              {/* Done — render rich PlaybookViewer */}
+              {playbookDone && (
+                <div style={{ background: '#f8f7ff', borderRadius: 16, padding: '16px', marginBottom: 16 }}>
+                  <PlaybookViewer
+                    playbookData={{
+                      playbook: playbookResult?.playbook || playbookText,
+                      websiteAudit: playbookResult?.website_audit || '',
+                      contextBrief: playbookResult?.context_brief || '',
+                      icpCard: playbookResult?.icp_card || '',
+                    }}
+                  />
                 </div>
               )}
+
+              {/* Deep Analysis CTA */}
               {playbookDone && (
-                <button onClick={handleDeepAnalysis} style={{ marginTop: 32, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer' }}>
-                  Do Deep Analysis
+                <button
+                  onClick={handleDeepAnalysis}
+                  style={{ marginTop: 8, marginBottom: 24, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}
+                >
+                  Do Deep Analysis →
                 </button>
               )}
             </div>
