@@ -9,7 +9,7 @@
 --
 -- Tables:
 --   Phase 1 (current app runtime):
---     user_sessions, payments, "Persona: founder/owner"
+--     user_sessions, onboarding, payments, "Persona: founder/owner"
 --
 --   Phase 2 (Research Agent — asyncpg):
 --     agents, agent_config_versions, conversations, messages, skill_calls, plan_runs, token_usage
@@ -128,6 +128,44 @@ CREATE TRIGGER trg_user_sessions_updated_at
 
 COMMENT ON TABLE user_sessions IS
     'Complete flow data for every user session: auth, Q&A, RCA diagnostic, recommendations, and tracking metadata.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- onboarding
+-- Phase 1 journey snapshot: outcome / domain / task and URLs keyed by session_id.
+-- session_id is required; user_id optional until linked to an authenticated user.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS onboarding (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    session_id      TEXT NOT NULL REFERENCES user_sessions (session_id) ON DELETE CASCADE,
+    user_id         TEXT,
+
+    outcome         TEXT,
+    domain          TEXT,
+    task            TEXT,
+
+    website_url     TEXT,
+    gbp_url         TEXT,
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_session_id
+    ON onboarding (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_user_id
+    ON onboarding (user_id)
+    WHERE user_id IS NOT NULL;
+
+DROP TRIGGER IF EXISTS trg_onboarding_updated_at ON onboarding;
+CREATE TRIGGER trg_onboarding_updated_at
+    BEFORE UPDATE ON onboarding
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE onboarding IS
+    'Onboarding flow selections and URLs per session; user_id nullable until identity is linked.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- payments

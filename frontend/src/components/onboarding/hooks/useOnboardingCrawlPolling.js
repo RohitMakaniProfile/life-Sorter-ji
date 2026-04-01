@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import * as api from '../api';
+import { coreApi } from '../../../api/services/core';
 
 export function useOnboardingCrawlPolling(sessionIdRef) {
   const [crawlStatus, setCrawlStatus] = useState('');
@@ -12,7 +12,7 @@ export function useOnboardingCrawlPolling(sessionIdRef) {
       try {
         const sid = sessionIdRef.current;
         if (!sid) return;
-        const data = await api.getCrawlStatus(sid);
+        const data = await coreApi.getAgentSessionView(sid, 'status');
         if (data.crawl_status === 'complete' || data.crawl_status === 'failed') {
           setCrawlStatus(data.crawl_status);
           clearInterval(crawlPollRef.current);

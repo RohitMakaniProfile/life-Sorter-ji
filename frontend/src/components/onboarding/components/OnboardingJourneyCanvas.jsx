@@ -10,7 +10,7 @@ const hoverBranch =
   'pointer-events-none absolute left-[calc(100%+4px)] top-1/2 z-50 flex -translate-y-1/2 items-center animate-[ob-branch-in_0.2s_ease]';
 const hoverNodes =
   'flex max-h-[calc(100vh-140px)] flex-col gap-1.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:w-[180px] [&>*]:origin-left [&>*]:scale-[0.82]';
-const animCol = `${colBase} animate-[ob-fade-in_0.4s_cubic-bezier(0.25,0.46,0.45,0.94)] [&:not(:only-child)]:my-auto`;
+const animCol = `${colBase} animate-[ob-fade-in_0.4s_cubic-bezier(0.25,0.46,0.45,0.94)]`;
 
 export default function OnboardingJourneyCanvas({
   canvasRef,
@@ -38,7 +38,7 @@ export default function OnboardingJourneyCanvas({
       <div
         className={
           selectedOutcome
-            ? 'flex min-h-full flex-row flex-wrap items-start justify-start py-6 pb-12 pl-[max(40px,5vw)] pr-[max(40px,5vw)] [&>.ob-col-mid]:my-auto'
+            ? 'flex min-h-full flex-row items-start justify-start py-6 pb-12 pl-[max(40px,5vw)] pr-[max(40px,5vw)] [&>*]:my-auto'
             : 'grid min-h-full min-w-full place-items-center'
         }
       >
@@ -87,7 +87,7 @@ export default function OnboardingJourneyCanvas({
 
         {selectedOutcome && (
           <>
-            <div className={`${colBase} ob-col-mid flex shrink-0 items-center px-0.5`}>
+            <div className={`${colBase} flex shrink-0 items-center px-0.5`}>
               <BranchArrows
                 count={domains.length}
                 sourceIndex={outcomeOptions.findIndex((o) => o.id === selectedOutcome.id)}
@@ -97,7 +97,7 @@ export default function OnboardingJourneyCanvas({
               />
             </div>
 
-            <div className={`ob-col-mid ${animCol}`}>
+            <div className={animCol}>
               <div className={nodeCol}>
                 {domains.map((d) => {
                   const isSel = selectedDomain === d;
@@ -144,7 +144,7 @@ export default function OnboardingJourneyCanvas({
           <>
             {tasks.length <= 6 ? (
               <>
-                <div className={`${colBase} ob-col-mid flex shrink-0 items-center px-0.5`}>
+                <div className={`${colBase} flex shrink-0 items-center px-0.5`}>
                   <BranchArrows
                     count={tasks.length}
                     sourceIndex={domains.indexOf(selectedDomain)}
@@ -153,7 +153,7 @@ export default function OnboardingJourneyCanvas({
                   />
                 </div>
 
-                <div className={`ob-col-mid ${animCol}`}>
+                <div className={animCol}>
                   <div className={nodeCol}>
                     {tasks.map((t) => {
                       const isSel = selectedTask === t;
@@ -183,7 +183,7 @@ export default function OnboardingJourneyCanvas({
                   const rightCol = tasks.filter((_, i) => i % 2 === 1);
                   return (
                     <>
-                      <div className={`${colBase} ob-col-mid flex shrink-0 items-center px-0.5`}>
+                      <div className={`${colBase} flex shrink-0 items-center px-0.5`}>
                         <BranchArrows
                           count={leftCol.length}
                           sourceIndex={domains.indexOf(selectedDomain)}
@@ -192,7 +192,7 @@ export default function OnboardingJourneyCanvas({
                         />
                       </div>
 
-                      <div className={`ob-col-mid ${animCol}`}>
+                      <div className={animCol}>
                         <div className={nodeCol}>
                           {leftCol.map((t) => {
                             const isSel = selectedTask === t;
@@ -215,7 +215,7 @@ export default function OnboardingJourneyCanvas({
                         </div>
                       </div>
 
-                      <div className={`ob-col-mid ${animCol} -ml-0.5 p-0`}>
+                      <div className={`${animCol} -ml-0.5 p-0`}>
                         <div className={`${nodeCol} pt-6`}>
                           {rightCol.map((t) => {
                             const isSel = selectedTask === t;

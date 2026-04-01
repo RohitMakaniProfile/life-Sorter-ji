@@ -38,12 +38,16 @@ export default function UrlStage({
         <span className="bg-gradient-to-br from-[#a882ff] to-[#7c4dff] bg-clip-text text-transparent">Playbook</span>
       </h1>
 
-      <div className="relative mb-4 flex w-full max-w-[1100px] flex-col flex-nowrap items-center justify-center gap-4 md:flex-row md:gap-2">
-        <div className="shrink-0 md:absolute md:left-0 md:top-1/2 md:-translate-y-1/2">
+      <div className="relative mb-4 flex w-full max-w-[1100px] flex-col items-center gap-4 md:flex-row md:flex-nowrap md:items-center md:justify-center md:gap-0">
+        <div className="shrink-0 md:absolute md:left-0 md:top-1/2 md:z-10 md:-translate-y-1/2">
           <FlowNode label={selectedDomain} variant="light" active />
         </div>
 
-        <svg className="hidden h-5 w-[100px] shrink-0 md:block" viewBox="0 0 120 20">
+        <svg
+          className="h-5 w-[100px] shrink-0 md:pointer-events-none md:absolute md:left-[240px] md:top-1/2 md:-translate-y-1/2"
+          viewBox="0 0 120 20"
+          aria-hidden
+        >
           <defs>
             <marker id={markerId} markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
               <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
@@ -60,7 +64,7 @@ export default function UrlStage({
           />
         </svg>
 
-        <div className="w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0 md:ml-[280px]">
+        <div className="w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0">
           <div className="flex flex-col gap-2.5 rounded-[14px] border border-[#b3b3b3] bg-[#161616] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.3)]">
             <div className="flex gap-4">
               <button

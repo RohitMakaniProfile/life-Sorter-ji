@@ -145,6 +145,7 @@ def create_app() -> FastAPI:
         legacy,
         agent,
         playbook,
+        onboarding,
     )
 
     # CRITICAL: Rebuild models here after routers are loaded
@@ -153,6 +154,7 @@ def create_app() -> FastAPI:
     ChatResponse.model_rebuild()
 
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
+    app.include_router(onboarding.router, prefix="/api/v1", tags=["Onboarding"])
     app.include_router(ai_chat.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])

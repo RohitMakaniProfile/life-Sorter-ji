@@ -5,6 +5,9 @@ export const API_ROUTES = {
     sendOtp: '/api/v1/auth/send-otp',
     verifyOtp: '/api/v1/auth/verify-otp',
   },
+  onboarding: {
+    upsert: '/api/v1/onboarding',
+  },
   agent: {
     session: '/api/v1/agent/session',
     sessionById: (sid: string, view?: 'summary' | 'status' | 'context_pool' | 'website_snapshot') =>

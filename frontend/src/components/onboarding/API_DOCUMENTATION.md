@@ -316,7 +316,7 @@ Generate final personalized tool recommendations.
 
 ## Frontend API Module
 
-All API calls are centralized in `api.js`:
+Onboarding uses `coreApi`, `apiPost`, and `API_ROUTES` from `src/api/` (no separate `api.js`). The table below uses legacy labels; confirm actual paths in `coreApi` and the backend.
 
 | Function | Endpoint | Method | Used In |
 |---|---|---|---|

@@ -18,8 +18,20 @@ import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
 import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
 import { getToolsForSelection } from './toolService';
-import * as api from './api';
+import { apiPost } from '../../api/http';
+import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
+
+const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
+
+const patchUrlSubmit = (sessionId, businessUrl, gbpUrl = '') =>
+  coreApi.patchAgentSession(sessionId, { business_url: businessUrl, gbp_url: gbpUrl }).then((snapshot) => ({
+    ...snapshot,
+    crawl_started: snapshot?.crawl_status === 'in_progress',
+  }));
+
+const advanceSession = (sessionId, payload) =>
+  coreApi.advanceAgentSession(sessionId, payload).then((res) => res?.result ?? res);
 
 const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
 const phase2Path = (path) => `/phase2/${path}`;
@@ -99,7 +111,11 @@ export default function OnboardingApp() {
     setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
-      await api.submitOutcome(sid, outcome.id, `${outcome.text} (${outcome.subtext})`);
+      await coreApi.patchAgentSession(sid, {
+        outcome: outcome.id,
+        outcome_label: `${outcome.text} (${outcome.subtext})`,
+      });
+      upsertOnboarding({ session_id: sid, outcome: outcome.id }).catch((e) => console.warn('onboarding DB', e));
     } catch (err) {
       console.warn('Outcome submit:', err.message);
     }
@@ -113,7 +129,8 @@ export default function OnboardingApp() {
     setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
-      await api.submitDomain(sid, domain);
+      await coreApi.patchAgentSession(sid, { domain });
+      upsertOnboarding({ session_id: sid, domain }).catch((e) => console.warn('onboarding DB', e));
     } catch (err) {
       console.warn('Domain submit:', err.message);
     }
@@ -162,7 +179,10 @@ export default function OnboardingApp() {
 
     try {
       const sid = await ensureSession();
-      api.submitTask(sid, task).then((data) => setDiagnosticData(data)).catch(() => {});
+      advanceSession(sid, { action: 'task_setup', task })
+        .then((data) => setDiagnosticData(data))
+        .catch(() => {});
+      upsertOnboarding({ session_id: sid, task }).catch((e) => console.warn('onboarding DB', e));
     } catch (err) {
       console.warn('Task submit:', err.message);
     }
@@ -175,10 +195,13 @@ export default function OnboardingApp() {
     setUrlSubmitting(true);
     try {
       const sid = await ensureSession();
+      let websiteNorm = '';
+      let gbpNorm = '';
       if (urlValue.trim()) {
         let finalUrl = urlValue.trim();
         if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
-        const res = await api.submitUrl(sid, finalUrl);
+        websiteNorm = finalUrl;
+        const res = await patchUrlSubmit(sid, finalUrl);
         if (res?.crawl_started) {
           setCrawlStatus('in_progress');
           startCrawlPolling();
@@ -187,7 +210,14 @@ export default function OnboardingApp() {
       if (gbpValue.trim()) {
         let finalGbp = gbpValue.trim();
         if (!/^https?:\/\//i.test(finalGbp)) finalGbp = `https://${finalGbp}`;
-        await api.submitUrl(sid, finalGbp);
+        gbpNorm = finalGbp;
+        await patchUrlSubmit(sid, finalGbp);
+      }
+      if (websiteNorm || gbpNorm) {
+        const patch = { session_id: sid };
+        if (websiteNorm) patch.website_url = websiteNorm;
+        if (gbpNorm) patch.gbp_url = gbpNorm;
+        upsertOnboarding(patch).catch((e) => console.warn('onboarding DB', e));
       }
       await moveToScaleQuestions();
     } catch {
@@ -201,7 +231,7 @@ export default function OnboardingApp() {
     setUrlSubmitting(true);
     try {
       const sid = await ensureSession();
-      await api.skipUrl(sid);
+      await coreApi.patchAgentSession(sid, { skip_url: true });
       setCrawlStatus('skipped');
     } catch (err) {
       console.warn('Skip URL:', err.message);
@@ -213,7 +243,7 @@ export default function OnboardingApp() {
   const moveToScaleQuestions = async () => {
     try {
       const sid = await ensureSession();
-      const data = await api.getScaleQuestions(sid);
+      const data = await advanceSession(sid, { action: 'scale_questions' });
       setScaleQuestions(data.questions || []);
     } catch {
       setScaleQuestions([]);
@@ -317,8 +347,8 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      await api.submitScaleAnswers(sid, scaleAnswers);
-      const diagData = await api.startDiagnostic(sid);
+      await coreApi.patchAgentSession(sid, { scale_answers: scaleAnswers });
+      const diagData = await advanceSession(sid, { action: 'start_diagnostic' });
       if (diagData.question) {
         setCurrentQuestion(diagData.question);
         setQuestionIndex(0);
@@ -339,9 +369,13 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      const data = await api.submitAnswer(sid, questionIndex, answer);
+      const data = await advanceSession(sid, {
+        action: 'submit_answer',
+        question_index: questionIndex,
+        answer,
+      });
       if (data.all_answered) {
-        const precData = await api.getPrecisionQuestions(sid);
+        const precData = await advanceSession(sid, { action: 'precision_questions' });
         if (precData.available && precData.questions?.length) {
           setPrecisionQuestions(precData.questions);
           setPrecisionIndex(0);
@@ -366,7 +400,11 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      await api.submitAnswer(sid, precisionIndex, answer);
+      await advanceSession(sid, {
+        action: 'submit_answer',
+        question_index: precisionIndex,
+        answer,
+      });
       const nextIdx = precisionIndex + 1;
       if (nextIdx < precisionQuestions.length) {
         setPrecisionIndex(nextIdx);
