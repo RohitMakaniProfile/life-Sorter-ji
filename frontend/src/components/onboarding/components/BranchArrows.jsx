@@ -1,3 +1,5 @@
+import { useId } from 'react';
+
 const NODE_GAP = 8;
 
 function measureNodeH(labels, hasSubtext) {
@@ -25,7 +27,17 @@ function nodeYCenters(nodeHeights, totalH) {
   });
 }
 
-export default function BranchArrows({ count, sourceIndex, srcLabels, srcHasSubtext = false, tgtLabels, tgtHasSubtext = false }) {
+export default function BranchArrows({
+  count,
+  sourceIndex,
+  srcLabels,
+  srcHasSubtext = false,
+  tgtLabels,
+  tgtHasSubtext = false,
+}) {
+  const reactId = useId().replace(/:/g, '');
+  const markerId = `ob-bhead-${reactId}`;
+
   if (count <= 0) return null;
 
   const srcNodeH = srcLabels ? measureNodeH(srcLabels, srcHasSubtext) : Array((sourceIndex ?? 0) + 1).fill(46);
@@ -43,10 +55,21 @@ export default function BranchArrows({ count, sourceIndex, srcLabels, srcHasSubt
   const tgtCenters = nodeYCenters(tgtNodeH, h);
   const srcY = srcCenters[sourceIndex ?? 0];
 
+  const pathAnimClass =
+    '[stroke-dasharray:400] [stroke-dashoffset:400] animate-[ob-draw-arrow_0.5s_ease_forwards]';
+
   return (
-    <svg className="ik-branch-arrows" viewBox={`0 0 ${w} ${h}`} style={{ height: `${h}px` }}>
+    <svg className="block w-[70px] shrink-0" viewBox={`0 0 ${w} ${h}`} style={{ height: `${h}px` }}>
       <defs>
-        <marker id="ik-bhead" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto" markerUnits="strokeWidth">
+        <marker
+          id={markerId}
+          markerWidth="6"
+          markerHeight="5"
+          refX="5.5"
+          refY="2.5"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
           <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1" />
         </marker>
       </defs>
@@ -82,14 +105,22 @@ export default function BranchArrows({ count, sourceIndex, srcLabels, srcHasSubt
 
         return (
           <g key={i}>
-            <path d={d}
-              fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="5"
-              className="ik-branch-arrows__path" style={{ animationDelay: `${i * 40}ms` }}
+            <path
+              d={d}
+              fill="none"
+              stroke="rgba(255,255,255,0.12)"
+              strokeWidth="5"
+              className={pathAnimClass}
+              style={{ animationDelay: `${i * 40}ms` }}
             />
-            <path d={d}
-              fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.5"
-              markerEnd="url(#ik-bhead)"
-              className="ik-branch-arrows__path" style={{ animationDelay: `${i * 40}ms` }}
+            <path
+              d={d}
+              fill="none"
+              stroke="rgba(255,255,255,0.75)"
+              strokeWidth="1.5"
+              markerEnd={`url(#${markerId})`}
+              className={pathAnimClass}
+              style={{ animationDelay: `${i * 40}ms` }}
             />
           </g>
         );

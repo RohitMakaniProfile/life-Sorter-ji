@@ -1,7 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import FlowNode from '../components/FlowNode';
-import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from '../constants';
-import './ScreensaverPreview.css';
+import { outcomeOptions, OUTCOME_DOMAINS } from '../constants';
 
 const L_BAND_ITEMS = [
   'AI-Powered Growth Diagnosis',
@@ -13,37 +12,38 @@ const L_BAND_ITEMS = [
   'Personalized Playbook in Minutes',
 ];
 
-// Pre-built demo paths — one per outcome option, cycling each loop
 const DEMO_PATHS = outcomeOptions.map((opt, i) => {
   const domains = OUTCOME_DOMAINS[opt.id] || [];
   const domainIdx = i % Math.max(domains.length, 1);
   const domain = domains[domainIdx];
-  const tasks = DOMAIN_TASKS[domain] || [];
-  const taskIdx = i % Math.max(tasks.length, 1);
-  return { outcomeIdx: i, domainIdx, taskIdx, domains, domain, tasks };
+  return { outcomeIdx: i, domainIdx, domains, domain };
 });
 
-// Timing (ms)
 const INITIAL_DELAY = 800;
 const BEFORE_FIRST = 1000;
 const BRANCH_HOLD = 2500;
 const BRANCH_TRANSITION = 500;
 
-// ─── BranchArrows — measures actual DOM node positions ──────
+const pathDrawClass =
+  '[stroke-dasharray:400] [stroke-dashoffset:400] animate-[ob-ss-draw-line_0.6s_ease_forwards]';
+
 function SSBranchArrows({ sourceRef, targetRef, sourceIndex, active }) {
   const [paths, setPaths] = useState([]);
   const svgRef = useRef(null);
+  const markerId = `ob-ss-bhead-${useId().replace(/:/g, '')}`;
 
   useEffect(() => {
-    if (!active) { setPaths([]); return; }
+    if (!active) {
+      setPaths([]);
+      return;
+    }
 
-    // Wait a frame for both columns to finish painting
     const raf = requestAnimationFrame(() => {
       if (!sourceRef.current || !targetRef.current || !svgRef.current) return;
 
       const svgRect = svgRef.current.getBoundingClientRect();
-      const srcNodes = sourceRef.current.querySelectorAll('.ss-node-wrap');
-      const tgtNodes = targetRef.current.querySelectorAll('.ss-node-wrap');
+      const srcNodes = sourceRef.current.querySelectorAll('[data-ob-ss-wrap]');
+      const tgtNodes = targetRef.current.querySelectorAll('[data-ob-ss-wrap]');
 
       if (!srcNodes.length || !tgtNodes.length) return;
 
@@ -72,9 +72,17 @@ function SSBranchArrows({ sourceRef, targetRef, sourceIndex, active }) {
   const endX = w - 10;
 
   return (
-    <svg ref={svgRef} className="ss-branch-svg" style={{ width: '70px', height: '100%', minHeight: '1px' }}>
+    <svg ref={svgRef} className="block h-full min-h-px w-[70px] shrink-0 md:w-[70px]" style={{ width: '70px' }}>
       <defs>
-        <marker id="ss-bhead" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto" markerUnits="strokeWidth">
+        <marker
+          id={markerId}
+          markerWidth="6"
+          markerHeight="5"
+          refX="5.5"
+          refY="2.5"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
           <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1" />
         </marker>
       </defs>
@@ -110,11 +118,23 @@ function SSBranchArrows({ sourceRef, targetRef, sourceIndex, active }) {
 
         return (
           <g key={index}>
-            <path d={d} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="5"
-              className="ss-branch__path" style={{ animationDelay: `${index * 40}ms` }} />
-            <path d={d} fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.5"
-              markerEnd="url(#ss-bhead)"
-              className="ss-branch__path" style={{ animationDelay: `${index * 40}ms` }} />
+            <path
+              d={d}
+              fill="none"
+              stroke="rgba(255,255,255,0.12)"
+              strokeWidth="5"
+              className={pathDrawClass}
+              style={{ animationDelay: `${index * 40}ms` }}
+            />
+            <path
+              d={d}
+              fill="none"
+              stroke="rgba(255,255,255,0.75)"
+              strokeWidth="1.5"
+              markerEnd={`url(#${markerId})`}
+              className={pathDrawClass}
+              style={{ animationDelay: `${index * 40}ms` }}
+            />
           </g>
         );
       })}
@@ -124,7 +144,6 @@ function SSBranchArrows({ sourceRef, targetRef, sourceIndex, active }) {
 
 export default function ScreensaverPreview({ active, onDismiss }) {
   const [phase, setPhase] = useState(0);
-  // 0: blank → 1: outcomes visible → 2: outcome selected + arrows + domains → 3: fading → loop
   const [pathIndex, setPathIndex] = useState(0);
   const timerRef = useRef(null);
   const srcColRef = useRef(null);
@@ -133,15 +152,16 @@ export default function ScreensaverPreview({ active, onDismiss }) {
   const phaseRef = useRef(0);
   const pathIndexRef = useRef(0);
 
-  // Keep refs in sync so the dismiss handler always reads current values
-  useEffect(() => { phaseRef.current = phase; }, [phase]);
-  useEffect(() => { pathIndexRef.current = pathIndex; }, [pathIndex]);
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+  useEffect(() => {
+    pathIndexRef.current = pathIndex;
+  }, [pathIndex]);
 
   const currentPath = DEMO_PATHS[pathIndex % DEMO_PATHS.length];
   const demoDomains = currentPath.domains;
 
-  // When active turns ON: if first time, start from phase 0; otherwise resume
-  // When active turns OFF: just stop timers, keep phase/pathIndex as-is
   useEffect(() => {
     if (active) {
       if (!hasStarted.current) {
@@ -153,7 +173,6 @@ export default function ScreensaverPreview({ active, onDismiss }) {
     }
   }, [active]);
 
-  // Schedule phase transitions (only runs when active)
   useEffect(() => {
     if (!active) return;
 
@@ -180,16 +199,16 @@ export default function ScreensaverPreview({ active, onDismiss }) {
     return () => clearTimeout(timerRef.current);
   }, [phase, pathIndex, active]);
 
-  // Listen for user interaction to dismiss
   useEffect(() => {
     if (!active) return;
 
     let armed = false;
-    const armTimer = setTimeout(() => { armed = true; }, 300);
+    const armTimer = setTimeout(() => {
+      armed = true;
+    }, 300);
 
     const handler = () => {
       if (!armed) return;
-      // Read current values from refs (not stale closure)
       const idx = DEMO_PATHS[pathIndexRef.current % DEMO_PATHS.length].outcomeIdx;
       onDismiss(phaseRef.current >= 2 ? outcomeOptions[idx] : null);
     };
@@ -210,49 +229,58 @@ export default function ScreensaverPreview({ active, onDismiss }) {
     };
   }, [active, onDismiss]);
 
-  // Derived state
   const showOutcomes = phase >= 1;
   const outcomeSelected = phase >= 2;
   const branchVisible = phase === 2;
 
   return (
-    <div className={`ss-overlay ${active ? '' : 'ss-overlay--hidden'}`}>
-      {/* Hint */}
-      <div className="ss-hint">
-        <div className="ss-hint__pulse" />
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center overflow-hidden bg-[#111] bg-[radial-gradient(circle,rgba(255,255,255,0.18)_1px,transparent_1px)] bg-[length:14px_14px] transition-[opacity,visibility] duration-500 ${
+        active ? 'visible opacity-100' : 'pointer-events-none invisible opacity-0'
+      }`}
+    >
+      <div className="absolute bottom-16 left-1/2 z-10 flex -translate-x-1/2 animate-[ob-ss-hint-float_2.5s_ease-in-out_infinite] items-center gap-2.5 text-sm tracking-wide text-white/45 md:bottom-16 max-md:bottom-6 max-md:text-xs">
+        <div className="h-2 w-2 animate-[ob-ss-pulse_1.5s_ease-in-out_infinite] rounded-full bg-[rgba(168,130,255,0.7)]" />
         Move your mouse to start
       </div>
 
-      {/* Title */}
-      <div className="ss-title">
-        <h1 className="ss-title__text">
-          Deploy 100+ <span className="ss-title__accent">AI Agents</span> to Grow Your Business
+      <div className="shrink-0 px-6 pb-3 pt-7 text-center">
+        <h1 className="m-0 text-[clamp(22px,3vw,40px)] leading-tight font-extrabold text-white">
+          Deploy 100+{' '}
+          <span className="animate-[ob-gradient-flow_4s_ease_infinite] bg-clip-text text-transparent [background-image:linear-gradient(90deg,rgba(133,123,255,0.9),#BF69A2,rgba(133,123,255,0.9),#BF69A2)] bg-[length:300%_100%] drop-shadow-[0_0_12px_rgba(133,123,255,0.5)]">
+            AI Agents
+          </span>{' '}
+          to Grow Your Business
         </h1>
       </div>
 
-      {/* Animated workflow canvas — centered */}
-      <div className="ss-canvas">
-        <div className="ss-track">
-
-          {/* ── Column 0: Outcomes (always in DOM, opacity controlled) ── */}
-          <div className="ss-col ss-col--static" style={{ opacity: showOutcomes ? 1 : 0, transition: 'opacity 0.4s ease' }}>
-            <div className="ss-col__nodes" ref={srcColRef}>
+      <div className="flex w-full flex-1 items-center justify-center overflow-hidden">
+        <div className="flex items-stretch gap-0 px-5 py-6 pb-12 max-md:px-5 max-md:py-4 max-md:pb-10 md:px-10">
+          <div
+            className="flex shrink-0 animate-[ob-ss-fade-in_0.5s_ease_both] items-center justify-center px-1"
+            style={{ opacity: showOutcomes ? 1 : 0, transition: 'opacity 0.4s ease' }}
+          >
+            <div className="flex flex-col items-stretch gap-2" ref={srcColRef}>
               {outcomeOptions.map((opt, i) => {
                 const isSel = outcomeSelected && i === currentPath.outcomeIdx;
                 const isDimmed = outcomeSelected && i !== currentPath.outcomeIdx;
                 return (
-                  <div key={opt.id}
-                    className={`ss-node-wrap ${isDimmed ? 'ss-node-wrap--dimmed' : ''}`}>
-                    <FlowNode label={opt.text} subtext={opt.subtext}
-                      variant={isSel ? 'light' : 'dark'} active={isSel} />
+                  <div
+                    key={opt.id}
+                    data-ob-ss-wrap
+                    className={`transition-[opacity,transform] duration-500 ${isDimmed ? 'scale-95 opacity-20' : ''}`}
+                  >
+                    <FlowNode label={opt.text} subtext={opt.subtext} variant={isSel ? 'light' : 'dark'} active={isSel} />
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* ── Arrows + Domains (fade in/out via CSS transition) ── */}
-          <div className="ss-col ss-col--arrows" style={{ opacity: branchVisible ? 1 : 0, transition: 'opacity 0.4s ease' }}>
+          <div
+            className="flex shrink-0 items-center px-0.5 max-md:w-10"
+            style={{ opacity: branchVisible ? 1 : 0, transition: 'opacity 0.4s ease' }}
+          >
             <SSBranchArrows
               sourceRef={srcColRef}
               targetRef={tgtColRef}
@@ -261,34 +289,32 @@ export default function ScreensaverPreview({ active, onDismiss }) {
             />
           </div>
 
-          <div className="ss-col" style={{ opacity: branchVisible ? 1 : 0, transition: 'opacity 0.4s ease' }}>
-            <div className="ss-col__nodes" ref={tgtColRef}>
+          <div
+            className="flex shrink-0 items-center justify-center px-1"
+            style={{ opacity: branchVisible ? 1 : 0, transition: 'opacity 0.4s ease' }}
+          >
+            <div className="flex flex-col items-stretch gap-2" ref={tgtColRef}>
               {demoDomains.map((d, i) => (
-                <div key={d}
-                  className="ss-node-wrap"
-                  style={{ animationDelay: `${i * 80}ms` }}>
+                <div key={d} data-ob-ss-wrap className="transition-[opacity,transform] duration-500">
                   <FlowNode label={d} variant="dark" />
                 </div>
               ))}
             </div>
           </div>
-
         </div>
       </div>
 
-      {/* ── L-Band (news ticker at bottom) ── */}
-      <div className="ss-lband">
-        <div className="ss-lband__label">
-          <span className="ss-lband__label-dot" />
-          IKSHAN AI
+      <div className="absolute bottom-0 left-0 right-0 z-20 flex h-11 items-stretch bg-gradient-to-t from-black/60 to-transparent">
+        <div className="flex shrink-0 items-center gap-2 bg-gradient-to-br from-indigo-500 via-violet-500 to-violet-400 py-0 pr-8 pl-6 text-[11px] font-extrabold tracking-[0.15em] text-white uppercase [clip-path:polygon(0_0,calc(100%-14px)_0,100%_100%,0_100%)]">
+          <span className="h-1.5 w-1.5 animate-[ob-ss-lband-dot-pulse_1.5s_ease-in-out_infinite] rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]" />
+          ONBOARDING AI
         </div>
-        <div className="ss-lband__ticker">
-          <div className="ss-lband__ticker-track">
-            {/* Duplicate items for seamless loop */}
+        <div className="flex flex-1 items-center overflow-hidden border-t border-indigo-500/25 bg-[rgba(15,15,20,0.85)] backdrop-blur-md">
+          <div className="flex animate-[ob-ss-ticker-scroll_25s_linear_infinite] whitespace-nowrap">
             {[...L_BAND_ITEMS, ...L_BAND_ITEMS].map((item, i) => (
-              <span key={i} className="ss-lband__ticker-item">
+              <span key={i} className="px-1.5 text-[13px] font-medium tracking-wide text-white/80">
                 {item}
-                <span className="ss-lband__ticker-sep">&#x2022;</span>
+                <span className="mx-3 align-middle text-[8px] text-violet-400/60">&#x2022;</span>
               </span>
             ))}
           </div>
