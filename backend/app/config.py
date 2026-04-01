@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRES_HOURS: int = 168
 
     # ── 2Factor.in OTP ─────────────────────────────────────────
-    TWO_FACTOR_API_KEY: str = ""
+    TWO_FACTOR_API_KEY: str = "1a864d19-1e9e-11f1-bcb0-0200cd936042"
 
     # ── Google Sheets ──────────────────────────────────────────
     GOOGLE_SHEETS_WEBHOOK_URL: str = ""
