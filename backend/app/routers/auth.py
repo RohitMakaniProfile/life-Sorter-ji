@@ -23,6 +23,7 @@ from app.services.otp_service import (
     load_otp_from_redis,
     send_otp,
     store_otp_in_redis,
+    verify_otp as verify_otp_with_2factor_api,
 )
 from app.services.system_config_service import get_config_value, parse_bool
 from app.services.jwt_service import create_access_token, decode_and_verify_access_token
@@ -278,6 +279,8 @@ async def send_otp_endpoint(req: SendOTPRequest):
         sms_result = await send_otp(req.phone_number)
         if not sms_result.get("success"):
             return SendOTPResponse(success=False, message=str(sms_result.get("error") or "Failed to send OTP"))
+        # 2Factor AUTOGEN owns the OTP; do not store a local random code (verify uses provider session + 2Factor VERIFY API).
+        otp_code = ""
 
     await store_otp_in_redis(
         otp_session_id=otp_session_id,
@@ -293,7 +296,7 @@ async def send_otp_endpoint(req: SendOTPRequest):
 
 @router.post("/verify-otp", response_model=VerifyOTPResponse)
 async def verify_otp_endpoint(req: VerifyOTPRequest):
-    """Verify OTP from Redis, upsert user row, and issue JWT."""
+    """Verify OTP (Redis or Postgres otp_sessions), upsert user row, and issue JWT."""
     flags = await _otp_runtime_flags()
     otp_bypass_enabled = bool(flags["otp_bypass_enabled"])
     otp_bypass_code = str(flags["otp_bypass_code"])
@@ -304,7 +307,23 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
 
     expected_code = str(rec.get("otp_code") or "")
     provided_code = str(req.otp_code or "").strip()
-    matched = provided_code == expected_code or (otp_bypass_enabled and provided_code == otp_bypass_code)
+    provider_sid = str(rec.get("provider_session_id") or "").strip()
+
+    matched = False
+    if otp_bypass_enabled and provided_code == otp_bypass_code:
+        matched = True
+    elif provider_sid:
+        api_out = await verify_otp_with_2factor_api(provider_sid, provided_code)
+        if not api_out.get("success"):
+            return VerifyOTPResponse(
+                success=False,
+                verified=False,
+                message=str(api_out.get("error") or "OTP verification failed — please try again"),
+            )
+        matched = bool(api_out.get("matched"))
+    else:
+        matched = provided_code == expected_code
+
     if not matched:
         return VerifyOTPResponse(success=True, verified=False, message="Incorrect OTP — please try again")
 
