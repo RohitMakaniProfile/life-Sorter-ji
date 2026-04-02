@@ -5,6 +5,8 @@ import { OUTCOME_DOMAINS, DOMAIN_TASKS } from '../constants';
 
 const TASK_KEY_SEP = '|||';
 
+/** Task lists longer than this use two staggered columns to limit vertical height. */
+const TASK_SINGLE_COLUMN_MAX = 8;
 
 const colBase = 'flex shrink-0 items-center justify-center px-1.5';
 const nodeCol = 'flex flex-col gap-2 items-stretch';
@@ -110,7 +112,7 @@ function DomainAndTaskColumns({
   };
 
   const taskSplit =
-    branchTasks.length > 6
+    branchTasks.length > TASK_SINGLE_COLUMN_MAX
       ? {
           left: branchTasks.filter((_, i) => i % 2 === 0),
           right: branchTasks.filter((_, i) => i % 2 === 1),
@@ -139,7 +141,7 @@ function DomainAndTaskColumns({
                 className={`${nodeWrap} ${dimDomain ? nodeWrapDimmed : ''}`}
                 onMouseEnter={() => {
                   onJourneyUserActivity?.();
-                  if (!selectedDomain) onHoverDomain(d);
+                  if (selectedOutcome != null) onHoverDomain(d);
                 }}
               >
                 <FlowNode
@@ -162,7 +164,7 @@ function DomainAndTaskColumns({
 
       <JourneyGrow open={showTaskColumn}>
         {showTaskColumn &&
-          (branchTasks.length <= 6 ? (
+          (branchTasks.length <= TASK_SINGLE_COLUMN_MAX ? (
             <div className="flex flex-row flex-nowrap items-center">
               <TaskArrowSpacer />
               <TaskNodesColumn tasks={branchTasks} {...taskNodesProps} />
@@ -294,13 +296,17 @@ export default function OnboardingJourneyCanvas({
       });
     }
     if (showTaskColumn && branchDomainKey && branchTasks.length > 0) {
+      const tasksWithArrows =
+        branchTasks.length > TASK_SINGLE_COLUMN_MAX
+          ? branchTasks.filter((_, i) => i % 2 === 0)
+          : branchTasks;
       segments.push({
         key: 'domain-task',
         show: true,
         sourceType: 'domain',
         sourceKey: branchDomainKey,
         targetType: 'task',
-        targetKeys: branchTasks.map((t) => `${branchDomainKey}${TASK_KEY_SEP}${t}`),
+        targetKeys: tasksWithArrows.map((t) => `${branchDomainKey}${TASK_KEY_SEP}${t}`),
       });
     }
     return segments;
