@@ -162,6 +162,22 @@ def create_app() -> FastAPI:
     app.include_router(agent.router, prefix="/api/v1")
     app.include_router(playbook.router, tags=["Playbook"])
 
+    # ── Task stream (Redis-backed re-attach after refresh) ───────────────
+    from app.task_stream.router import create_task_stream_router
+    from app.task_stream.service import TaskStreamService
+    from app.task_stream.registry import TASK_STREAM_REGISTRY
+
+    # Import task implementations so their @register_task_stream decorators run.
+    from app.task_stream import tasks as _task_stream_tasks  # noqa: F401
+
+    task_stream_service = TaskStreamService()
+    app.include_router(
+        create_task_stream_router(
+            service=task_stream_service,
+            task_registry=TASK_STREAM_REGISTRY,
+        )
+    )
+
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
     app.include_router(legacy.router, prefix="/api", tags=["Legacy"])
 

@@ -12,6 +12,9 @@ export default function PlaybookStage({
   playbookDone,
   playbookResult,
   onDeepAnalysis,
+  showRetry,
+  onRetry,
+  retryLabel = 'Retry',
 }) {
   const gapComplete = gapQuestions.length === 0 || gapQuestions.every((_, i) => gapAnswers[i]);
 
@@ -86,6 +89,21 @@ export default function PlaybookStage({
         <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
           {playbookStreaming && !playbookText && (
             <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
+          )}
+
+          {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
+            <div className="pt-10 text-center">
+              <p className="m-0 text-sm text-white/50">
+                No active playbook run found. Please click retry to start again.
+              </p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-4 cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] px-6 py-3 text-sm font-extrabold text-white"
+              >
+                {retryLabel}
+              </button>
+            </div>
           )}
 
           {playbookText && !playbookDone && (

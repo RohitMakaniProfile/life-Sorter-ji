@@ -39,12 +39,14 @@ jobs:
             echo "REPO=ikshan-be-dev" >> $GITHUB_ENV
             echo "APP_ENV=development" >> $GITHUB_ENV
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_DEV }}" >> $GITHUB_ENV
+            echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_DEV }}" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.development.json" >> $GITHUB_ENV
           else
             echo "SERVICE=ikshan-be-prod" >> $GITHUB_ENV
             echo "REPO=ikshan-be-prod" >> $GITHUB_ENV
             echo "APP_ENV=production" >> $GITHUB_ENV
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
+            echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_PROD }}" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.production.json" >> $GITHUB_ENV
           fi
 
@@ -87,6 +89,7 @@ jobs:
           # Fill secrets from GitHub Actions env/secrets.
           secret_keys = [
             "DATABASE_URL",
+            "REDIS_URL",
             "OPENAI_API_KEY",
             "OPENROUTER_API_KEY",
             "CLAUDE_API_KEY",
@@ -139,6 +142,7 @@ jobs:
           PY
         env:
           DATABASE_URL: ${{ env.DB_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}

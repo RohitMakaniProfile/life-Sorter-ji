@@ -23,7 +23,29 @@ logger = structlog.get_logger()
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value or {})
+    # Store JSONB via explicit dumps for Postgres casts.
+    # Preserve list vs dict shape to avoid hydrating wrong types later.
+    if value is None:
+        return json.dumps({})
+    if isinstance(value, list):
+        return json.dumps(value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    # Fallback: keep as JSON scalar/string.
+    return json.dumps(value)
+
+
+def _json_loads_if_str(value: Any) -> Any:
+    """asyncpg may return JSON/JSONB as str unless a codec is configured."""
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except Exception:
+            return value
+    return value
 
 
 def _serialize_qa(session) -> list[dict[str, Any]]:
@@ -108,6 +130,7 @@ def _as_stage(value: Any) -> SessionStage:
 
 def _to_question_answers(items: Any) -> list[QuestionAnswer]:
     out: list[QuestionAnswer] = []
+    items = _json_loads_if_str(items)
     for item in items or []:
         if not isinstance(item, dict):
             continue
@@ -123,6 +146,7 @@ def _to_question_answers(items: Any) -> list[QuestionAnswer]:
 
 def _to_llm_logs(items: Any) -> list[LLMCallLog]:
     out: list[LLMCallLog] = []
+    items = _json_loads_if_str(items)
     for item in items or []:
         if not isinstance(item, dict):
             continue
@@ -163,13 +187,13 @@ def _row_to_session(record: Any) -> SessionContext:
         questions_answers=_to_question_answers(row.get("questions_answers")),
         website_url=row.get("website_url"),
         gbp_url=row.get("gbp_url"),
-        audience_insights=row.get("audience_insights") or {},
-        crawl_summary=row.get("crawl_summary") or {},
-        business_profile=row.get("business_profile") or {},
-        rca_history=row.get("rca_history") or [],
+        audience_insights=_json_loads_if_str(row.get("audience_insights")) or {},
+        crawl_summary=_json_loads_if_str(row.get("crawl_summary")) or {},
+        business_profile=_json_loads_if_str(row.get("business_profile")) or {},
+        rca_history=_json_loads_if_str(row.get("rca_history")) or [],
         rca_summary=row.get("rca_summary") or "",
         rca_complete=bool(row.get("rca_complete")),
-        early_recommendations=row.get("early_recommendations") or [],
+        early_recommendations=_json_loads_if_str(row.get("early_recommendations")) or [],
         llm_call_log=_to_llm_logs(row.get("llm_call_log")),
     )
 

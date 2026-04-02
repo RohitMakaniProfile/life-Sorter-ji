@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import FlowNode from './FlowNode';
 import JourneyConnectors from './JourneyConnectors';
-import { OUTCOME_DOMAINS, DOMAIN_TASKS } from '../constants';
+import { OUTCOME_DOMAINS, DOMAIN_TASKS } from '../onboardingJourneyData';
 
 const TASK_KEY_SEP = '|||';
 

@@ -189,3 +189,4 @@ export const DOMAIN_TASKS = {
     'Summarize PDFs and long documents',
   ],
 };
+

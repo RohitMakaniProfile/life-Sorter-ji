@@ -7,6 +7,8 @@ export const API_ROUTES = {
   },
   onboarding: {
     upsert: '/api/v1/onboarding',
+    toolsByQ1Q2Q3: '/api/v1/onboarding/tools/by-q1-q2-q3',
+    rcaNextQuestion: '/api/v1/onboarding/rca-next-question',
   },
   agent: {
     session: '/api/v1/agent/session',
@@ -61,6 +63,13 @@ export const API_ROUTES = {
   agents: {
     base: '/api/agents',
     byId: (id: string) => `/api/agents/${encodeURIComponent(id)}`,
+  },
+
+  taskStream: {
+    start: (taskType: string) => `/api/v1/task-stream/start/${encodeURIComponent(taskType)}`,
+    eventsByStreamId: (streamId: string) => `/api/v1/task-stream/events/${encodeURIComponent(streamId)}`,
+    eventsByActor: (taskType: string) => `/api/v1/task-stream/events/${encodeURIComponent(taskType)}/resume`,
+    statusByStreamId: (streamId: string) => `/api/v1/task-stream/status/${encodeURIComponent(streamId)}`,
   },
 } as const;
 

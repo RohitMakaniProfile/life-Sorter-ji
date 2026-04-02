@@ -15,15 +15,18 @@ import { useOnboardingSession } from './hooks/useOnboardingSession';
 import { useOnboardingJourneyIdleOutcomeDemo } from './hooks/useOnboardingJourneyIdleOutcomeDemo';
 import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
-import { outcomeOptions } from './constants';
-import { getToolsForSelection, mapToolsToEarlyTools } from './toolService';
+import { outcomeOptions } from './onboardingJourneyData';
+import { mapToolsToEarlyTools } from './toolService';
 import { apiPost } from '../../api/http';
 import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
+import { usePlaybookTaskStream } from './hooks/usePlaybookTaskStream';
 import FlowNode from './components/FlowNode';
+import STATIC_SCALE_QUESTIONS from './data/scale_questions.json';
 const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
+const rcaNextQuestion = (body) => apiPost(API_ROUTES.onboarding.rcaNextQuestion, body ?? {});
 
-const ONBOARDING_PATCH_KEYS = ['outcome', 'domain', 'task', 'website_url', 'gbp_url'];
+const ONBOARDING_PATCH_KEYS = ['outcome', 'domain', 'task', 'website_url', 'gbp_url', 'scale_answers'];
 
 function buildOnboardingPatch(fields) {
   const o = {};
@@ -32,17 +35,6 @@ function buildOnboardingPatch(fields) {
   }
   return o;
 }
-
-/** Backend sanitizes URLs; only send fields the user filled in. */
-const patchSessionUrls = (sessionId, { websiteInput, gbpInput } = {}) => {
-  const body = {};
-  if (websiteInput) body.business_url = websiteInput;
-  if (gbpInput) body.gbp_url = gbpInput;
-  return coreApi.patchAgentSession(sessionId, body).then((snapshot) => ({
-    ...snapshot,
-    crawl_started: snapshot?.crawl_status === 'in_progress',
-  }));
-};
 
 const advanceSession = (sessionId, payload) =>
   coreApi.advanceAgentSession(sessionId, payload).then((res) => res?.result ?? res);
@@ -82,7 +74,6 @@ export default function OnboardingApp() {
   const [scalePage, setScalePage] = useState(0);
 
   const [showDiagnostic, setShowDiagnostic] = useState(false);
-  const [diagnosticData, setDiagnosticData] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -95,10 +86,6 @@ export default function OnboardingApp() {
   const [error, setError] = useState(null);
 
   const [showPlaybook, setShowPlaybook] = useState(false);
-  const [playbookStreaming, setPlaybookStreaming] = useState(false);
-  const [playbookText, setPlaybookText] = useState('');
-  const [playbookDone, setPlaybookDone] = useState(false);
-  const [playbookResult, setPlaybookResult] = useState(null);
   const [gapQuestions, setGapQuestions] = useState([]);
   const [gapAnswers, setGapAnswers] = useState({});
   const [showGapQuestions, setShowGapQuestions] = useState(false);
@@ -106,11 +93,27 @@ export default function OnboardingApp() {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
 
-  const pendingStreamSidRef = useRef(null);
+  const {
+    playbookStreaming,
+    playbookText,
+    playbookDone,
+    playbookResult,
+    needsManualRetry,
+    prepareStreaming,
+    stopStreaming,
+    startForSession,
+  } = usePlaybookTaskStream({
+    ensureSession,
+    otpVerified,
+    onRequestOtp: () => setShowOtpModal(true),
+    onShowPlaybook: () => setShowPlaybook(true),
+    setError,
+  });
 
   const pendingTaskNodeTransitionRef = useRef(null);
   const urlStageTaskNodeRef = useRef(null);
   const [taskNodeTransition, setTaskNodeTransition] = useState(null);
+  const taskToolsCacheRef = useRef(new Map());
 
   const clearPostTask = () => {
     setShowUrlForm(false);
@@ -140,7 +143,6 @@ export default function OnboardingApp() {
         nextTask,
         clearPostTaskStages,
         openUrlForm,
-        taskSetupAdvance,
         toolContext,
       } = ui;
 
@@ -178,12 +180,20 @@ export default function OnboardingApp() {
         setToolPage(0);
       }
       if (toolContext) {
-        const { tools } = getToolsForSelection(
-          toolContext.outcomeId,
-          toolContext.domain,
-          toolContext.task,
-        );
-        setEarlyTools(mapToolsToEarlyTools(tools));
+        const cacheKey = `${toolContext.outcomeId}|||${toolContext.domain}|||${toolContext.task}`;
+        const cached = taskToolsCacheRef.current.get(cacheKey);
+        if (cached) {
+          setEarlyTools(mapToolsToEarlyTools(cached));
+        } else {
+          const res = await apiPost(API_ROUTES.onboarding.toolsByQ1Q2Q3, {
+            outcome: toolContext.outcomeId,
+            domain: toolContext.domain,
+            task: toolContext.task,
+          });
+          const tools = res?.tools || [];
+          taskToolsCacheRef.current.set(cacheKey, tools);
+          setEarlyTools(mapToolsToEarlyTools(tools));
+        }
       }
 
       scheduleScrollToEnd();
@@ -194,11 +204,6 @@ export default function OnboardingApp() {
       try {
         const sid = await ensureSession();
         await upsertOnboarding({ session_id: sid, ...patch });
-        if (taskSetupAdvance && fields.task != null) {
-          advanceSession(sid, { action: 'task_setup', task: fields.task })
-            .then((data) => setDiagnosticData(data))
-            .catch(() => {});
-        }
       } catch (err) {
         console.warn('Onboarding update:', err?.message || err);
       }
@@ -272,7 +277,6 @@ export default function OnboardingApp() {
       nextTask: task,
       clearPostTaskStages: true,
       openUrlForm: true,
-      taskSetupAdvance: true,
       toolContext: { outcomeId: effectiveOutcome.id, domain: effectiveDomain, task },
     });
   };
@@ -282,19 +286,13 @@ export default function OnboardingApp() {
     if (!urlValue.trim() && !gbpValue.trim()) return;
     setUrlSubmitting(true);
     try {
-      const sid = await ensureSession();
       const web = urlValue.trim();
       const gbp = gbpValue.trim();
       if (web || gbp) {
-        const res = await patchSessionUrls(sid, { websiteInput: web || undefined, gbpInput: gbp || undefined });
-        if (web && res?.crawl_started) {
-          setCrawlStatus('in_progress');
-          startCrawlPolling();
-        }
-        const patch = { session_id: sid };
+        const patch = {};
         if (web) patch.website_url = web;
         if (gbp) patch.gbp_url = gbp;
-        upsertOnboarding(patch).catch((e) => console.warn('onboarding DB', e));
+        await handleOnboardingFieldUpdate(patch);
       }
       await moveToScaleQuestions();
     } catch {
@@ -318,13 +316,7 @@ export default function OnboardingApp() {
   };
 
   const moveToScaleQuestions = async () => {
-    try {
-      const sid = await ensureSession();
-      const data = await advanceSession(sid, { action: 'scale_questions' });
-      setScaleQuestions(data.questions || []);
-    } catch {
-      setScaleQuestions([]);
-    }
+    setScaleQuestions(STATIC_SCALE_QUESTIONS);
     setShowDeeperDive(true);
     setTimeout(scrollToEnd, 50);
   };
@@ -342,39 +334,9 @@ export default function OnboardingApp() {
     });
   };
 
-  const streamPlaybook = async (sid) => {
-    await coreApi.playbookGenerateStream(
-      { session_id: sid },
-      {
-        onToken: (token) => setPlaybookText((t) => t + token),
-        onDone: (result) => {
-          setPlaybookResult(result);
-          setPlaybookDone(true);
-          setPlaybookStreaming(false);
-        },
-        onError: (msg) => {
-          setError(msg);
-          setPlaybookStreaming(false);
-        },
-      },
-    );
-  };
-
-  const gateBeforeStream = (sid) => {
-    if (otpVerified) {
-      streamPlaybook(sid);
-    } else {
-      pendingStreamSidRef.current = sid;
-      setShowOtpModal(true);
-    }
-  };
-
   const handleStartPlaybook = async () => {
     setShowPlaybook(true);
-    setPlaybookStreaming(true);
-    setPlaybookText('');
-    setPlaybookDone(false);
-    setPlaybookResult(null);
+    prepareStreaming();
     setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
@@ -383,26 +345,24 @@ export default function OnboardingApp() {
       if (startData.gap_questions?.length) {
         setGapQuestions(startData.gap_questions_parsed || startData.gap_questions);
         setShowGapQuestions(true);
-        setPlaybookStreaming(false);
+        stopStreaming();
         return;
       }
-      gateBeforeStream(sid);
+      await startForSession(sid, { fresh: false });
     } catch {
       setError('Failed to start playbook.');
-      setPlaybookStreaming(false);
+      stopStreaming();
     }
   };
 
   const handleOtpVerified = () => {
     setOtpVerified(true);
     setShowOtpModal(false);
-    const sid = pendingStreamSidRef.current;
-    if (sid) streamPlaybook(sid);
   };
 
   const handleGapSubmit = async () => {
     setShowGapQuestions(false);
-    setPlaybookStreaming(true);
+    prepareStreaming();
     try {
       const sid = await ensureSession();
       const answersStr = gapQuestions
@@ -412,11 +372,10 @@ export default function OnboardingApp() {
         })
         .join(', ');
       await coreApi.playbookGapAnswers({ session_id: sid, answers: answersStr });
-      setPlaybookStreaming(false);
-      gateBeforeStream(sid);
+      await startForSession(sid, { fresh: false });
     } catch {
       setError('Failed to submit answers.');
-      setPlaybookStreaming(false);
+      stopStreaming();
     }
   };
 
@@ -424,14 +383,20 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      await coreApi.patchAgentSession(sid, { scale_answers: scaleAnswers });
-      const diagData = await advanceSession(sid, { action: 'start_diagnostic' });
-      if (diagData.question) {
-        setCurrentQuestion(diagData.question);
+      const byId = {};
+      for (let i = 0; i < STATIC_SCALE_QUESTIONS.length; i += 1) {
+        const q = STATIC_SCALE_QUESTIONS[i];
+        const v = scaleAnswers[i];
+        if (v == null || (Array.isArray(v) && v.length === 0)) continue;
+        byId[q.id] = v;
+      }
+      await handleOnboardingFieldUpdate({ scale_answers: byId });
+      const res = await rcaNextQuestion({ session_id: sid });
+      if (res?.status === 'question' && res?.question) {
+        setCurrentQuestion(res.question);
         setQuestionIndex(0);
-      } else if (diagnosticData?.questions?.length) {
-        setCurrentQuestion(diagnosticData.questions[0]);
-        setQuestionIndex(0);
+      } else {
+        throw new Error('No diagnostic question available');
       }
       setShowDiagnostic(true);
       setTimeout(scrollToEnd, 50);
@@ -446,26 +411,19 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      const data = await advanceSession(sid, {
-        action: 'submit_answer',
-        question_index: questionIndex,
-        answer,
-      });
-      if (data.all_answered) {
-        const precData = await advanceSession(sid, { action: 'precision_questions' });
-        if (precData.available && precData.questions?.length) {
-          setPrecisionQuestions(precData.questions);
-          setPrecisionIndex(0);
-          setCurrentQuestion(precData.questions[0]);
-          setShowPrecision(true);
-          setTimeout(scrollToEnd, 50);
-        } else {
-          handleStartPlaybook();
-        }
-      } else if (data.next_question) {
-        setCurrentQuestion(data.next_question);
-        setQuestionIndex((i) => i + 1);
+      const res = await rcaNextQuestion({ session_id: sid, answer });
+      if (res?.status === 'complete') {
+        // Precision questions are currently powered by the agent session RCA history.
+        // When using onboarding RCA (DB-backed transcript), we skip precision and proceed.
+        handleStartPlaybook();
+        return;
       }
+      if (res?.status === 'question' && res?.question) {
+        setCurrentQuestion(res.question);
+        setQuestionIndex((i) => i + 1);
+        return;
+      }
+      throw new Error('Unexpected diagnostic response');
     } catch (err) {
       setError(`Failed to submit answer: ${err.message}`);
     } finally {
@@ -536,6 +494,9 @@ export default function OnboardingApp() {
           playbookDone={playbookDone}
           playbookResult={playbookResult}
           onDeepAnalysis={handleDeepAnalysis}
+          showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
+          onRetry={() => handleStartPlaybook()}
+          retryLabel="Retry Playbook"
         />
       </StageLayout>
     );

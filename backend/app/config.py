@@ -229,3 +229,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODELS = os.getenv("GEMINI_MODELS", os.getenv("GEMINI_MODEL", "")).strip()
 GEMINI_SCOUT_MODELS = os.getenv("GEMINI_SCOUT_MODELS", "").strip()
 SKILL_DEBUG_LOGS = _getenv("SKILL_DEBUG_LOGS", "false").lower() in ("true", "1", "yes")
+
+# ── Redis (durable task streaming) ─────────────────────────────
+REDIS_URL = _getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_TASKSTREAM_PREFIX = _getenv("REDIS_TASKSTREAM_PREFIX", "ikshan:taskstream")
+REDIS_TASKSTREAM_TTL_SECONDS = int(_getenv("REDIS_TASKSTREAM_TTL_SECONDS", "86400"))  # 24h
+REDIS_TASKSTREAM_MAX_BACKLOG = int(_getenv("REDIS_TASKSTREAM_MAX_BACKLOG", "200"))
+REDIS_TASKSTREAM_MAX_STREAM_LEN = int(_getenv("REDIS_TASKSTREAM_MAX_STREAM_LEN", "5000"))

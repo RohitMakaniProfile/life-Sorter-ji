@@ -39,6 +39,9 @@ beautifulsoup4==4.13.3
 # ── Phase 2: Research Agent ────────────────────────────────────────────────────
 anthropic>=0.30.0
 
+# Redis-backed task streaming (durable events + realtime fanout)
+redis>=5.0.0
+
 # Browser automation (used by scraper + backend image installs chromium)
 playwright==1.52.0
 google-genai>=1.0.0

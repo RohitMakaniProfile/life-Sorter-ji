@@ -56,6 +56,10 @@ class CreateSessionResponse(BaseModel):
 class SetTaskRequest(BaseModel):
     session_id: str
     task: str              # e.g., 'Generate social media posts captions & hooks'
+    # Optional: provide precomputed early tools (frontend can source from static JSON)
+    # to avoid backend instant-tool lookup during onboarding.
+    early_tools: Optional[list[dict[str, Any]]] = None
+    early_recommendations_message: str = ""
 
 
 class EarlyToolRecommendation(BaseModel):
@@ -144,6 +148,10 @@ class SessionAdvanceRequest(BaseModel):
     question_index: Optional[int] = None
     answer: Optional[str] = None
     website_url: Optional[str] = None
+    # Optional: provide precomputed early tools for task_setup so the backend can skip
+    # its instant-tool lookup (frontend can source from static JSON).
+    early_tools: Optional[list[dict[str, Any]]] = None
+    early_recommendations_message: str = ""
 
 
 class SessionAdvanceResponse(BaseModel):
@@ -210,47 +218,72 @@ async def set_task_and_generate_questions(request: Request, body: SetTaskRequest
         # Store the full diagnostic context for Claude to use
         session_store.set_rca_context(session.session_id, diagnostic)
 
-    # ── INSTANT early recommendations (pre-mapped JSON, <1ms) ────
-    from app.services.instant_tool_service import get_tools_for_q1_q2_q3
+    # ── Early recommendations after Q3 ────────────────────────────
+    # Frontend already has hardcoded tool mappings (from static JSON). If the client
+    # sends `early_tools`, we persist them directly and skip backend instant lookup.
+    early_recs: list[EarlyToolRecommendation] = []
+    early_message = body.early_recommendations_message or "Here are the top-rated tools for your selection — curated from verified reviews and ratings."
 
-    early_recs = []
-    early_message = ""
-    try:
-        instant_result = get_tools_for_q1_q2_q3(
-            outcome=session.outcome or "",
-            domain=session.domain or "",
-            task=session.task or "",
+    if body.early_tools:
+        tools = body.early_tools
+        # Persist for later playbook context (Agent C).
+        session_store.set_early_recommendations(
+            session.session_id,
+            tools=tools,
+            message=early_message,
         )
-        if instant_result and instant_result.get("tools"):
-            early_recs = [
-                EarlyToolRecommendation(
-                    name=t.get("name", ""),
-                    description=t.get("description", ""),
-                    url=t.get("url"),
-                    category=t.get("category", ""),
-                    rating=str(t.get("rating", "")) if t.get("rating") is not None else None,
-                    why_relevant=t.get("best_use_case", ""),
+        # Shape response in the expected EarlyToolRecommendation schema.
+        early_recs = [
+            EarlyToolRecommendation(
+                name=t.get("name", ""),
+                description=t.get("description", ""),
+                url=t.get("url"),
+                category=t.get("category", ""),
+                rating=str(t.get("rating", "")) if t.get("rating") is not None else None,
+                why_relevant=t.get("best_use_case", ""),
+            )
+            for t in tools
+        ]
+    else:
+        # Fallback: backend instant deterministic lookup.
+        from app.services.instant_tool_service import get_tools_for_q1_q2_q3
+
+        try:
+            instant_result = get_tools_for_q1_q2_q3(
+                outcome=session.outcome or "",
+                domain=session.domain or "",
+                task=session.task or "",
+            )
+            if instant_result and instant_result.get("tools"):
+                early_recs = [
+                    EarlyToolRecommendation(
+                        name=t.get("name", ""),
+                        description=t.get("description", ""),
+                        url=t.get("url"),
+                        category=t.get("category", ""),
+                        rating=str(t.get("rating", "")) if t.get("rating") is not None else None,
+                        why_relevant=t.get("best_use_case", ""),
+                    )
+                    for t in instant_result["tools"]
+                ]
+                early_message = instant_result.get("message", "")
+                session_store.set_early_recommendations(
+                    session.session_id,
+                    tools=instant_result["tools"],
+                    message=early_message,
                 )
-                for t in instant_result["tools"]
-            ]
-            early_message = instant_result.get("message", "")
-            session_store.set_early_recommendations(
-                session.session_id,
-                tools=instant_result["tools"],
-                message=early_message,
-            )
-            logger.info(
-                "Instant early recommendations after Q3",
+                logger.info(
+                    "Instant early recommendations after Q3",
+                    session_id=session.session_id,
+                    tools_count=len(early_recs),
+                    match_type=instant_result.get("match_type"),
+                )
+        except Exception as e:
+            logger.warning(
+                "Instant recommendations failed (non-blocking)",
                 session_id=session.session_id,
-                tools_count=len(early_recs),
-                match_type=instant_result.get("match_type"),
+                error=str(e),
             )
-    except Exception as e:
-        logger.warning(
-            "Instant recommendations failed (non-blocking)",
-            session_id=session.session_id,
-            error=str(e),
-        )
 
     # ── First RCA question: try pre-generated tree first, then LLM fallback ──
     tree_q1 = get_first_question(
@@ -1140,7 +1173,12 @@ async def advance_session(request: Request, session_id: str, body: SessionAdvanc
             raise HTTPException(status_code=400, detail="task is required for action=task_setup")
         result_model = await set_task_and_generate_questions(
             request,
-            SetTaskRequest(session_id=session_id, task=body.task),
+            SetTaskRequest(
+                session_id=session_id,
+                task=body.task,
+                early_tools=body.early_tools,
+                early_recommendations_message=body.early_recommendations_message,
+            ),
         )
         result = result_model.model_dump()
     elif action == "submit_answer":

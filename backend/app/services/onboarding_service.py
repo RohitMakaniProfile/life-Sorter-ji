@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import json
 import structlog
 
 from app.db import get_pool
@@ -15,7 +16,7 @@ from app.utils.url_sanitize import sanitize_http_url
 logger = structlog.get_logger()
 
 ALLOWED_PATCH_FIELDS = frozenset(
-    {"user_id", "outcome", "domain", "task", "website_url", "gbp_url"}
+    {"user_id", "outcome", "domain", "task", "website_url", "gbp_url", "scale_answers"}
 )
 
 
@@ -30,11 +31,24 @@ def _sanitize_onboarding_url_fields(d: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _coerce_onboarding_jsonb_fields(d: dict[str, Any]) -> dict[str, Any]:
+    """
+    asyncpg JSONB binding expects a JSON string unless a custom codec is configured.
+    Normalize JSONB payloads into strings for safe INSERT/UPDATE placeholders.
+    """
+    out = dict(d)
+    if "scale_answers" in out:
+        v = out.get("scale_answers")
+        if isinstance(v, (dict, list)):
+            out["scale_answers"] = json.dumps(v)
+    return out
+
+
 def _allowed_updates(updates: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not updates:
         return {}
     raw = {k: v for k, v in updates.items() if k in ALLOWED_PATCH_FIELDS}
-    return _sanitize_onboarding_url_fields(raw)
+    return _coerce_onboarding_jsonb_fields(_sanitize_onboarding_url_fields(raw))
 
 
 def _serialize_row(row: Any) -> dict[str, Any]:
@@ -52,7 +66,7 @@ def _serialize_row(row: Any) -> dict[str, Any]:
 async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """
     New agent session (in-memory + user_sessions) plus one onboarding row.
-    Optional `initial` may include user_id, outcome, domain, task, website_url, gbp_url (same as patch).
+    Optional `initial` may include user_id, outcome, domain, task, website_url, gbp_url, scale_answers (same as patch).
     """
     allowed = _allowed_updates(initial)
     session = session_store.create_session()
@@ -67,7 +81,7 @@ async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = Non
                 INSERT INTO onboarding (session_id)
                 VALUES ($1)
                 RETURNING id, session_id, user_id, outcome, domain, task,
-                          website_url, gbp_url, created_at, updated_at
+                          website_url, gbp_url, scale_answers, created_at, updated_at
                 """,
                 sid,
             )
@@ -81,7 +95,7 @@ async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = Non
                 INSERT INTO onboarding ({col_sql})
                 VALUES ({placeholders})
                 RETURNING id, session_id, user_id, outcome, domain, task,
-                          website_url, gbp_url, created_at, updated_at
+                          website_url, gbp_url, scale_answers, created_at, updated_at
                 """,
                 *vals,
             )
@@ -106,6 +120,11 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
         raise ValueError("session_id is required for patch")
 
     allowed = _allowed_updates(updates)
+    # Keep the in-memory agent session in sync for downstream steps (playbook, etc.).
+    # This allows onboarding-only clients to avoid calling agent session endpoints for scale answers.
+    # `allowed["scale_answers"]` may be JSON string after coercion; keep sync for agent session using dict.
+    if "scale_answers" in updates and isinstance(updates.get("scale_answers"), dict):
+        session_store.set_business_profile(sid, updates["scale_answers"])
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -136,7 +155,7 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
                         INSERT INTO onboarding (session_id)
                         VALUES ($1)
                         RETURNING id, session_id, user_id, outcome, domain, task,
-                                  website_url, gbp_url, created_at, updated_at
+                                  website_url, gbp_url, scale_answers, created_at, updated_at
                         """,
                         sid,
                     )
@@ -150,7 +169,7 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
                         INSERT INTO onboarding ({col_sql})
                         VALUES ({placeholders})
                         RETURNING id, session_id, user_id, outcome, domain, task,
-                                  website_url, gbp_url, created_at, updated_at
+                                  website_url, gbp_url, scale_answers, created_at, updated_at
                         """,
                         *vals,
                     )
@@ -168,7 +187,7 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
                     SET {set_sql}, updated_at = NOW()
                     WHERE id = ${len(vals_u)}
                     RETURNING id, session_id, user_id, outcome, domain, task,
-                              website_url, gbp_url, created_at, updated_at
+                              website_url, gbp_url, scale_answers, created_at, updated_at
                     """,
                     *vals_u,
                 )
@@ -176,7 +195,7 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
                 row = await conn.fetchrow(
                     """
                     SELECT id, session_id, user_id, outcome, domain, task,
-                           website_url, gbp_url, created_at, updated_at
+                           website_url, gbp_url, scale_answers, created_at, updated_at
                     FROM onboarding
                     WHERE id = $1
                     """,

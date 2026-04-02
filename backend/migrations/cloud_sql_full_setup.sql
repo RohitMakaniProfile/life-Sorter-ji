@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS onboarding (
     website_url     TEXT,
     gbp_url         TEXT,
 
+    -- Evolving RCA question/answer history (Phase 1 diagnostic transcript)
+    rca_qa          JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+    -- Phase 1 scale/business-profile answers (mirrors user_sessions.business_profile)
+    scale_answers   JSONB NOT NULL DEFAULT '{}'::jsonb,
+
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

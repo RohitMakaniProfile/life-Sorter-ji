@@ -1,0 +1,88 @@
+[
+  {
+    "id": "buying_process",
+    "question": "How do customers typically buy from you?",
+    "options": [
+      "They sign up and pay on their own (self-serve)",
+      "They sign up free, then upgrade later (freemium / trial)",
+      "They request a demo or consultation first",
+      "A sales rep guides them through the purchase",
+      "They buy through a marketplace or platform",
+      "Mix — depends on customer size"
+    ],
+    "icon": "🛒",
+    "multi_select": false
+  },
+  {
+    "id": "revenue_model",
+    "question": "How do you make money?",
+    "options": [
+      "One-time product purchases",
+      "Subscription / recurring billing",
+      "Usage-based or pay-as-you-go",
+      "Service retainers / project fees",
+      "Marketplace commissions / transaction fees",
+      "Freemium with paid upgrades",
+      "Advertising / sponsorship revenue"
+    ],
+    "icon": "💰",
+    "multi_select": false
+  },
+  {
+    "id": "sales_cycle",
+    "question": "How quickly do customers usually go from discovering you to paying?",
+    "options": [
+      "Minutes to hours (impulse / instant)",
+      "A few days (1–7 days)",
+      "A few weeks (1–4 weeks)",
+      "A month or more",
+      "Varies wildly by customer"
+    ],
+    "icon": "⏱️",
+    "multi_select": false
+  },
+  {
+    "id": "existing_assets",
+    "question": "Which of these do you already have?",
+    "options": [
+      "Customer testimonials or reviews",
+      "Case studies with measurable results",
+      "Blog posts or educational articles",
+      "Video content (demos, tutorials, or social)",
+      "A free tool, calculator, or template",
+      "Active social media presence",
+      "An email list of 1,000+ contacts",
+      "None of the above — starting from scratch"
+    ],
+    "icon": "📦",
+    "multi_select": true
+  },
+  {
+    "id": "buyer_behavior",
+    "question": "When customers look for a solution like yours, what do they usually do?",
+    "options": [
+      "Search Google or AI tools for the category (e.g., \"best project management tool\")",
+      "Ask peers, colleagues, or communities for recommendations",
+      "They don't know this category exists — we have to educate them",
+      "They compare us against 2–3 well-known competitors",
+      "They find us through the platform or marketplace we're listed on"
+    ],
+    "icon": "🔍",
+    "multi_select": false
+  },
+  {
+    "id": "current_stack",
+    "question": "What tools are you currently using for this?",
+    "options": [
+      "Canva + Buffer / Later — design & scheduling",
+      "Hootsuite / Sprout Social — social management suite",
+      "Adobe Creative Cloud + native platform tools",
+      "ChatGPT / Jasper — AI content generation",
+      "HubSpot / Semrush — content marketing platform",
+      "Nothing yet — posting manually or not at all"
+    ],
+    "icon": "🛠️",
+    "multi_select": false
+  }
+]
+
