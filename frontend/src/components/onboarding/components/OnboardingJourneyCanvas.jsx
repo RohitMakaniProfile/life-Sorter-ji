@@ -10,7 +10,7 @@ const TASK_SINGLE_COLUMN_MAX = 8;
 
 const colBase = 'flex shrink-0 items-center justify-center px-1.5';
 const nodeCol = 'flex flex-col gap-2 items-stretch';
-const nodeWrap = 'relative transition-[opacity,transform] duration-300 ease-out';
+const nodeWrap = 'relative transition-[opacity,transform] duration-[700ms] ease-out';
 const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-30';
 
 /** Animates width when `open` toggles (flex `transition` cannot interpolate sibling reflow). */
@@ -18,7 +18,7 @@ const JourneyGrow = forwardRef(function JourneyGrow({ open, children, className 
   return (
     <div
       ref={ref}
-      className={`grid min-h-0 min-w-0 self-stretch overflow-hidden transition-[grid-template-columns] duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${className}`}
+      className={`grid min-h-0 min-w-0 self-stretch overflow-hidden transition-[grid-template-columns] duration-[700ms] ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${className}`}
       style={{ gridTemplateColumns: open ? '1fr' : '0fr' }}
     >
       <div className="flex h-full min-h-0 min-w-0 items-center">{children}</div>

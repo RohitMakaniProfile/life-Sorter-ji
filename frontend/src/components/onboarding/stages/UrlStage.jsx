@@ -6,6 +6,8 @@ const TOOLS_PER_PAGE = 3;
 
 export default function UrlStage({
   selectedDomain,
+  selectedTask,
+  taskNodeContainerRef,
   urlValue,
   gbpValue,
   onUrlChange,
@@ -39,8 +41,8 @@ export default function UrlStage({
       </h1>
 
       <div className="relative mb-4 flex w-full max-w-[1100px] flex-col items-center gap-4 md:flex-row md:flex-nowrap md:items-center md:justify-center md:gap-0">
-        <div className="shrink-0 md:absolute md:left-0 md:top-1/2 md:z-10 md:-translate-y-1/2">
-          <FlowNode label={selectedDomain} variant="light" active />
+        <div ref={taskNodeContainerRef} className="shrink-0 md:absolute md:left-0 md:top-1/2 md:z-10 md:-translate-y-1/2">
+          <FlowNode label={selectedTask || selectedDomain} variant="light" active />
         </div>
 
         <svg

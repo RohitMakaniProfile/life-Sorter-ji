@@ -49,7 +49,6 @@ export function useOnboardingJourneyIdleOutcomeDemo(enabled, outcomeIds) {
     setDemoActive(false);
     setPhase(PHASE_HOLD);
     setPathIndex(0);
-    setProgrammaticHoveredOutcomeId(null);
   }, []);
 
   const armIdleTimer = useCallback(() => {
@@ -125,10 +124,15 @@ export function useOnboardingJourneyIdleOutcomeDemo(enabled, outcomeIds) {
   }, [phase, pathIndex, demoActive, enabled, n]);
 
   useEffect(() => {
-    if (!demoActive || !enabled || outcomeIds.length === 0) {
+    if (!enabled || outcomeIds.length === 0) {
       setProgrammaticHoveredOutcomeId(null);
       return;
     }
+    // If the user interacted, we stop the idle demo loop (`demoActive=false`), but we keep the
+    // last programmatic hovered outcome so the UI doesn't "cancel" what the user was just
+    // looking at / about to click.
+    if (!demoActive) return;
+
     setProgrammaticHoveredOutcomeId(outcomeIds[pathIndex % outcomeIds.length]);
   }, [demoActive, enabled, pathIndex, outcomeIds]);
 

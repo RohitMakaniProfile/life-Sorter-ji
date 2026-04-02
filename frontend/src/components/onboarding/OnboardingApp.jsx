@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import StageLayout from './components/StageLayout';
@@ -20,6 +20,7 @@ import { getToolsForSelection, mapToolsToEarlyTools } from './toolService';
 import { apiPost } from '../../api/http';
 import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
+import FlowNode from './components/FlowNode';
 const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
 
 const ONBOARDING_PATCH_KEYS = ['outcome', 'domain', 'task', 'website_url', 'gbp_url'];
@@ -48,6 +49,9 @@ const advanceSession = (sessionId, payload) =>
 
 const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
 const phase2Path = (path) => `/phase2/${path}`;
+const TASK_KEY_SEP = '|||';
+
+const toRectObj = (r) => ({ top: r.top, left: r.left, width: r.width, height: r.height });
 
 export default function OnboardingApp() {
   const navigate = useNavigate();
@@ -104,6 +108,10 @@ export default function OnboardingApp() {
 
   const pendingStreamSidRef = useRef(null);
 
+  const pendingTaskNodeTransitionRef = useRef(null);
+  const urlStageTaskNodeRef = useRef(null);
+  const [taskNodeTransition, setTaskNodeTransition] = useState(null);
+
   const clearPostTask = () => {
     setShowUrlForm(false);
     setShowDeeperDive(false);
@@ -141,6 +149,27 @@ export default function OnboardingApp() {
       if (nextTask !== undefined) setSelectedTask(nextTask);
       if (clearPostTaskStages) clearPostTask();
       if (openUrlForm) {
+        const pending = pendingTaskNodeTransitionRef.current;
+        if (pending) {
+          const rawKey = `${pending.domain}${TASK_KEY_SEP}${pending.task}`;
+          const safeKey =
+            typeof window !== 'undefined' && window.CSS && typeof window.CSS.escape === 'function'
+              ? window.CSS.escape(rawKey)
+              : rawKey.replace(/"/g, '\\"');
+          const anchorEl = document.querySelector(
+            `[data-journey-anchor="task"][data-journey-key="${safeKey}"]`,
+          );
+          const fromRect = anchorEl?.getBoundingClientRect?.();
+          if (fromRect && fromRect.width > 0 && fromRect.height > 0) {
+            setTaskNodeTransition({
+              fromRect: toRectObj(fromRect),
+              toRect: null,
+              phase: 'enter',
+              label: pending.task,
+            });
+          }
+          pendingTaskNodeTransitionRef.current = null;
+        }
         setShowUrlForm(true);
         setShowDeeperDive(false);
         setShowDiagnostic(false);
@@ -177,6 +206,28 @@ export default function OnboardingApp() {
     [ensureSession, scheduleScrollToEnd],
   );
 
+  // When switching into UrlStage via a task click, animate the selected task node
+  // from its position in `OnboardingJourneyCanvas` into the UrlStage header.
+  useLayoutEffect(() => {
+    if (!showUrlForm) return;
+    const pending = taskNodeTransition;
+    if (!pending || pending.toRect) return;
+    const el = urlStageTaskNodeRef.current;
+    if (!el?.getBoundingClientRect) return;
+
+    const toRect = toRectObj(el.getBoundingClientRect());
+    setTaskNodeTransition((prev) => (prev ? { ...prev, toRect, phase: 'enter' } : prev));
+    requestAnimationFrame(() => {
+      setTaskNodeTransition((prev) => (prev ? { ...prev, phase: 'animate' } : prev));
+    });
+  }, [showUrlForm, taskNodeTransition]);
+
+  useLayoutEffect(() => {
+    if (!taskNodeTransition || taskNodeTransition.phase !== 'animate') return;
+    const t = setTimeout(() => setTaskNodeTransition(null), 820);
+    return () => clearTimeout(t);
+  }, [taskNodeTransition?.phase]);
+
   const handleOutcomeClick = (outcome) => {
     handleOnboardingFieldUpdate(
       { outcome: outcome.id, domain: null, task: null },
@@ -211,6 +262,7 @@ export default function OnboardingApp() {
       console.warn('Task click: missing outcome or domain');
       return;
     }
+    pendingTaskNodeTransitionRef.current = { domain: effectiveDomain, task };
     const fields = { task };
     if (previewOutcome) fields.outcome = previewOutcome.id;
     if (previewDomain) fields.domain = previewDomain;
@@ -528,24 +580,54 @@ export default function OnboardingApp() {
   }
 
   if (showUrlForm) {
+    const from = taskNodeTransition?.fromRect;
+    const to = taskNodeTransition?.toRect;
+    const phase = taskNodeTransition?.phase || 'enter';
+    const dx = from && to ? to.left - from.left : 0;
+    const dy = from && to ? to.top - from.top : 0;
+    const sx = from && to && from.width > 0 ? to.width / from.width : 1;
+    const sy = from && to && from.height > 0 ? to.height / from.height : 1;
+
     return (
       <StageLayout error={error} onClearError={clearError}>
-        <UrlStage
-          selectedDomain={selectedDomain}
-          urlValue={urlValue}
-          gbpValue={gbpValue}
-          onUrlChange={setUrlValue}
-          onGbpChange={setGbpValue}
-          urlTab={urlTab}
-          onTabChange={setUrlTab}
-          onSubmit={handleUrlSubmit}
-          onSkip={handleUrlSkip}
-          urlSubmitting={urlSubmitting}
-          earlyTools={earlyTools}
-          toolPage={toolPage}
-          onToolPageChange={setToolPage}
-          onBack={handleBackToStep1}
-        />
+        {taskNodeTransition && from ? (
+          <div
+            aria-hidden
+            className="pointer-events-none fixed left-0 top-0 z-[60]"
+            style={{
+              width: from.width,
+              height: from.height,
+              transform: `translate(${from.left}px, ${from.top}px) translate(${phase === 'animate' ? dx : 0}px, ${
+                phase === 'animate' ? dy : 0
+              }px) scale(${phase === 'animate' ? sx : 1}, ${phase === 'animate' ? sy : 1})`,
+              transformOrigin: 'top left',
+              transition: phase === 'animate' ? 'transform 820ms cubic-bezier(0.25,0.46,0.45,0.94)' : 'none',
+              willChange: 'transform',
+            }}
+          >
+            <FlowNode label={taskNodeTransition.label} variant="light" active />
+          </div>
+        ) : null}
+        <div className={taskNodeTransition ? 'opacity-0 pointer-events-none' : 'opacity-100'}>
+          <UrlStage
+            selectedDomain={selectedDomain}
+            selectedTask={selectedTask}
+            taskNodeContainerRef={urlStageTaskNodeRef}
+            urlValue={urlValue}
+            gbpValue={gbpValue}
+            onUrlChange={setUrlValue}
+            onGbpChange={setGbpValue}
+            urlTab={urlTab}
+            onTabChange={setUrlTab}
+            onSubmit={handleUrlSubmit}
+            onSkip={handleUrlSkip}
+            urlSubmitting={urlSubmitting}
+            earlyTools={earlyTools}
+            toolPage={toolPage}
+            onToolPageChange={setToolPage}
+            onBack={handleBackToStep1}
+          />
+        </div>
       </StageLayout>
     );
   }

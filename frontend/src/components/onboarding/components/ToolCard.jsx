@@ -7,7 +7,7 @@ export default function ToolCard({ name, rating, description, bullets = [], tag,
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex min-w-[260px] max-w-[320px] shrink-0 flex-col rounded-[14px] border border-[#b3b3b3] bg-[#161616] font-sans text-white no-underline shadow-[0_2px_8px_rgba(0,0,0,0.3)] transition-all duration-[250ms] hover:-translate-y-[3px] hover:border-white/[0.22] hover:shadow-[0_4px_16px_rgba(0,0,0,0.4)]"
+      className="flex min-w-[260px] max-w-[320px] shrink-0 flex-col rounded-[14px] border border-[#b3b3b3] bg-[#161616] font-sans text-white no-underline shadow-[0_2px_8px_rgba(0,0,0,0.3)] transition-all duration-[650ms] hover:-translate-y-[3px] hover:border-white/[0.22] hover:shadow-[0_4px_16px_rgba(0,0,0,0.4)]"
     >
       <div className="flex items-center justify-between rounded-t-[14px] border-b border-white/[0.06] bg-[#252525] px-4 py-3">
         <span className="text-[15px] font-bold tracking-tight text-white">{name}</span>

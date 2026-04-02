@@ -13,7 +13,7 @@ export default function FlowNode({ label, subtext, variant = 'dark', active = fa
   return (
     <div
       className={clsx(
-        'group inline-flex w-[220px] flex-col items-center justify-center rounded-[10px] border px-4 py-2.5 text-center leading-snug transition-all duration-[250ms] [white-space:normal] select-none',
+        'group inline-flex w-[220px] flex-col items-center justify-center rounded-[10px] border px-4 py-2.5 text-center leading-snug transition-all duration-[650ms] [white-space:normal] select-none',
         variant === 'light' && active && SELECTED_SURFACE,
         variant === 'light' &&
           !active &&
