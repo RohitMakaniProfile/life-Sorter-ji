@@ -12,17 +12,21 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, HTTPException, Header
 
 import structlog
 
-from app.services.otp_service import send_otp, verify_otp
-from app.services.user_session_service import update_session_auth
-from app.services.session_store import get_session
+from app.services.otp_service import (
+    delete_otp_from_redis,
+    load_otp_from_redis,
+    send_otp,
+    store_otp_in_redis,
+)
+from app.services.system_config_service import get_config_value, parse_bool
 from app.services.jwt_service import create_access_token, decode_and_verify_access_token
-from app.phase2.stores import promote_session_conversations
-from app.phase2.auth_google import verify_google_or_firebase_token
+from app.auth.identity import verify_google_or_firebase_token
 from app.db import get_pool
 from app.config import get_settings
 
@@ -30,18 +34,11 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# Use 400 (not 404) when the agent session_id is missing from memory so clients do not confuse
-# this with "route not found". Sessions are in-process only until replaced by Redis/DB.
-_AGENT_SESSION_GONE = (
-    "Agent session not found or expired (server restart, wrong id, or different backend "
-    "instance). Call POST /api/v1/agent/session first, then retry auth on the same server."
-)
-
-
 # ── Request / Response Models ─────────────────────────────────
 
 class SendOTPRequest(BaseModel):
-    session_id: str
+    session_id: str | None = None  # backward compatibility (legacy client field)
+    onboarding_session_id: str | None = None
     phone_number: str
 
     @field_validator("phone_number")
@@ -61,7 +58,8 @@ class SendOTPResponse(BaseModel):
 
 
 class VerifyOTPRequest(BaseModel):
-    session_id: str
+    session_id: str | None = None  # backward compatibility (legacy client field)
+    onboarding_session_id: str | None = None
     otp_session_id: str
     otp_code: str
     # Set when Google was Step 1 of two-step verification
@@ -125,90 +123,212 @@ def _parse_bearer_token(authorization: str | None) -> str:
 async def _user_exists(user_id: str, email: str | None) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM users WHERE id::text = $1 LIMIT 1", user_id):
+            return True
+        if email and await conn.fetchval("SELECT 1 FROM users WHERE email = $1 LIMIT 1", email):
+            return True
         if await conn.fetchval("SELECT 1 FROM conversations WHERE user_id = $1 LIMIT 1", user_id):
             return True
         if await conn.fetchval("SELECT 1 FROM session_user_links WHERE user_id = $1 LIMIT 1", user_id):
             return True
-        if email and await conn.fetchval("SELECT 1 FROM user_sessions WHERE google_email = $1 LIMIT 1", email):
+        if email and await conn.fetchval("SELECT 1 FROM users WHERE email = $1 LIMIT 1", email):
             return True
     return False
+
+
+async def _otp_runtime_flags() -> dict[str, object]:
+    settings = get_settings()
+    is_dev = bool(settings.is_development)
+
+    bypass_cfg = await get_config_value("auth.otp_bypass_enabled", "false")
+    send_sms_cfg = await get_config_value("auth.otp_send_sms_enabled", "true")
+    expiry_cfg = await get_config_value("auth.otp_expiry_seconds", "300")
+    bypass_code = await get_config_value("auth.otp_bypass_code", "000000")
+
+    # Always allow OTP bypass in development/local runtime.
+    # In non-dev environments, this is controlled via system_config.
+    otp_bypass_enabled = is_dev or parse_bool(bypass_cfg, default=False)
+    otp_send_sms_enabled = parse_bool(send_sms_cfg, default=True)
+
+    try:
+        otp_expiry_seconds = max(60, int(expiry_cfg))
+    except Exception:
+        otp_expiry_seconds = 300
+
+    return {
+        "otp_bypass_enabled": otp_bypass_enabled,
+        "otp_send_sms_enabled": otp_send_sms_enabled,
+        "otp_expiry_seconds": otp_expiry_seconds,
+        "otp_bypass_code": bypass_code or "000000",
+    }
+
+
+async def _upsert_user_from_otp(phone_number: str, onboarding_session_id: str | None) -> dict:
+    pool = get_pool()
+    phone = (phone_number or "").strip()
+    sid = (onboarding_session_id or "").strip() or None
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """
+            SELECT id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+            FROM users
+            WHERE phone_number = $1
+            LIMIT 1
+            """,
+            phone,
+        )
+        if existing:
+            provider_now = str(existing.get("auth_provider") or "otp")
+            next_provider = "both" if provider_now == "google" else "otp"
+            row = await conn.fetchrow(
+                """
+                UPDATE users
+                SET last_login_at = NOW(),
+                    auth_provider = $1,
+                    onboarding_session_id = COALESCE($2, onboarding_session_id),
+                    updated_at = NOW()
+                WHERE id = $3::uuid
+                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+                """,
+                next_provider,
+                sid,
+                str(existing.get("id") or ""),
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO users (phone_number, name, auth_provider, onboarding_session_id, last_login_at)
+                VALUES ($1, '', 'otp', $2, NOW())
+                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+                """,
+                phone,
+                sid,
+            )
+    return dict(row) if row else {}
+
+
+async def _upsert_user_from_google(email: str, name: str, onboarding_session_id: str | None) -> dict:
+    pool = get_pool()
+    em = (email or "").strip().lower()
+    sid = (onboarding_session_id or "").strip() or None
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """
+            SELECT id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+            FROM users
+            WHERE email = $1
+            LIMIT 1
+            """,
+            em,
+        )
+        if existing:
+            provider_now = str(existing.get("auth_provider") or "google")
+            next_provider = "both" if provider_now == "otp" else "google"
+            row = await conn.fetchrow(
+                """
+                UPDATE users
+                SET name = COALESCE($1, name),
+                    auth_provider = $2,
+                    onboarding_session_id = COALESCE($3, onboarding_session_id),
+                    last_login_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $4::uuid
+                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+                """,
+                name,
+                next_provider,
+                sid,
+                str(existing.get("id") or ""),
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO users (email, name, auth_provider, onboarding_session_id, last_login_at)
+                VALUES ($1, $2, 'google', $3, NOW())
+                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+                """,
+                em,
+                name,
+                sid,
+            )
+    return dict(row) if row else {}
 
 
 # ── Endpoints ─────────────────────────────────────────────────
 
 @router.post("/send-otp", response_model=SendOTPResponse)
 async def send_otp_endpoint(req: SendOTPRequest):
-    """Send an OTP to the user's phone number via 2Factor.in."""
+    """Independent OTP send: stores OTP in Redis, optionally sends SMS via 2Factor."""
+    flags = await _otp_runtime_flags()
+    otp_bypass_enabled = bool(flags["otp_bypass_enabled"])
+    otp_send_sms_enabled = bool(flags["otp_send_sms_enabled"])
+    otp_expiry_seconds = int(flags["otp_expiry_seconds"])
+    otp_bypass_code = str(flags["otp_bypass_code"])
 
-    # Ensure session exists
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
+    onboarding_session_id = (req.onboarding_session_id or req.session_id or "").strip() or None
+    otp_session_id = str(uuid.uuid4())
+    sms_result = {"success": True, "session_id": "", "error": ""}
 
-    result = await send_otp(req.phone_number)
+    if otp_bypass_enabled:
+        otp_code = otp_bypass_code
+    else:
+        otp_code = str(uuid.uuid4().int)[-6:]
 
-    if not result["success"]:
-        return SendOTPResponse(
-            success=False,
-            message=result["error"],
-        )
+    if otp_send_sms_enabled and not otp_bypass_enabled:
+        sms_result = await send_otp(req.phone_number)
+        if not sms_result.get("success"):
+            return SendOTPResponse(success=False, message=str(sms_result.get("error") or "Failed to send OTP"))
 
-    return SendOTPResponse(
-        success=True,
-        message="OTP sent successfully",
-        otp_session_id=result["session_id"],
+    await store_otp_in_redis(
+        otp_session_id=otp_session_id,
+        phone_number=req.phone_number,
+        otp_code=otp_code,
+        onboarding_session_id=onboarding_session_id,
+        expiry_seconds=otp_expiry_seconds,
+        provider_session_id=str(sms_result.get("session_id") or ""),
     )
+
+    return SendOTPResponse(success=True, message="OTP sent successfully", otp_session_id=otp_session_id)
 
 
 @router.post("/verify-otp", response_model=VerifyOTPResponse)
 async def verify_otp_endpoint(req: VerifyOTPRequest):
-    """Verify the OTP and update the session's auth status."""
+    """Verify OTP from Redis, upsert user row, and issue JWT."""
+    flags = await _otp_runtime_flags()
+    otp_bypass_enabled = bool(flags["otp_bypass_enabled"])
+    otp_bypass_code = str(flags["otp_bypass_code"])
 
-    # Ensure session exists
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
+    rec = await load_otp_from_redis(req.otp_session_id)
+    if not rec:
+        return VerifyOTPResponse(success=False, verified=False, message="OTP expired or invalid session")
 
-    result = await verify_otp(req.otp_session_id, req.otp_code)
+    expected_code = str(rec.get("otp_code") or "")
+    provided_code = str(req.otp_code or "").strip()
+    matched = provided_code == expected_code or (otp_bypass_enabled and provided_code == otp_bypass_code)
+    if not matched:
+        return VerifyOTPResponse(success=True, verified=False, message="Incorrect OTP — please try again")
 
-    if not result["success"]:
-        return VerifyOTPResponse(
-            success=False,
-            verified=False,
-            message=result["error"],
-        )
+    onboarding_session_id = (req.onboarding_session_id or req.session_id or rec.get("onboarding_session_id") or "").strip() or None
+    phone_number = str(rec.get("phone_number") or "").strip()
+    user_row = await _upsert_user_from_otp(phone_number=phone_number, onboarding_session_id=onboarding_session_id)
+    user_id = str(user_row.get("id") or "")
+    provider = str(user_row.get("auth_provider") or "otp")
+    email = user_row.get("email")
+    name = user_row.get("name") or "Verified User"
 
-    if not result["matched"]:
-        return VerifyOTPResponse(
-            success=True,
-            verified=False,
-            message="Incorrect OTP — please try again",
-        )
-
-    # OTP matched — determine if this is step 2 of Google+OTP two-step, or standalone OTP
-    is_two_step = bool(req.google_email)
-    provider = "both" if is_two_step else "otp"
-    email = req.google_email.strip().lower() if is_two_step else None
-    name = req.google_name or "Verified User"
-    user_id = email if is_two_step else f"otp:{req.session_id}"
-
-    await update_session_auth(
-        session_id=req.session_id,
-        otp_verified=True,
-        auth_provider=provider,
-    )
-    await promote_session_conversations(req.session_id, user_id)
     token = create_access_token(
         subject=user_id,
         claims={
             "provider": provider,
             "email": email,
             "name": name,
-            "session_id": req.session_id,
+            "phone_number": phone_number,
+            "onboarding_session_id": onboarding_session_id,
         },
     )
+    await delete_otp_from_redis(req.otp_session_id)
 
-    logger.info("OTP verified for session", session_id=req.session_id, provider=provider)
+    logger.info("OTP verified", user_id=user_id, has_onboarding_session=bool(onboarding_session_id))
 
     return VerifyOTPResponse(
         success=True,
@@ -220,7 +340,8 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             "provider": provider,
             "email": email,
             "name": name,
-            "session_id": req.session_id,
+            "phone_number": phone_number,
+            "onboarding_session_id": onboarding_session_id,
         },
     )
 
@@ -229,9 +350,7 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
 async def google_auth_endpoint(req: GoogleAuthRequest):
     """Save Google Sign-In data to the session."""
 
-    session = get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=400, detail=_AGENT_SESSION_GONE)
+    # Legacy endpoint retained for compatibility; independent auth uses /google/exchange.
 
     google_sub = (req.google_id or "").strip()
     if not google_sub:
@@ -241,23 +360,17 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
     if not email:
         raise HTTPException(status_code=400, detail="Missing email")
 
-    await update_session_auth(
-        session_id=req.session_id,
-        google_id=google_sub,
-        google_email=email,
-        google_name=req.name,
-        google_avatar_url=req.avatar_url,
-        auth_provider="google",
-    )
-    await promote_session_conversations(req.session_id, email)
+    row = await _upsert_user_from_google(email=email, name=req.name, onboarding_session_id=req.session_id)
+    user_id = str(row.get("id") or email)
     token = create_access_token(
-        subject=email,
+        subject=user_id,
         claims={
             "provider": "google",
             "email": email,
             "name": req.name,
             "avatar_url": req.avatar_url,
-            "session_id": req.session_id,
+            "google_sub": google_sub,
+            "onboarding_session_id": req.session_id,
         },
     )
 
@@ -268,12 +381,12 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
         message=f"Signed in as {req.name}",
         token=token,
         user={
-            "user_id": email,
+            "user_id": user_id,
             "provider": "google",
             "email": email,
             "name": req.name,
             "avatar_url": req.avatar_url,
-            "session_id": req.session_id,
+            "onboarding_session_id": req.session_id,
         },
     )
 
@@ -294,25 +407,19 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
     avatar_url = str(claims.get("picture") or claims.get("photo_url") or "").strip()
     google_sub = str(claims.get("sub") or claims.get("user_id") or "").strip()
 
-    if req.session_id:
-        await update_session_auth(
-            session_id=req.session_id,
-            google_id=google_sub,
-            google_email=email,
-            google_name=name,
-            google_avatar_url=avatar_url,
-            auth_provider="google",
-        )
-        await promote_session_conversations(req.session_id, email)
+    # Independent auth path: create/update users row with onboarding_session_id reference.
+    row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=req.session_id)
+    user_id = str(row.get("id") or email)
 
     token = create_access_token(
-        subject=email,
+        subject=user_id,
         claims={
             "provider": "google",
             "email": email,
             "name": name,
             "avatar_url": avatar_url,
-            "session_id": req.session_id,
+            "google_sub": google_sub,
+            "onboarding_session_id": req.session_id,
         },
     )
 
@@ -323,12 +430,12 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
         message=f"Signed in as {name or email}",
         token=token,
         user={
-            "user_id": email,
+            "user_id": user_id,
             "provider": "google",
             "email": email,
             "name": name,
             "avatar_url": avatar_url,
-            "session_id": req.session_id,
+            "onboarding_session_id": req.session_id,
         },
     )
 
@@ -366,6 +473,7 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
             "name": payload.get("name"),
             "avatar_url": payload.get("avatar_url"),
             "session_id": payload.get("session_id"),
+            "onboarding_session_id": payload.get("onboarding_session_id"),
             "expires_in_seconds": expires_in_seconds,
             "token_ttl_hours": get_settings().JWT_ACCESS_TOKEN_EXPIRES_HOURS,
         },

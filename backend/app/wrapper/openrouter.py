@@ -85,7 +85,7 @@ class OpenRouter:
         """
         Single LLM call. Returns {"message": str, "usage": {...}}.
 
-        Use this when you need usage stats for session_store.add_llm_call_log().
+        Use this when you need usage stats (e.g. logging LLM calls elsewhere).
 
         Example:
             result = await llm.complete_full(system=PROMPT, user=ctx)

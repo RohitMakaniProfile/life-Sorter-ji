@@ -137,7 +137,7 @@ COMMENT ON TABLE user_sessions IS
 CREATE TABLE IF NOT EXISTS onboarding (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    session_id      TEXT NOT NULL REFERENCES user_sessions (session_id) ON DELETE CASCADE,
+    session_id      TEXT NOT NULL,
     user_id         TEXT,
 
     outcome         TEXT,
@@ -147,11 +147,41 @@ CREATE TABLE IF NOT EXISTS onboarding (
     website_url     TEXT,
     gbp_url         TEXT,
 
+    -- Optional: unified Q&A log for replay/debug (separate from RCA transcript)
+    questions_answers   JSONB NOT NULL DEFAULT '[]'::jsonb,
+
     -- Evolving RCA question/answer history (Phase 1 diagnostic transcript)
     rca_qa          JSONB NOT NULL DEFAULT '[]'::jsonb,
 
     -- Phase 1 scale/business-profile answers (mirrors user_sessions.business_profile)
     scale_answers   JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    -- Gap questions (if playbook needs more context)
+    gap_questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    gap_answers     TEXT NOT NULL DEFAULT '',
+
+    -- RCA completion artifacts (used by playbook prompts)
+    rca_summary     TEXT NOT NULL DEFAULT '',
+    rca_handoff     TEXT NOT NULL DEFAULT '',
+
+    -- Precision phase (post-RCA refinement before playbook)
+    precision_questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    precision_answers     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    precision_status      TEXT NOT NULL DEFAULT 'not_started',
+    precision_completed_at TIMESTAMPTZ,
+
+    -- Playbook state (DB-backed, avoids session_store)
+    playbook_status     TEXT NOT NULL DEFAULT 'not_started',
+    playbook_started_at TIMESTAMPTZ,
+    playbook_completed_at TIMESTAMPTZ,
+    playbook_error      TEXT NOT NULL DEFAULT '',
+
+    -- Pointers to persisted subsystems
+    crawl_run_id     UUID,
+    crawl_cache_key  TEXT,
+    playbook_run_id  UUID,
+
+    onboarding_completed_at TIMESTAMPTZ,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -172,6 +202,96 @@ CREATE TRIGGER trg_onboarding_updated_at
 
 COMMENT ON TABLE onboarding IS
     'Onboarding flow selections and URLs per session; user_id nullable until identity is linked.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- crawl_cache / crawl_runs
+-- Crawl persistence for reuse across sessions (cache) + per-request audit (runs).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS crawl_cache (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    normalized_url  TEXT NOT NULL,
+    crawler_version TEXT NOT NULL DEFAULT 'v1',
+    crawl_raw       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    crawl_summary   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crawl_cache_url_version
+    ON crawl_cache (normalized_url, crawler_version);
+
+DROP TRIGGER IF EXISTS trg_crawl_cache_updated_at ON crawl_cache;
+CREATE TRIGGER trg_crawl_cache_updated_at
+    BEFORE UPDATE ON crawl_cache
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE IF NOT EXISTS crawl_runs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id      TEXT NOT NULL,
+    user_id         UUID,
+    input_url       TEXT NOT NULL,
+    normalized_url  TEXT NOT NULL,
+    url_type        TEXT NOT NULL DEFAULT 'website',
+    status          TEXT NOT NULL DEFAULT 'running',
+    cache_hit       BOOLEAN NOT NULL DEFAULT FALSE,
+    crawl_cache_id  UUID REFERENCES crawl_cache(id) ON DELETE SET NULL,
+    error           TEXT NOT NULL DEFAULT '',
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_session_id
+    ON crawl_runs (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_user_id
+    ON crawl_runs (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_normalized_url
+    ON crawl_runs (normalized_url);
+
+DROP TRIGGER IF EXISTS trg_crawl_runs_updated_at ON crawl_runs;
+CREATE TRIGGER trg_crawl_runs_updated_at
+    BEFORE UPDATE ON crawl_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- playbook_runs
+-- Persist playbook generation outputs independent of session_store.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS playbook_runs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id      TEXT NOT NULL,
+    user_id         UUID,
+    status          TEXT NOT NULL DEFAULT 'running',
+    error           TEXT NOT NULL DEFAULT '',
+    onboarding_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    crawl_snapshot      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    context_brief   TEXT NOT NULL DEFAULT '',
+    icp_card        TEXT NOT NULL DEFAULT '',
+    playbook        TEXT NOT NULL DEFAULT '',
+    website_audit   TEXT NOT NULL DEFAULT '',
+    latencies       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_session_id
+    ON playbook_runs (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_user_id
+    ON playbook_runs (user_id);
+
+DROP TRIGGER IF EXISTS trg_playbook_runs_updated_at ON playbook_runs;
+CREATE TRIGGER trg_playbook_runs_updated_at
+    BEFORE UPDATE ON playbook_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- payments
@@ -613,6 +733,68 @@ CREATE INDEX IF NOT EXISTS idx_session_user_links_session
 
 CREATE INDEX IF NOT EXISTS idx_session_user_links_user
     ON session_user_links (user_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- users / system_config / otp_provider_logs (independent auth runtime)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS users (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    phone_number          TEXT UNIQUE,
+    email                 TEXT UNIQUE,
+    name                  TEXT NOT NULL DEFAULT '',
+    auth_provider         TEXT NOT NULL DEFAULT 'otp',
+    onboarding_session_id TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_onboarding_session_id
+    ON users (onboarding_session_id);
+
+DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
+CREATE TRIGGER trg_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE IF NOT EXISTS system_config (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_system_config_updated_at ON system_config;
+CREATE TRIGGER trg_system_config_updated_at
+    BEFORE UPDATE ON system_config
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+INSERT INTO system_config (key, value, description)
+VALUES
+    ('auth.otp_expiry_seconds', '300', 'OTP expiry in seconds'),
+    ('auth.otp_bypass_code', '000000', 'Fixed OTP code used when bypass mode is enabled'),
+    ('auth.otp_bypass_enabled', 'false', 'Enable OTP bypass for local/dev testing'),
+    ('auth.otp_send_sms_enabled', 'true', 'If false, OTP is generated and stored but SMS send is skipped')
+ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS otp_provider_logs (
+    id                   BIGSERIAL PRIMARY KEY,
+    action               TEXT NOT NULL,
+    provider             TEXT NOT NULL DEFAULT '2factor',
+    phone_masked         TEXT NOT NULL DEFAULT '',
+    request_url          TEXT NOT NULL DEFAULT '',
+    response_payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    provider_session_id  TEXT NOT NULL DEFAULT '',
+    success              BOOLEAN NOT NULL DEFAULT FALSE,
+    error                TEXT NOT NULL DEFAULT '',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_otp_provider_logs_created_at
+    ON otp_provider_logs (created_at DESC);
 
 
 

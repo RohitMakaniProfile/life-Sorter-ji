@@ -9,18 +9,6 @@ export type TaskStreamEvent = {
   [key: string]: unknown;
 };
 
-export type TaskStreamMeta = {
-  stream_id: string;
-  status?: string;
-  task_type?: string;
-  session_id?: string;
-  user_id?: string;
-  created_at?: string;
-  last_cursor?: string;
-  last_seq?: string;
-  [key: string]: unknown;
-};
-
 type TaskStreamCallbacks = {
   onEvent?: (event: TaskStreamEvent) => void;
   onDone?: (event: TaskStreamEvent) => void;
@@ -131,23 +119,10 @@ export async function startTaskStreamAndListen(
     return;
   }
 
-  // 2) Fallback: try resuming by actor (covers refresh cases where localStorage was cleared).
-  try {
-    const params = new URLSearchParams();
-    if (sessionId) params.set('session_id', sessionId);
-    if (userId) params.set('user_id', userId);
-    const resumeUrl =
-      params.toString().length > 0
-        ? `${API_ROUTES.taskStream.eventsByActor(taskType)}?${params.toString()}`
-        : API_ROUTES.taskStream.eventsByActor(taskType);
-    await listenTaskStreamUrl(resumeUrl, opts.callbacks, streamIdStorageKey(taskType, sessionId, userId));
-    return;
-  } catch (err: any) {
-    const msg = String(err?.message || '');
-    if (!msg.includes('Task stream request failed: 404')) throw err;
-  }
-
-  // 3) Otherwise start the background task (or get existing stream_id) from the backend.
+  // 2) Start the background task (or get existing stream_id) from the backend.
+  // We intentionally skip an explicit actor-resume probe here because:
+  // - fresh actors naturally return 404 (noise in logs/devtools)
+  // - start endpoint already supports resume_if_exists and reuses active streams
   const startRes = await apiRequest(API_ROUTES.taskStream.start(taskType), {
     method: 'POST',
     body: JSON.stringify({
@@ -173,15 +148,6 @@ export async function startTaskStreamAndListen(
 
 export function getStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): string | null {
   return safeLocalStorageGet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null));
-}
-
-export async function getTaskStreamStatus(streamId: string): Promise<TaskStreamMeta> {
-  const res = await apiRequest(API_ROUTES.taskStream.statusByStreamId(streamId), { method: 'GET' });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Task stream status failed: ${res.status}${text ? ` — ${text}` : ''}`);
-  }
-  return (await res.json()) as TaskStreamMeta;
 }
 
 function sleep(ms: number): Promise<void> {

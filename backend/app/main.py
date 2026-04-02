@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, JSONResponse
 
 from app.config import get_settings
+from app.middleware.auth_context import attach_request_auth_context
 from app.middleware.rate_limit import setup_rate_limiter
 
 from app.db import connect_db as p2_connect_db
@@ -120,6 +121,11 @@ def create_app() -> FastAPI:
 
     setup_rate_limiter(app)
 
+    @app.middleware("http")
+    async def auth_context_middleware(request: Request, call_next):
+        await attach_request_auth_context(request)
+        return await call_next(request)
+
     # ── Global exception handler for debugging ─────────────────
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
@@ -140,11 +146,8 @@ def create_app() -> FastAPI:
         auth,
         ai_chat,
         chat,
-        companies,
         payments,
         legacy,
-        agent,
-        playbook,
         onboarding,
     )
 
@@ -157,10 +160,7 @@ def create_app() -> FastAPI:
     app.include_router(onboarding.router, prefix="/api/v1", tags=["Onboarding"])
     app.include_router(ai_chat.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
-    app.include_router(companies.router, prefix="/api/v1", tags=["Companies"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
-    app.include_router(agent.router, prefix="/api/v1")
-    app.include_router(playbook.router, tags=["Playbook"])
 
     # ── Task stream (Redis-backed re-attach after refresh) ───────────────
     from app.task_stream.router import create_task_stream_router

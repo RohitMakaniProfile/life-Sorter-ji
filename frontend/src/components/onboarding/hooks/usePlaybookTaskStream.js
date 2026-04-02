@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { runResumableTaskStream, getStoredTaskStreamId, getTaskStreamStatus } from '../../../api/services/taskStream';
+import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/services/taskStream';
+import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError } from '../../../api/services/taskStreamMonitor';
+import { getUserIdFromJwt } from '../../../api/authSession';
 
-const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/generate';
+const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 const STORAGE_PLAYBOOK_STEP_REACHED = 'life-sorter-playbook-step-reached';
 
 function safeGetItem(key) {
@@ -88,11 +90,14 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
 
       const myRunId = ++runIdRef.current;
       let finished = false;
+      const actorUserId = getUserIdFromJwt();
 
       const callbacks = {
         onEvent: (e) => {
           if (runIdRef.current !== myRunId) return;
           if (!e || typeof e !== 'object') return;
+          if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), sessionId: sessionId });
+          monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sessionId, event: e });
           if (e.type === 'token' && e.token) {
             setPlaybookText((t) => t + String(e.token));
           }
@@ -108,6 +113,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
             context_brief: e.context_brief || '',
             icp_card: e.icp_card || '',
           });
+          monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sessionId, event: e });
         },
         onError: (e) => {
           if (runIdRef.current !== myRunId) return;
@@ -117,12 +123,14 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
           setPlaybookResult(null);
           setNeedsManualRetry(true);
           setError?.(e?.message || 'Playbook generation failed');
+          monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, sessionId: sessionId, event: e });
         },
       };
 
       await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
-        sessionId: sessionId,
-        payload: { session_id: sessionId },
+        userId: actorUserId || null,
+        sessionId: actorUserId ? null : sessionId,
+        payload: actorUserId ? { user_id: actorUserId } : { session_id: sessionId },
         maxRetries: 4,
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks,
@@ -149,74 +157,70 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         if (!hasPlaybookStepReached()) return;
         const sid = await ensureSession();
         if (cancelled || !sid) return;
+        const actorUserId = getUserIdFromJwt();
 
         autoResumeTriggeredRef.current = true;
-        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { sessionId: sid, userId: null });
+        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { sessionId: null, userId: actorUserId });
         if (!storedStreamId) return;
 
-        // Verify stream exists / is active on backend before showing playbook UI.
-        try {
-          const meta = await getTaskStreamStatus(storedStreamId);
-          const st = String(meta?.status || '');
-          if (!st) return;
-          // Only now show UI and attach.
-          onShowPlaybook?.();
+        // Auto-attach without status polling. If stale/expired, the attach will error and we'll ignore it.
+        onShowPlaybook?.();
 
-          setPlaybookStreaming(true);
-          setPlaybookText('');
+        setPlaybookStreaming(true);
+        setPlaybookText('');
+        setPlaybookDone(false);
+        setPlaybookResult(null);
+        setNeedsManualRetry(false);
+
+        const myRunId = ++runIdRef.current;
+        let finished = false;
+
+        await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
+          userId: actorUserId || null,
+          sessionId: actorUserId ? null : sid,
+          payload: actorUserId ? { user_id: actorUserId } : { session_id: sid },
+          maxRetries: 4,
+          shouldStop: () => runIdRef.current !== myRunId,
+          callbacks: {
+            onEvent: (e) => {
+              if (runIdRef.current !== myRunId) return;
+              if (!e || typeof e !== 'object') return;
+              if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), sessionId: sid });
+              monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sid, event: e });
+              if (e.type === 'token' && e.token) setPlaybookText((t) => t + String(e.token));
+            },
+            onDone: (e) => {
+              if (runIdRef.current !== myRunId) return;
+              finished = true;
+              setPlaybookStreaming(false);
+              setPlaybookDone(true);
+              setPlaybookResult({
+                playbook: e.playbook || '',
+                website_audit: e.website_audit || '',
+                context_brief: e.context_brief || '',
+                icp_card: e.icp_card || '',
+              });
+              monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sid, event: e });
+            },
+            onError: (e) => {
+              if (runIdRef.current !== myRunId) return;
+              finished = true;
+              setPlaybookStreaming(false);
+              setPlaybookDone(false);
+              setPlaybookResult(null);
+              setNeedsManualRetry(true);
+              setError?.(e?.message || 'Playbook generation failed');
+              monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, sessionId: sid, event: e });
+            },
+          },
+        });
+
+        if (!finished && runIdRef.current === myRunId) {
+          setPlaybookStreaming(false);
           setPlaybookDone(false);
           setPlaybookResult(null);
-          setNeedsManualRetry(false);
-
-          const myRunId = ++runIdRef.current;
-          let finished = false;
-
-          await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
-            sessionId: sid,
-            payload: { session_id: sid },
-            maxRetries: 4,
-            shouldStop: () => runIdRef.current !== myRunId,
-            callbacks: {
-              onEvent: (e) => {
-                if (runIdRef.current !== myRunId) return;
-                if (!e || typeof e !== 'object') return;
-                if (e.type === 'token' && e.token) setPlaybookText((t) => t + String(e.token));
-              },
-              onDone: (e) => {
-                if (runIdRef.current !== myRunId) return;
-                finished = true;
-                setPlaybookStreaming(false);
-                setPlaybookDone(true);
-                setPlaybookResult({
-                  playbook: e.playbook || '',
-                  website_audit: e.website_audit || '',
-                  context_brief: e.context_brief || '',
-                  icp_card: e.icp_card || '',
-                });
-              },
-              onError: (e) => {
-                if (runIdRef.current !== myRunId) return;
-                finished = true;
-                setPlaybookStreaming(false);
-                setPlaybookDone(false);
-                setPlaybookResult(null);
-                setNeedsManualRetry(true);
-                setError?.(e?.message || 'Playbook generation failed');
-              },
-            },
-          });
-
-          if (!finished && runIdRef.current === myRunId) {
-            setPlaybookStreaming(false);
-            setPlaybookDone(false);
-            setPlaybookResult(null);
-            setNeedsManualRetry(true);
-            setError?.('Playbook stream disconnected. Please retry.');
-          }
-        } catch {
-          // Stored stream id is stale/expired on backend. Don't auto-open playbook;
-          // require manual retry once user reaches playbook step again.
           setNeedsManualRetry(true);
+          setError?.('Playbook stream disconnected. Please retry.');
         }
       } catch {
         // Ignore auto-resume failures.

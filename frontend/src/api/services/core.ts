@@ -1,6 +1,6 @@
 import { API_ROUTES } from '../routes';
-import { apiGet, apiPost, apiRequest } from '../http';
-import { getPhase2ActorFields } from '../phase2Session';
+import { apiPost, apiRequest } from '../http';
+import { getAuthActorFields } from '../authSession';
 import { getApiBaseRequired } from '../../config/apiBase';
 import type {
   AgentId,
@@ -17,70 +17,18 @@ import type {
   UiAgent,
 } from '../types';
 
+/** Onboarding helpers + raw `request` for non-JSON flows (e.g. CSV fetch). */
 export const coreApi = {
-  authMe: () => apiGet<{ authenticated: boolean; user: Record<string, unknown> }>(API_ROUTES.auth.me),
-  googleAuth: (payload: { session_id: string; google_id: string; email: string; name: string; avatar_url?: string }) =>
-    apiPost<{ success: boolean; token?: string; user?: Record<string, unknown> }>(API_ROUTES.auth.google, payload),
-  sendOtp: (payload: { session_id: string; phone_number: string }) =>
-    apiPost<{ success: boolean; otp_session_id?: string; message?: string }>(API_ROUTES.auth.sendOtp, payload),
-  verifyOtp: (payload: { session_id: string; otp_session_id: string; otp_code: string; google_email?: string; google_name?: string }) =>
-    apiPost<{ success: boolean; verified: boolean; token?: string; user?: Record<string, unknown>; message?: string }>(
-      API_ROUTES.auth.verifyOtp,
-      payload,
-    ),
-
-  createAgentSession: () => apiPost<{ session_id: string }>(API_ROUTES.agent.session, {}),
-  getAgentSession: (sessionId: string) => apiGet<any>(API_ROUTES.agent.sessionById(sessionId, 'summary')),
-  getAgentSessionView: (sessionId: string, view: 'summary' | 'status' | 'context_pool' | 'website_snapshot') =>
-    apiGet<any>(API_ROUTES.agent.sessionById(sessionId, view)),
-  patchAgentSession: (sessionId: string, payload: Record<string, unknown>) =>
-    apiFetch(API_ROUTES.agent.patchSession(sessionId), {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }).then(async (res) => {
-      if (!res.ok) throw new Error(await extractApiError(res));
-      return (await res.json()) as any;
-    }),
-  advanceAgentSession: (
-    sessionId: string,
-    payload: { action?: string; task?: string; question_index?: number; answer?: string },
-  ) =>
-    apiPost<any>(API_ROUTES.agent.advanceSession(sessionId), payload),
-
-  playbookStart: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.start, payload),
-  playbookGenerate: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.generate, payload),
-  playbookGapAnswers: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.playbook.gapAnswers, payload),
-  playbookGenerateStream: (
-    payload: Record<string, unknown>,
-    callbacks: {
-      onToken?: (token: string) => void;
-      onStage?: (stage: string, label: string) => void;
-      onDone?: (result: { playbook: string; website_audit: string; context_brief: string; icp_card: string }) => void;
-      onError?: (message: string) => void;
-    },
-  ) => playbookGenerateStream(payload, callbacks),
-
-  createPaymentOrder: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.payments.createOrder, payload),
-  getPaymentStatus: (orderId: string) => apiGet<any>(API_ROUTES.payments.status(orderId)),
-
-  saveIdea: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.saveIdea, payload),
-  searchCompanies: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.searchCompanies, payload),
-  chat: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.chat, payload),
-
-  marketIntelligence: (payload: Record<string, unknown>) => apiPost<any>(API_ROUTES.legacy.marketIntelligence, payload),
-
-  // Raw passthrough for non-JSON/non-standard calls.
+  onboardingPlaybookLaunch: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookLaunch, payload),
+  onboardingPlaybookGapAnswers: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookGapAnswers, payload),
+  onboardingPrecisionStart: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionStart, payload),
+  onboardingPrecisionAnswer: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionAnswer, payload),
   request: apiRequest,
 };
-
-export const PIPELINE_STAGES: PipelineStage[] = [
-  'thinking',
-  'scraping',
-  'scripting',
-  'generating',
-  'merging',
-  'done',
-];
 
 export const STAGE_LABELS: Record<string, string> = {
   thinking: 'Thinking',
@@ -96,13 +44,13 @@ function getApiBase(): string {
   return getApiBaseRequired();
 }
 
-function withPhase2Actor<T extends Record<string, unknown>>(payload: T): T {
-  const actor = getPhase2ActorFields();
+function withAuthActor<T extends Record<string, unknown>>(payload: T): T {
+  const actor = getAuthActorFields();
   if (!actor.userId && !actor.sessionId) return payload;
   return { ...payload, ...actor };
 }
 
-export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   return apiRequest(`${getApiBase()}${path}`, { ...options, credentials: 'include' });
 }
 
@@ -142,6 +90,27 @@ export async function getSkillCalls(messageId: string): Promise<{ skillCalls: Sk
 
 export async function getTokenUsage(messageId: string): Promise<TokenUsage> {
   return apiJson<TokenUsage>(`${API_ROUTES.aiChat.tokenUsage}?messageId=${encodeURIComponent(messageId)}`);
+}
+
+export type InsightFeedbackRating = 1 | -1;
+export interface InsightFeedbackEntry {
+  insightIndex: number;
+  rating: InsightFeedbackRating;
+  updatedAt?: string;
+}
+
+export async function getInsightFeedback(messageId: string): Promise<{ feedback: InsightFeedbackEntry[] }> {
+  return apiJson<{ feedback: InsightFeedbackEntry[] }>(
+    `${API_ROUTES.aiChat.insightFeedback}?messageId=${encodeURIComponent(messageId)}`,
+  );
+}
+
+export async function setInsightFeedback(opts: {
+  messageId: string;
+  insightIndex: number;
+  rating: InsightFeedbackRating;
+}): Promise<{ feedback: InsightFeedbackEntry }> {
+  return apiJsonPost<{ feedback: InsightFeedbackEntry }>(API_ROUTES.aiChat.insightFeedback, opts);
 }
 
 async function readSseStream(response: Response, callbacks: StreamCallbacks): Promise<StreamResult> {
@@ -229,7 +198,7 @@ export async function sendMessageStream(opts: SendMessageStreamOptions): Promise
     method: 'POST',
     credentials: 'include',
     body: JSON.stringify(
-      withPhase2Actor({
+      withAuthActor({
         message,
         conversationId,
         agentId,
@@ -283,7 +252,7 @@ export async function sendMessage(opts: {
     agentId?: AgentId;
   }>(
     API_ROUTES.aiChat.message,
-    withPhase2Actor({
+    withAuthActor({
       message: opts.message,
       conversationId: opts.conversationId,
       agentId: opts.agentId,
@@ -315,7 +284,7 @@ export async function sendMessageBackground(opts: {
     agentId?: AgentId;
   }>(
     API_ROUTES.aiChat.messageBackground,
-    withPhase2Actor({
+    withAuthActor({
       message: opts.message,
       conversationId: opts.conversationId,
       agentId: opts.agentId,
@@ -333,7 +302,7 @@ export async function getMessages(conversationId?: string): Promise<{
 }> {
   const params = new URLSearchParams();
   if (conversationId) params.set('conversationId', conversationId);
-  const actor = getPhase2ActorFields();
+  const actor = getAuthActorFields();
   if (actor.userId) params.set('userId', actor.userId);
   if (actor.sessionId) params.set('sessionId', actor.sessionId);
   const q = params.toString() ? `?${params}` : '';
@@ -348,7 +317,7 @@ export async function getMessages(conversationId?: string): Promise<{
 
 export async function getConversations(): Promise<{ conversations: ConversationSummary[] }> {
   const params = new URLSearchParams();
-  const actor = getPhase2ActorFields();
+  const actor = getAuthActorFields();
   if (actor.userId) params.set('userId', actor.userId);
   if (actor.sessionId) params.set('sessionId', actor.sessionId);
   const q = params.toString() ? `?${params}` : '';
@@ -386,59 +355,5 @@ export async function deleteAgent(id: AgentId): Promise<void> {
 export async function deleteConversation(id: string): Promise<void> {
   const response = await apiFetch(API_ROUTES.aiChat.conversationById(id), { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractApiError(response));
-}
-
-export async function playbookGenerateStream(
-  payload: Record<string, unknown>,
-  callbacks: {
-    onToken?: (token: string) => void;
-    onStage?: (stage: string, label: string) => void;
-    onDone?: (result: { playbook: string; website_audit: string; context_brief: string; icp_card: string }) => void;
-    onError?: (message: string) => void;
-  },
-): Promise<void> {
-  const response = await apiRequest(`${getApiBase()}${API_ROUTES.playbook.generateStream}`, {
-    method: 'POST',
-    credentials: 'include',
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) throw new Error(await extractApiError(response));
-  if (!response.body) throw new Error('No response body');
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6)) as {
-          type: string;
-          token?: string;
-          stage?: string;
-          label?: string;
-          playbook?: string;
-          website_audit?: string;
-          context_brief?: string;
-          icp_card?: string;
-          message?: string;
-        };
-        if (data.type === 'token' && data.token) callbacks.onToken?.(data.token);
-        if (data.type === 'stage') callbacks.onStage?.(data.stage ?? '', data.label ?? data.stage ?? '');
-        if (data.type === 'done') callbacks.onDone?.({ playbook: data.playbook ?? '', website_audit: data.website_audit ?? '', context_brief: data.context_brief ?? '', icp_card: data.icp_card ?? '' });
-        if (data.type === 'error') callbacks.onError?.(data.message ?? 'Unknown error');
-      } catch {
-        // skip malformed lines
-      }
-    }
-  }
 }
 

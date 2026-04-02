@@ -36,6 +36,7 @@ from .stores import (
     get_or_create_conversation,
     get_plan_run,
     get_skill_calls_by_message_id,
+    get_skill_calls_by_message_id_full,
     get_stage_outputs,
     get_token_usage,
     list_agents,
@@ -89,6 +90,51 @@ def _extract_url_from_message(msg: str) -> str:
     if not m:
         return ""
     return m.group(0).rstrip("),.;]\"'")
+
+
+def _is_execution_intent(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    if _extract_url_from_message(text):
+        return True
+
+    execution_hints = (
+        "analyze",
+        "audit",
+        "report",
+        "strategy",
+        "research",
+        "competitor",
+        "market",
+        "crawl",
+        "scrape",
+        "playbook",
+        "roadmap",
+        "go to market",
+        "gtm",
+        "positioning",
+        "icp",
+        "persona",
+        "pricing",
+        "website",
+        "business",
+    )
+    conversational_hints = (
+        "what is",
+        "who is",
+        "explain",
+        "define",
+        "difference between",
+        "how are you",
+        "hello",
+        "hi",
+        "thanks",
+        "thank you",
+    )
+    if any(h in text for h in conversational_hints) and not any(h in text for h in execution_hints):
+        return False
+    return any(h in text for h in execution_hints)
 
 
 def _skill_display_name(skill_id: str) -> str:
@@ -996,7 +1042,27 @@ async def p2_chat_message(req: Request) -> dict[str, Any]:
             "outputFile": None,
         }
 
-    # Agent selected => plan-first flow, execution happens only after approval.
+    # Agent selected, but prompt is regular conversation => use normal LLM chat.
+    if not _is_execution_intent(message):
+        out = await unified_chat_service.run_standard_chat(
+            message=message,
+            persona=str(body.get("persona") or "default"),
+            context=body.get("context") if isinstance(body.get("context"), dict) else None,
+            conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
+            conversation_id=str(body.get("conversationId") or "").strip() or None,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        return {
+            "message": out["message"],
+            "conversationId": out["conversationId"],
+            "mode": "standard",
+            "usage": out.get("usage"),
+            "stageOutputs": {},
+            "outputFile": None,
+        }
+
+    # Agent selected + execution intent => plan-first flow, execution happens only after approval.
     draft = await _create_plan_draft(body=body)
     return {
         "mode": "agentic-plan",
@@ -1171,6 +1237,36 @@ async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="message is required")
     if not str(body.get("agentId") or "").strip():
         raise HTTPException(status_code=400, detail="agentId is required for plan mode")
+
+    if not _is_execution_intent(message):
+        session_id, user_id = _actor_from_payload(body)
+
+        async def standard_generator():
+            try:
+                out = await unified_chat_service.run_standard_chat(
+                    message=message,
+                    persona=str(body.get("persona") or "default"),
+                    context=body.get("context") if isinstance(body.get("context"), dict) else None,
+                    conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
+                    conversation_id=str(body.get("conversationId") or "").strip() or None,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+                yield _sse({"token": out["message"]})
+                yield _sse(
+                    {
+                        "done": True,
+                        "mode": "standard",
+                        "conversationId": out["conversationId"],
+                        "usage": out.get("usage"),
+                        "stageOutputs": {},
+                        "outputFile": None,
+                    }
+                )
+            except Exception as exc:
+                yield _sse({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
+
+        return StreamingResponse(standard_generator(), media_type="text/event-stream")
 
     async def generator():
         queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -1403,6 +1499,32 @@ async def execute_plan_approval_work(
         stage_outputs: dict[str, str] = {}
         step_results: dict[str, Any] = {}
     
+        previous_execution_message_id = str(plan.get("executionMessageId") or "").strip()
+        reusable_by_skill: dict[str, dict[str, Any]] = {}
+        if previous_execution_message_id and previous_execution_message_id != assistant_message_id:
+            try:
+                previous_calls = await get_skill_calls_by_message_id_full(previous_execution_message_id)
+                for call in previous_calls:
+                    if str(call.get("state") or "") != "done":
+                        continue
+                    sid_prev = str(call.get("skillId") or "").strip()
+                    if not sid_prev:
+                        continue
+                    output_rows = call.get("output") if isinstance(call.get("output"), list) else []
+                    last_result = None
+                    for row in reversed(output_rows):
+                        if isinstance(row, dict) and str(row.get("type") or "") == "result":
+                            last_result = row
+                            break
+                    if not isinstance(last_result, dict):
+                        continue
+                    reusable_by_skill[sid_prev] = {
+                        "text": str(last_result.get("text") or ""),
+                        "data": last_result.get("data"),
+                    }
+            except Exception:
+                reusable_by_skill = {}
+
         for idx, step in enumerate(steps):
             if not isinstance(step, dict):
                 continue
@@ -1415,6 +1537,54 @@ async def execute_plan_approval_work(
                 continue
     
             step_args: dict[str, Any] = dict(step.get("args") or {})
+
+            # Retry optimization: reuse successful outputs from previous interrupted/failed attempt.
+            reused = reusable_by_skill.get(sid)
+            if reused is not None:
+                step_results[step_id] = {"text": reused.get("text"), "data": reused.get("data")}
+                if isinstance(reused.get("text"), str) and reused.get("text"):
+                    stage_outputs[sid] = str(reused.get("text"))
+                if checklist_items:
+                    changed_items = _mark_checklist_from_skill(checklist_items, sid, str(reused.get("text") or ""))
+                    if changed_items:
+                        plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
+                        await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
+                        if plan.get("planMessageId"):
+                            await update_message_content(
+                                conv["id"],
+                                str(plan.get("planMessageId")),
+                                plan_markdown_live,
+                            )
+                        await emit_progress(
+                            {
+                                "stage": "thinking",
+                                "type": "task",
+                                "message": f"Checklist updated from reused {sid}",
+                                "meta": {
+                                    "kind": "checklist-update",
+                                    "planId": plan_id,
+                                    "planMarkdown": plan_markdown_live,
+                                    "checkedItems": changed_items,
+                                },
+                            }
+                        )
+                await emit_progress(
+                    {
+                        "stage": "thinking",
+                        "type": "task",
+                        "message": f"Reusing previous successful output for {skill_name}",
+                        "meta": {
+                            "kind": "skill-call",
+                            "id": f"reused-{sid}-{idx}",
+                            "skillId": sid,
+                            "skillName": skill_name,
+                            "status": "done",
+                            "input": {"args": step_args, "reused": True},
+                            "outputSummary": str(reused.get("text") or "")[:600],
+                        },
+                    }
+                )
+                continue
             if sid == "web-search":
                 scout = (step_results.get("scout") or {}).get("data") or {}
                 result_block = scout.get("result") or scout

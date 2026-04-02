@@ -11,14 +11,105 @@ Endpoints used:
 
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import datetime, timezone
+
 import httpx
 import structlog
 
 from app.config import get_settings
+from app.db import get_pool
+from app.task_stream.redis_client import get_redis
 
 logger = structlog.get_logger()
 
 TWO_FACTOR_BASE = "https://2factor.in/API/V1"
+OTP_REDIS_PREFIX = "ikshan:otp:v2"
+
+
+def _mask_phone(phone: str) -> str:
+    p = (phone or "").strip()
+    if len(p) <= 4:
+        return p
+    return f"{'*' * max(0, len(p) - 4)}{p[-4:]}"
+
+
+def _normalize_phone(phone_number: str) -> str:
+    phone = phone_number.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("+"):
+        phone = phone[1:]
+    return phone
+
+
+async def log_provider_call(
+    *,
+    action: str,
+    phone_number: str,
+    request_url: str,
+    response_payload: dict,
+    provider_session_id: str = "",
+    success: bool = False,
+    error: str = "",
+) -> None:
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO otp_provider_logs (
+                    action, provider, phone_masked, request_url,
+                    response_payload, provider_session_id, success, error
+                )
+                VALUES ($1, '2factor', $2, $3, $4::jsonb, $5, $6, $7)
+                """,
+                action,
+                _mask_phone(phone_number),
+                request_url,
+                json.dumps(response_payload or {}),
+                provider_session_id or "",
+                bool(success),
+                error or "",
+            )
+    except Exception as exc:
+        logger.warning("otp provider log insert failed", error=str(exc))
+
+
+async def store_otp_in_redis(
+    *,
+    otp_session_id: str,
+    phone_number: str,
+    otp_code: str,
+    onboarding_session_id: str | None,
+    expiry_seconds: int,
+    provider_session_id: str = "",
+) -> None:
+    redis = await get_redis()
+    payload = {
+        "phone_number": phone_number,
+        "otp_code": otp_code,
+        "onboarding_session_id": onboarding_session_id or "",
+        "provider_session_id": provider_session_id or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await redis.set(f"{OTP_REDIS_PREFIX}:{otp_session_id}", json.dumps(payload), ex=max(60, int(expiry_seconds)))
+
+
+async def load_otp_from_redis(otp_session_id: str) -> dict | None:
+    redis = await get_redis()
+    raw = await redis.get(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+async def delete_otp_from_redis(otp_session_id: str) -> None:
+    redis = await get_redis()
+    await redis.delete(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
 
 
 async def send_otp(phone_number: str) -> dict:
@@ -39,10 +130,7 @@ async def send_otp(phone_number: str) -> dict:
         logger.error("2Factor API key not configured")
         return {"success": False, "error": "OTP service not configured"}
 
-    # Normalize: strip spaces/dashes, ensure no leading +
-    phone = phone_number.strip().replace(" ", "").replace("-", "")
-    if phone.startswith("+"):
-        phone = phone[1:]
+    phone = _normalize_phone(phone_number)
 
     url = f"{TWO_FACTOR_BASE}/{api_key}/SMS/{phone}/AUTOGEN/aiplaybook"
 
@@ -52,16 +140,50 @@ async def send_otp(phone_number: str) -> dict:
             data = resp.json()
 
         if data.get("Status") == "Success":
+            provider_sid = str(data.get("Details") or "")
+            await log_provider_call(
+                action="send",
+                phone_number=phone,
+                request_url=url,
+                response_payload=data,
+                provider_session_id=provider_sid,
+                success=True,
+            )
             logger.info("OTP sent successfully", phone=phone[-4:])
-            return {"success": True, "session_id": data["Details"]}
+            return {"success": True, "session_id": provider_sid}
         else:
+            await log_provider_call(
+                action="send",
+                phone_number=phone,
+                request_url=url,
+                response_payload=data,
+                provider_session_id=str(data.get("Details") or ""),
+                success=False,
+                error=str(data.get("Details") or "Failed to send OTP"),
+            )
             logger.warning("2Factor API returned error", detail=data.get("Details"))
             return {"success": False, "error": data.get("Details", "Failed to send OTP")}
 
     except httpx.TimeoutException:
+        await log_provider_call(
+            action="send",
+            phone_number=phone,
+            request_url=url,
+            response_payload={},
+            success=False,
+            error="timeout",
+        )
         logger.error("2Factor API timeout", phone=phone[-4:])
         return {"success": False, "error": "OTP service timeout — please retry"}
     except Exception as e:
+        await log_provider_call(
+            action="send",
+            phone_number=phone,
+            request_url=url,
+            response_payload={},
+            success=False,
+            error=str(e),
+        )
         logger.error("2Factor API error", error=str(e))
         return {"success": False, "error": "Failed to send OTP"}
 

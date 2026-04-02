@@ -202,9 +202,12 @@ def _resolve_python_bin() -> str:
     """
     raw = os.getenv("PYTHON_BIN", "").strip()
     if raw:
-        candidate = Path(raw)
+        candidate = Path(raw).expanduser()
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate.resolve())
+            # Keep the configured interpreter path as-is (absolute), do not resolve
+            # symlinks: venv python executables commonly symlink to system python,
+            # and resolving would bypass the venv site-packages.
+            return str(candidate.absolute())
         found = shutil.which(raw)
         if found:
             return found

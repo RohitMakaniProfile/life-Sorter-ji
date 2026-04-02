@@ -479,7 +479,7 @@ def load_persona_doc(domain: str) -> Optional[str]:
 def load_task_context(domain: str, task: str) -> Optional[dict]:
     """
     Load the specific task context from a persona doc.
-    Used by the recommendation engine (agent_service.py).
+    Used by the recommendation engine and playbook tooling.
     """
     blocks = _get_blocks_for_domain(domain)
     if not blocks:

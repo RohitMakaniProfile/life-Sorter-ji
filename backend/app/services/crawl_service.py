@@ -8,7 +8,7 @@ Crawls a user's business website in the background:
   3. Extracts tech stack signals, CTA patterns, social links, schema markup
   4. Runs lightweight SEO check (meta tags, page speed signal, mobile viewport)
   5. Generates a compressed crawl summary (5 bullet points)
-  6. Stores raw + summary data in the session
+  6. Callers persist raw + summary via `crawl_persistence` (onboarding + crawl_cache).
 
 Designed to run in the background while the user answers Scale Questions.
 """
@@ -28,7 +28,8 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services import session_store, openrouter_service
+from app.services import openrouter_service
+from app.services.crawl_persistence import persist_successful_crawl
 
 logger = structlog.get_logger()
 
@@ -431,10 +432,14 @@ async def _fetch_page(client: httpx.AsyncClient, url: str) -> Optional[str]:
         return None
 
 
-async def crawl_website(website_url: str, session_id: str = None) -> dict:
+async def crawl_website(
+    website_url: str,
+    *,
+    progress_cb=None,
+) -> dict:
     """
     Crawl a business website and extract structured data.
-    If session_id is provided, updates crawl_progress in real-time.
+    Optional progress_cb(phase=..., pages_found=..., pages_crawled=..., current_page=...) for live updates.
 
     Returns:
         {
@@ -448,16 +453,19 @@ async def crawl_website(website_url: str, session_id: str = None) -> dict:
         }
     """
     def _update_progress(phase: str, pages_found: int = 0, pages_crawled: int = 0, current_page: str = ""):
-        if session_id:
-            session = session_store.get_session(session_id)
-            if session:
-                session.crawl_progress = {
-                    "phase": phase,
-                    "pages_found": pages_found,
-                    "pages_crawled": pages_crawled,
-                    "current_page": current_page,
-                }
-                session_store.update_session(session)
+        if progress_cb:
+            try:
+                # progress_cb may be async; run fire-and-forget to avoid blocking crawl.
+                maybe_coro = progress_cb(
+                    phase=phase,
+                    pages_found=pages_found,
+                    pages_crawled=pages_crawled,
+                    current_page=current_page,
+                )
+                if asyncio.iscoroutine(maybe_coro):
+                    asyncio.create_task(maybe_coro)
+            except Exception:
+                pass
 
     result = {
         "homepage": {"title": "", "meta_desc": "", "h1s": [], "headings": [], "nav_links": []},
@@ -580,7 +588,11 @@ async def crawl_website(website_url: str, session_id: str = None) -> dict:
     return result
 
 
-async def crawl_website_playwright(website_url: str, session_id: str = None) -> dict:
+async def crawl_website_playwright(
+    website_url: str,
+    *,
+    progress_cb=None,
+) -> dict:
     """
     JS-rendered website crawler via skills/scrape-playwright/runner.py.
     Delegates actual crawling to the skill subprocess and maps the output
@@ -594,16 +606,18 @@ async def crawl_website_playwright(website_url: str, session_id: str = None) -> 
     )
 
     def _update_progress(phase: str, pages_found: int = 0, pages_crawled: int = 0, current_page: str = ""):
-        if session_id:
-            session = session_store.get_session(session_id)
-            if session:
-                session.crawl_progress = {
-                    "phase": phase,
-                    "pages_found": pages_found,
-                    "pages_crawled": pages_crawled,
-                    "current_page": current_page,
-                }
-                session_store.update_session(session)
+        if progress_cb:
+            try:
+                maybe_coro = progress_cb(
+                    phase=phase,
+                    pages_found=pages_found,
+                    pages_crawled=pages_crawled,
+                    current_page=current_page,
+                )
+                if asyncio.iscoroutine(maybe_coro):
+                    asyncio.create_task(maybe_coro)
+            except Exception:
+                pass
 
     if not website_url.startswith(("http://", "https://")):
         website_url = "https://" + website_url
@@ -913,85 +927,49 @@ def _generate_fallback_summary(crawl_raw: dict) -> dict:
     }
 
 
-async def run_background_crawl(session_id: str, website_url: str):
+async def run_background_crawl(
+    session_id: str,
+    website_url: str,
+    *,
+    user_id: str | None = None,
+):
     """
     Run the full crawl pipeline in the background.
-    Called as an asyncio task — does not block the API response.
-
-    Steps:
-    1. Set crawl_status to "in_progress"
-    2. Crawl the website (or social profile)
-    3. Generate summary
-    4. Store results in session
-    5. Set crawl_status to "complete" (or "failed")
+    Persists results to crawl_cache / crawl_runs and updates onboarding pointers.
     """
     try:
-        # Mark crawl as in progress
-        session_store.set_crawl_status(session_id, "in_progress")
         logger.info("Background crawl started", session_id=session_id, url=website_url)
 
-        # Determine URL type and run appropriate crawl
         url_type = detect_url_type(website_url)
         if url_type == "gbp":
-            crawl_raw = await crawl_gbp(website_url, session_id=session_id)
+            crawl_raw = await crawl_gbp(website_url)
         elif url_type == "social_profile":
             crawl_raw = await crawl_social_profile(website_url)
         else:
-            # Use Playwright (JS-rendered) with httpx fallback
             try:
                 logger.info("Using Playwright crawler (JS-rendered)", url=website_url)
-                crawl_raw = await crawl_website_playwright(website_url, session_id=session_id)
+                crawl_raw = await crawl_website_playwright(website_url)
             except Exception as pw_err:
                 logger.warning(
                     "Playwright crawl failed, falling back to httpx",
                     url=website_url,
                     error=str(pw_err),
                 )
-                crawl_raw = await crawl_website(website_url, session_id=session_id)
+                crawl_raw = await crawl_website(website_url)
 
-        # Generate compressed summary (with _meta for context pool)
         if url_type == "gbp":
             crawl_summary = await generate_gbp_summary(crawl_raw, website_url)
         else:
             crawl_summary = await generate_crawl_summary(crawl_raw, website_url)
 
-        # Log crawl summary LLM call to context pool
-        if "_meta" in crawl_summary:
-            meta = crawl_summary.pop("_meta")
-            session_store.add_llm_call_log(
-                session_id=session_id,
-                service=meta.get("service", "openai"),
-                model=meta.get("model", "gpt-4o-mini"),
-                purpose="crawl_summary",
-                system_prompt=meta.get("system_prompt", ""),
-                user_message=meta.get("user_message", ""),
-                temperature=meta.get("temperature", 0.3),
-                max_tokens=meta.get("max_tokens", 300),
-                raw_response=meta.get("raw_response", ""),
-                latency_ms=meta.get("latency_ms", 0),
-                token_usage=meta.get("token_usage", {}),
-            )
-
-        # Store in session
-        session_store.set_crawl_data(session_id, crawl_raw, crawl_summary)
-
-        # Store GBP-specific data if available
-        if url_type == "gbp" and crawl_raw.get("gbp_data"):
-            session = session_store.get_session(session_id)
-            if session:
-                session.gbp_data = crawl_raw["gbp_data"]
-                session_store.update_session(session)
-
-        # Mark progress complete
-        session = session_store.get_session(session_id)
-        if session:
-            session.crawl_progress = {
-                "phase": "complete",
-                "pages_found": len(crawl_raw.get("pages_crawled", [])),
-                "pages_crawled": len(crawl_raw.get("pages_crawled", [])),
-                "current_page": "",
-            }
-            session_store.update_session(session)
+        await persist_successful_crawl(
+            session_id=session_id,
+            user_id=user_id,
+            input_url=website_url,
+            url_type=url_type,
+            crawl_raw=crawl_raw,
+            crawl_summary=crawl_summary,
+        )
 
         logger.info(
             "Background crawl complete",
@@ -1009,7 +987,6 @@ async def run_background_crawl(session_id: str, website_url: str):
             url=website_url,
             error=str(e),
         )
-        session_store.set_crawl_status(session_id, "failed")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1040,7 +1017,7 @@ def _extract_place_name_from_url(url: str) -> str:
     return ""
 
 
-async def crawl_gbp(url: str, session_id: str = None) -> dict:
+async def crawl_gbp(url: str) -> dict:
     """
     Scrape Google Business Profile data using SerpAPI.
 

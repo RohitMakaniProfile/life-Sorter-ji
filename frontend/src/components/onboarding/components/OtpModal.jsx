@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-
-const API_BASE = () => {
-  const raw = import.meta.env.VITE_API_URL || '';
-  return raw.replace(/\/+$/, '');
-};
+import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
+import { apiPost } from '../../../api/http';
+import { API_ROUTES } from '../../../api/routes';
 
 export default function OtpModal({ sessionId, onVerified }) {
   const [step, setStep] = useState('phone');
@@ -37,21 +35,19 @@ export default function OtpModal({ sessionId, onVerified }) {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE()}/api/v1/auth/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, phone_number: cleaned }),
+      const data = await apiPost(API_ROUTES.auth.sendOtp, {
+        onboarding_session_id: sessionId,
+        phone_number: cleaned,
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         setError(data.message || data.detail || 'Failed to send OTP');
         return;
       }
       setOtpSessionId(data.otp_session_id);
       setStep('otp');
       startResendTimer();
-    } catch {
-      setError('Network error — please try again');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error — please try again');
     } finally {
       setLoading(false);
     }
@@ -65,13 +61,12 @@ export default function OtpModal({ sessionId, onVerified }) {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE()}/api/v1/auth/verify-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, otp_session_id: otpSessionId, otp_code: otp }),
+      const data = await apiPost(API_ROUTES.auth.verifyOtp, {
+        onboarding_session_id: sessionId,
+        otp_session_id: otpSessionId,
+        otp_code: otp,
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         setError(data.message || data.detail || 'Verification failed');
         return;
       }
@@ -79,9 +74,16 @@ export default function OtpModal({ sessionId, onVerified }) {
         setError('Incorrect OTP — please try again');
         return;
       }
+      if (data.token) {
+        try {
+          window.localStorage.setItem(IKSHAN_AUTH_TOKEN_KEY, data.token);
+        } catch {
+          // ignore storage errors
+        }
+      }
       onVerified();
-    } catch {
-      setError('Network error — please try again');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error — please try again');
     } finally {
       setLoading(false);
     }

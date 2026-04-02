@@ -17,6 +17,7 @@ export default function UrlStage({
   onSubmit,
   onSkip,
   urlSubmitting,
+  crawlRunning,
   earlyTools,
   toolPage,
   onToolPageChange,
@@ -103,7 +104,7 @@ export default function UrlStage({
                 type="submit"
                 disabled={urlSubmitting || (!urlValue.trim() && !gbpValue.trim())}
               >
-                {urlSubmitting ? 'Analyzing...' : 'Analyze My Business'}
+                {urlSubmitting || crawlRunning ? 'Analyzing...' : 'Analyze My Business'}
               </button>
             </form>
             <button

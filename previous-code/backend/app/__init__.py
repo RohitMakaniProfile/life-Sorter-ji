@@ -1,1 +1,0 @@
-# Ikshan Backend — FastAPI Application

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
+import { useState, useRef, useMemo, useCallback, useLayoutEffect, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import StageLayout from './components/StageLayout';
@@ -11,10 +11,11 @@ import OtpModal from './components/OtpModal';
 import OnboardingHero from './components/OnboardingHero';
 import OnboardingJourneyCanvas from './components/OnboardingJourneyCanvas';
 import OnboardingErrorToast from './components/OnboardingErrorToast';
+import DeveloperTaskStreamsPanel from './components/DeveloperTaskStreamsPanel';
 import { useOnboardingSession } from './hooks/useOnboardingSession';
 import { useOnboardingJourneyIdleOutcomeDemo } from './hooks/useOnboardingJourneyIdleOutcomeDemo';
 import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
-import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
+import { useCrawlTaskStream } from './hooks/useCrawlTaskStream';
 import { outcomeOptions } from './onboardingJourneyData';
 import { mapToolsToEarlyTools } from './toolService';
 import { apiPost } from '../../api/http';
@@ -36,11 +37,8 @@ function buildOnboardingPatch(fields) {
   return o;
 }
 
-const advanceSession = (sessionId, payload) =>
-  coreApi.advanceAgentSession(sessionId, payload).then((res) => res?.result ?? res);
-
 const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
-const phase2Path = (path) => `/phase2/${path}`;
+const phase2Path = (path) => `/${path}`;
 const TASK_KEY_SEP = '|||';
 
 const toRectObj = (r) => ({ top: r.top, left: r.left, width: r.width, height: r.height });
@@ -58,7 +56,6 @@ export default function OnboardingApp() {
     outcomeIds,
   );
   const { canvasRef, scrollToEnd } = useOnboardingCanvasScroll();
-  const { setCrawlStatus, startCrawlPolling, waitForCrawl } = useOnboardingCrawlPolling(sessionIdRef);
 
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [toolPage, setToolPage] = useState(0);
@@ -77,10 +74,10 @@ export default function OnboardingApp() {
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
-
   const [showPrecision, setShowPrecision] = useState(false);
   const [precisionQuestions, setPrecisionQuestions] = useState([]);
   const [precisionIndex, setPrecisionIndex] = useState(0);
+  const [precisionAnswers, setPrecisionAnswers] = useState({});
 
   const [showComplete, setShowComplete] = useState(false);
   const [error, setError] = useState(null);
@@ -92,6 +89,7 @@ export default function OnboardingApp() {
 
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
+  const pendingPlaybookLaunchRef = useRef(false);
 
   const {
     playbookStreaming,
@@ -107,6 +105,11 @@ export default function OnboardingApp() {
     otpVerified,
     onRequestOtp: () => setShowOtpModal(true),
     onShowPlaybook: () => setShowPlaybook(true),
+    setError,
+  });
+
+  const { crawlStreaming, startForSession: startCrawlForSession, waitForCrawl } = useCrawlTaskStream({
+    ensureSession,
     setError,
   });
 
@@ -286,13 +289,16 @@ export default function OnboardingApp() {
     if (!urlValue.trim() && !gbpValue.trim()) return;
     setUrlSubmitting(true);
     try {
+      const sid = await ensureSession();
       const web = urlValue.trim();
       const gbp = gbpValue.trim();
       if (web || gbp) {
         const patch = {};
         if (web) patch.website_url = web;
         if (gbp) patch.gbp_url = gbp;
-        await handleOnboardingFieldUpdate(patch);
+        await handleOnboardingFieldUpdate({ ...patch, session_id: sid });
+
+        if (web) startCrawlForSession(sid, { websiteUrl: web }).catch(() => {});
       }
       await moveToScaleQuestions();
     } catch {
@@ -305,9 +311,7 @@ export default function OnboardingApp() {
   const handleUrlSkip = async () => {
     setUrlSubmitting(true);
     try {
-      const sid = await ensureSession();
-      await coreApi.patchAgentSession(sid, { skip_url: true });
-      setCrawlStatus('skipped');
+      // No crawl will be started; proceed to next step.
     } catch (err) {
       console.warn('Skip URL:', err.message);
     }
@@ -334,16 +338,22 @@ export default function OnboardingApp() {
     });
   };
 
-  const handleStartPlaybook = async () => {
+  const handleStartPlaybook = async ({ forceVerified = false } = {}) => {
+    if (!forceVerified && !otpVerified) {
+      pendingPlaybookLaunchRef.current = true;
+      setShowOtpModal(true);
+      return;
+    }
     setShowPlaybook(true);
     prepareStreaming();
     setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
       await waitForCrawl();
-      const startData = await coreApi.playbookStart({ session_id: sid });
-      if (startData.gap_questions?.length) {
-        setGapQuestions(startData.gap_questions_parsed || startData.gap_questions);
+      const startData = await coreApi.onboardingPlaybookLaunch({ session_id: sid });
+      const parsedGap = startData.gap_questions_parsed || startData.gap_questions || [];
+      if (Array.isArray(parsedGap) && parsedGap.length) {
+        setGapQuestions(parsedGap);
         setShowGapQuestions(true);
         stopStreaming();
         return;
@@ -360,7 +370,18 @@ export default function OnboardingApp() {
     setShowOtpModal(false);
   };
 
+  useEffect(() => {
+    if (!otpVerified || !pendingPlaybookLaunchRef.current) return;
+    pendingPlaybookLaunchRef.current = false;
+    handleStartPlaybook({ forceVerified: true }).catch(() => {});
+  }, [otpVerified]);
+
   const handleGapSubmit = async () => {
+    if (!otpVerified) {
+      pendingPlaybookLaunchRef.current = true;
+      setShowOtpModal(true);
+      return;
+    }
     setShowGapQuestions(false);
     prepareStreaming();
     try {
@@ -371,7 +392,8 @@ export default function OnboardingApp() {
           return `${qNum}-${gapAnswers[i] || ''}`;
         })
         .join(', ');
-      await coreApi.playbookGapAnswers({ session_id: sid, answers: answersStr });
+      await coreApi.onboardingPlaybookGapAnswers({ session_id: sid, answers: answersStr });
+      await coreApi.onboardingPlaybookLaunch({ session_id: sid });
       await startForSession(sid, { fresh: false });
     } catch {
       setError('Failed to submit answers.');
@@ -413,8 +435,16 @@ export default function OnboardingApp() {
       const sid = await ensureSession();
       const res = await rcaNextQuestion({ session_id: sid, answer });
       if (res?.status === 'complete') {
-        // Precision questions are currently powered by the agent session RCA history.
-        // When using onboarding RCA (DB-backed transcript), we skip precision and proceed.
+        const precData = await coreApi.onboardingPrecisionStart({ session_id: sid });
+        if (precData?.available && precData?.questions?.length) {
+          setPrecisionQuestions(precData.questions);
+          setPrecisionAnswers({});
+          setPrecisionIndex(0);
+          setCurrentQuestion(precData.questions[0]);
+          setShowPrecision(true);
+          setTimeout(scrollToEnd, 50);
+          return;
+        }
         handleStartPlaybook();
         return;
       }
@@ -430,25 +460,26 @@ export default function OnboardingApp() {
       setLoading(false);
     }
   };
-
   const handlePrecisionAnswer = async (answer) => {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      await advanceSession(sid, {
-        action: 'submit_answer',
+      const res = await coreApi.onboardingPrecisionAnswer({
+        session_id: sid,
         question_index: precisionIndex,
         answer,
       });
-      const nextIdx = precisionIndex + 1;
-      if (nextIdx < precisionQuestions.length) {
-        setPrecisionIndex(nextIdx);
-        setCurrentQuestion(precisionQuestions[nextIdx]);
-      } else {
+      if (res?.all_answered) {
+        setShowPrecision(false);
         handleStartPlaybook();
+        return;
+      }
+      if (res?.next_question) {
+        setPrecisionIndex((i) => i + 1);
+        setCurrentQuestion(res.next_question);
       }
     } catch {
-      setError('Failed to submit answer.');
+      setError('Failed to submit precision answer.');
     } finally {
       setLoading(false);
     }
@@ -483,6 +514,11 @@ export default function OnboardingApp() {
   if (showPlaybook) {
     return (
       <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          sessionId={sessionIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
         <PlaybookStage
           showGapQuestions={showGapQuestions}
           gapQuestions={gapQuestions}
@@ -503,19 +539,38 @@ export default function OnboardingApp() {
   }
 
   if (showComplete) {
-    return <CompleteStage error={error} onClearError={clearError} onDeepAnalysis={handleDeepAnalysis} />;
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          sessionId={sessionIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
+        <CompleteStage error={error} onClearError={clearError} onDeepAnalysis={handleDeepAnalysis} />
+      </StageLayout>
+    );
   }
 
   if (showDiagnostic && currentQuestion) {
     const answerHandler = showPrecision ? handlePrecisionAnswer : handleDiagnosticAnswer;
+    const activeIndex = showPrecision ? precisionIndex : questionIndex;
     return (
       <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          sessionId={sessionIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
         <DiagnosticStage
           currentQuestion={currentQuestion}
-          questionIndex={showPrecision ? precisionIndex : questionIndex}
-          scaleAnswers={scaleAnswers}
+          questionIndex={activeIndex}
+          scaleAnswers={showPrecision ? precisionAnswers : scaleAnswers}
           onAnswer={(opt) => {
-            setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
+            if (showPrecision) {
+              setPrecisionAnswers((prev) => ({ ...prev, [activeIndex]: opt }));
+            } else {
+              setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
+            }
             answerHandler(opt);
           }}
           loading={loading}
@@ -527,6 +582,11 @@ export default function OnboardingApp() {
   if (showDeeperDive) {
     return (
       <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          sessionId={sessionIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
         <DeeperDiveStage
           scaleQuestions={scaleQuestions}
           scaleAnswers={scaleAnswers}
@@ -551,6 +611,11 @@ export default function OnboardingApp() {
 
     return (
       <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          sessionId={sessionIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
         {taskNodeTransition && from ? (
           <div
             aria-hidden
@@ -583,6 +648,7 @@ export default function OnboardingApp() {
             onSubmit={handleUrlSubmit}
             onSkip={handleUrlSkip}
             urlSubmitting={urlSubmitting}
+            crawlRunning={crawlStreaming}
             earlyTools={earlyTools}
             toolPage={toolPage}
             onToolPageChange={setToolPage}
@@ -596,6 +662,11 @@ export default function OnboardingApp() {
   return (
     <div className="flex h-screen max-h-screen flex-col overflow-hidden bg-[#111] bg-[radial-gradient(circle,rgba(255,255,255,0.18)_1px,transparent_1px)] bg-[length:14px_14px] font-sans text-white [&_button]:font-inherit [&_input]:font-inherit">
       <Navbar />
+      <DeveloperTaskStreamsPanel
+        sessionId={sessionIdRef.current}
+        userId={null}
+        taskTypes={['crawl', 'playbook/onboarding-generate']}
+      />
       <OnboardingHero />
 
       <OnboardingJourneyCanvas

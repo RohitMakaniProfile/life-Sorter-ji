@@ -5,7 +5,7 @@ USER SESSION PERSISTENCE — Local PostgreSQL Sync for Session Data
 Persists the in-memory SessionContext to the `user_sessions`
 table in PostgreSQL after every meaningful state change.
 
-Called from session_store.py on every update_session().
+Legacy persistence helpers for the `user_sessions` table.
 """
 
 from __future__ import annotations

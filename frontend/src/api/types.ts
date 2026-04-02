@@ -129,6 +129,9 @@ export interface UiAgent {
   name: string;
   emoji: string;
   description: string;
+  isLocked?: boolean;
+  visibility?: 'public' | 'private';
+  createdByUserId?: string | null;
   allowedSkillIds: string[];
   skillSelectorContext?: string;
   finalOutputFormattingContext?: string;

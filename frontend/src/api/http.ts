@@ -34,29 +34,28 @@ function bearerTokenForPath(_path: string): string | null {
   return getAuthToken();
 }
 
-let phase2Redirect401Lock = false;
+let authRedirect401Lock = false;
 
-function maybeRedirectPhase2On401(pathOrUrl: string): void {
+function maybeRedirectOn401(pathOrUrl: string): void {
   if (typeof window === 'undefined') return;
   try {
     const path = pathForAuth(pathOrUrl);
-    const phase2Api =
+    const protectedApi =
       path.startsWith('/api/v1/ai-chat') ||
       path.startsWith('/api/agents') ||
-      path.startsWith('/api/files/download') ||
-      path.startsWith('/api/phase2/');
-    if (!phase2Api) return;
+      path.startsWith('/api/files/download');
+    if (!protectedApi) return;
     const p = window.location.pathname || '';
-    if (p.includes('/phase2/login-internal') || p.includes('/phase2/login-admin')) return;
-    if (phase2Redirect401Lock) return;
-    phase2Redirect401Lock = true;
+    if (p.includes('/login-internal') || p.includes('/login-admin')) return;
+    if (authRedirect401Lock) return;
+    authRedirect401Lock = true;
     window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
-    window.location.href = '/phase2/login-internal';
+    window.location.href = '/login-internal';
   } catch {
     // ignore
   }
   window.setTimeout(() => {
-    phase2Redirect401Lock = false;
+    authRedirect401Lock = false;
   }, 3000);
 }
 
@@ -82,7 +81,7 @@ export async function apiRequest(pathOrUrl: string, init: RequestInit = {}): Pro
     credentials: init.credentials ?? 'include',
   });
   if (res.status === 401) {
-    maybeRedirectPhase2On401(pathOrUrl);
+    maybeRedirectOn401(pathOrUrl);
   }
   return res;
 }

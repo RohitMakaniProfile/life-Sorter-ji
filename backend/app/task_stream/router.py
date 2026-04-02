@@ -4,9 +4,10 @@ import asyncio
 import json
 from typing import Any, Awaitable, Callable
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Header
 from fastapi.responses import StreamingResponse
 
+from app.services.jwt_service import decode_and_verify_access_token
 from app.task_stream.models import TaskStreamStartRequest
 from app.task_stream.service import TaskFn, TaskStreamService
 
@@ -24,21 +25,42 @@ def create_task_stream_router(
         "Connection": "keep-alive",
     }
 
-    @router.post("/start/{task_type}")
+    def _actor_from_auth(authorization: str | None) -> tuple[str | None, str | None]:
+        raw = (authorization or "").strip()
+        if not raw.lower().startswith("bearer "):
+            return None, None
+        token = raw[7:].strip()
+        if not token:
+            return None, None
+        try:
+            payload = decode_and_verify_access_token(token)
+        except Exception:
+            return None, None
+        user_id = str(payload.get("sub") or "").strip() or None
+        session_id = (
+            str(payload.get("onboarding_session_id") or payload.get("session_id") or "").strip() or None
+        )
+        return session_id, user_id
+
+    @router.post("/start/{task_type:path}")
     async def start_task_stream(
         task_type: str,
         body: TaskStreamStartRequest = Body(...),
+        authorization: str | None = Header(default=None),
     ) -> dict[str, str]:
         task_fn = task_registry.get(task_type)
         if not task_fn:
             raise HTTPException(status_code=404, detail=f"Unknown task_type: {task_type}")
+        auth_sid, auth_uid = _actor_from_auth(authorization)
+        eff_session_id = body.session_id or auth_sid
+        eff_user_id = body.user_id or auth_uid
 
         return await service.start_task_stream(
             task_type=task_type,
             task_fn=task_fn,
             payload=body.payload or {},
-            session_id=body.session_id,
-            user_id=body.user_id,
+            session_id=eff_session_id,
+            user_id=eff_user_id,
             resume_if_exists=body.resume_if_exists,
         )
 
@@ -61,7 +83,7 @@ def create_task_stream_router(
             headers=_DEFAULT_HEADERS,
         )
 
-    @router.get("/events/{task_type}/resume")
+    @router.get("/events/{task_type:path}/resume")
     async def resume_by_actor(
         task_type: str,
         session_id: str | None = None,

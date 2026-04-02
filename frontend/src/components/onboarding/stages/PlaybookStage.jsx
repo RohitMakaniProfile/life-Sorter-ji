@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { clsx } from 'clsx';
 import PlaybookViewer from '../../PlaybookViewer';
 
@@ -17,6 +18,14 @@ export default function PlaybookStage({
   retryLabel = 'Retry',
 }) {
   const gapComplete = gapQuestions.length === 0 || gapQuestions.every((_, i) => gapAnswers[i]);
+  const streamContainerRef = useRef(null);
+
+  useEffect(() => {
+    if (!playbookStreaming || !playbookText || playbookDone) return;
+    const el = streamContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [playbookText, playbookStreaming, playbookDone]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
@@ -86,7 +95,7 @@ export default function PlaybookStage({
       )}
 
       {!showGapQuestions && (
-        <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
+        <div ref={streamContainerRef} className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
           {playbookStreaming && !playbookText && (
             <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
           )}
@@ -107,10 +116,16 @@ export default function PlaybookStage({
           )}
 
           {playbookText && !playbookDone && (
-            <pre className="m-0 whitespace-pre-wrap font-inherit text-sm leading-[1.8] text-white/85">
-              {playbookText}
-              <span className="opacity-50">▍</span>
-            </pre>
+            <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
+              <PlaybookViewer
+                playbookData={{
+                  playbook: `${playbookText}\n\n▍`,
+                  websiteAudit: playbookResult?.website_audit || '',
+                  contextBrief: playbookResult?.context_brief || '',
+                  icpCard: playbookResult?.icp_card || '',
+                }}
+              />
+            </div>
           )}
 
           {playbookDone && (

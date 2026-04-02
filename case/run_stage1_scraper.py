@@ -47,14 +47,6 @@ class _StubSettings:
 _app_config.get_settings = lambda: _StubSettings()
 sys.modules["app.config"] = _app_config
 
-# Stub session_store (not needed without session_id)
-_session_store = types.ModuleType("app.services.session_store")
-_session_store.get_session = lambda *a, **kw: None
-_session_store.update_session = lambda *a, **kw: None
-_session_store.set_crawl_data = lambda *a, **kw: None
-_session_store.set_crawl_status = lambda *a, **kw: None
-_session_store.add_llm_call_log = lambda *a, **kw: None
-
 # Stub openai_service (not needed for raw crawl)
 _openai_svc = types.ModuleType("app.services.openai_service")
 _openai_svc._get_client = lambda: None
@@ -67,7 +59,6 @@ import app.services  # noqa: E402, F401 — real sub-package
 
 # Now override specific submodules with stubs
 sys.modules["app.config"] = _app_config
-sys.modules["app.services.session_store"] = _session_store
 sys.modules["app.services.openai_service"] = _openai_svc
 
 # Import the real crawl_service
@@ -264,7 +255,7 @@ async def process_website(url: str):
 
     # Call the actual Stage 1 crawl_website function (no session_id = no session deps)
     print(f"\n  Fetching & analyzing website...")
-    crawl_data = await crawl_website(url, session_id=None)
+    crawl_data = await crawl_website(url)
 
     pages_count = len(crawl_data.get("pages_crawled", []))
     tech_count = len(crawl_data.get("tech_signals", []))
