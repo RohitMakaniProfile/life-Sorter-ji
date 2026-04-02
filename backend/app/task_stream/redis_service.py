@@ -14,6 +14,13 @@ from app.task_stream.events import TaskStreamEvent
 from app.task_stream.redis_client import get_redis
 
 
+async def _require_redis():
+    r = await get_redis()
+    if r is None:
+        raise RuntimeError("Redis is not configured; set REDIS_URL or use TASKSTREAM_BACKEND=postgres")
+    return r
+
+
 class RedisTaskStreamStore:
     """
     Low-level Redis operations for:
@@ -38,11 +45,11 @@ class RedisTaskStreamStore:
         return f"{REDIS_TASKSTREAM_PREFIX}:map:{task_type}:user:{user_id}"
 
     async def try_acquire_spawn_lock(self, lock_key: str) -> bool:
-        redis = await get_redis()
+        redis = await _require_redis()
         return bool(await redis.set(lock_key, "1", nx=True, ex=10))
 
     async def release_spawn_lock(self, lock_key: str) -> None:
-        redis = await get_redis()
+        redis = await _require_redis()
         await redis.delete(lock_key)
 
     async def resolve_stream_id(
@@ -53,7 +60,7 @@ class RedisTaskStreamStore:
         user_id: Optional[str] = None,
     ) -> Optional[str]:
         if session_id:
-            redis = await get_redis()
+            redis = await _require_redis()
             sid = (session_id or "").strip()
             if sid:
                 v = await redis.get(self._map_session_key(task_type, sid))
@@ -61,7 +68,7 @@ class RedisTaskStreamStore:
                     return str(v)
 
         if user_id:
-            redis = await get_redis()
+            redis = await _require_redis()
             uid = (user_id or "").strip()
             if uid:
                 v = await redis.get(self._map_user_key(task_type, uid))
@@ -79,7 +86,7 @@ class RedisTaskStreamStore:
         user_id: Optional[str],
         status: str = "running",
     ) -> None:
-        redis = await get_redis()
+        redis = await _require_redis()
         meta = {
             "task_type": task_type,
             "status": status,
@@ -91,17 +98,17 @@ class RedisTaskStreamStore:
         await redis.expire(self._meta_key(stream_id), REDIS_TASKSTREAM_TTL_SECONDS)
 
     async def set_status(self, stream_id: str, status: str) -> None:
-        redis = await get_redis()
+        redis = await _require_redis()
         await redis.hset(self._meta_key(stream_id), mapping={"status": status})
         await redis.expire(self._meta_key(stream_id), REDIS_TASKSTREAM_TTL_SECONDS)
 
     async def get_status(self, stream_id: str) -> str:
-        redis = await get_redis()
+        redis = await _require_redis()
         v = await redis.hget(self._meta_key(stream_id), "status")
         return str(v or "")
 
     async def get_meta(self, stream_id: str) -> dict[str, Any]:
-        redis = await get_redis()
+        redis = await _require_redis()
         meta = await redis.hgetall(self._meta_key(stream_id))
         # `decode_responses=True` => values are str
         out: dict[str, Any] = dict(meta or {})
@@ -116,7 +123,7 @@ class RedisTaskStreamStore:
         session_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
-        redis = await get_redis()
+        redis = await _require_redis()
         ttl = REDIS_TASKSTREAM_TTL_SECONDS
         if session_id:
             sid = (session_id or "").strip()
@@ -128,7 +135,7 @@ class RedisTaskStreamStore:
                 await redis.set(self._map_user_key(task_type, uid), stream_id, ex=ttl)
 
     async def xadd_event(self, stream_id: str, event_type: str, data: dict[str, Any]) -> TaskStreamEvent:
-        redis = await get_redis()
+        redis = await _require_redis()
 
         seq = await redis.incr(self._seq_key(stream_id))
         event = {"type": event_type, **data}
@@ -161,7 +168,7 @@ class RedisTaskStreamStore:
 
         Used when the client doesn't provide a cursor (first connect / after refresh).
         """
-        redis = await get_redis()
+        redis = await _require_redis()
         entries = await redis.xrevrange(self._stream_key(stream_id), max="+", min="-", count=max_backlog)
         # Redis returns newest-first; convert to oldest-first for the UI.
         entries = list(reversed(entries))
@@ -193,7 +200,7 @@ class RedisTaskStreamStore:
         """
         Read events strictly after `cursor` (Redis Streams semantics).
         """
-        redis = await get_redis()
+        redis = await _require_redis()
         stream_key = self._stream_key(stream_id)
 
         # redis-py xread expects {stream_key: last_id}. It returns messages after that id.

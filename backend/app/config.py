@@ -112,8 +112,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_SPEAK: str = "5/minute"
     RATE_LIMIT_DEFAULT: str = "60/minute"
 
-    # ── Task stream (SSE) persistence: redis (default) or postgres ─
-    TASKSTREAM_BACKEND: str = "redis"
+    # ── Task stream (SSE) persistence: postgres (default) or redis ─
+    # Use redis only when REDIS_URL is set; otherwise backend falls back to postgres.
+    TASKSTREAM_BACKEND: str = "postgres"
 
     # ── Computed Properties ────────────────────────────────────
 
@@ -236,8 +237,13 @@ GEMINI_MODELS = os.getenv("GEMINI_MODELS", os.getenv("GEMINI_MODEL", "")).strip(
 GEMINI_SCOUT_MODELS = os.getenv("GEMINI_SCOUT_MODELS", "").strip()
 SKILL_DEBUG_LOGS = _getenv("SKILL_DEBUG_LOGS", "false").lower() in ("true", "1", "yes")
 
-# ── Redis (durable task streaming) ─────────────────────────────
-REDIS_URL = _getenv("REDIS_URL", "redis://localhost:6379/0")
+# ── Redis (optional: OTP cache, auth user cache, task-stream when TASKSTREAM_BACKEND=redis) ─
+# Empty / unset => do not connect; use Postgres-backed task stream and DB OTP store.
+REDIS_URL = _getenv("REDIS_URL", "")
+
+
+def is_redis_configured() -> bool:
+    return bool((REDIS_URL or "").strip())
 REDIS_TASKSTREAM_PREFIX = _getenv("REDIS_TASKSTREAM_PREFIX", "ikshan:taskstream")
 REDIS_TASKSTREAM_TTL_SECONDS = int(_getenv("REDIS_TASKSTREAM_TTL_SECONDS", "86400"))  # 24h
 REDIS_TASKSTREAM_MAX_BACKLOG = int(_getenv("REDIS_TASKSTREAM_MAX_BACKLOG", "200"))

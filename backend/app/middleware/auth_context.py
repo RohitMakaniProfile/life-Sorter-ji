@@ -49,11 +49,12 @@ async def _load_user_with_cache(user_id: str) -> dict[str, Any] | None:
     cache_key = f"{_AUTH_CACHE_PREFIX}:{user_id}"
     try:
         redis = await get_redis()
-        cached = await redis.get(cache_key)
-        if cached:
-            parsed = json.loads(cached)
-            if isinstance(parsed, dict):
-                return parsed
+        if redis:
+            cached = await redis.get(cache_key)
+            if cached:
+                parsed = json.loads(cached)
+                if isinstance(parsed, dict):
+                    return parsed
     except Exception:
         pass
 
@@ -62,7 +63,8 @@ async def _load_user_with_cache(user_id: str) -> dict[str, Any] | None:
         return None
     try:
         redis = await get_redis()
-        await redis.set(cache_key, json.dumps(user), ex=_AUTH_CACHE_TTL_SECONDS)
+        if redis:
+            await redis.set(cache_key, json.dumps(user), ex=_AUTH_CACHE_TTL_SECONDS)
     except Exception:
         pass
     return user

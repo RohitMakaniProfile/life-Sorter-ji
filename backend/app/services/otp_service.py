@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
@@ -26,6 +26,70 @@ logger = structlog.get_logger()
 
 TWO_FACTOR_BASE = "https://2factor.in/API/V1"
 OTP_REDIS_PREFIX = "ikshan:otp:v2"
+
+
+async def _store_otp_postgres(
+    *,
+    otp_session_id: str,
+    phone_number: str,
+    otp_code: str,
+    onboarding_session_id: str | None,
+    expiry_seconds: int,
+    provider_session_id: str = "",
+) -> None:
+    payload = {
+        "phone_number": phone_number,
+        "otp_code": otp_code,
+        "onboarding_session_id": onboarding_session_id or "",
+        "provider_session_id": provider_session_id or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, int(expiry_seconds)))
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO otp_sessions (otp_session_id, payload, expires_at)
+            VALUES ($1, $2::jsonb, $3)
+            ON CONFLICT (otp_session_id) DO UPDATE SET
+              payload = EXCLUDED.payload,
+              expires_at = EXCLUDED.expires_at
+            """,
+            otp_session_id,
+            json.dumps(payload),
+            expires_at,
+        )
+
+
+async def _load_otp_postgres(otp_session_id: str) -> dict | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT payload FROM otp_sessions
+            WHERE otp_session_id = $1 AND expires_at > NOW()
+            """,
+            otp_session_id,
+        )
+    if not row or row.get("payload") is None:
+        return None
+    raw = row["payload"]
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+    elif isinstance(raw, dict):
+        data = raw
+    else:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _delete_otp_postgres(otp_session_id: str) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM otp_sessions WHERE otp_session_id = $1", otp_session_id)
 
 
 def _mask_phone(phone: str) -> str:
@@ -84,7 +148,6 @@ async def store_otp_in_redis(
     expiry_seconds: int,
     provider_session_id: str = "",
 ) -> None:
-    redis = await get_redis()
     payload = {
         "phone_number": phone_number,
         "otp_code": otp_code,
@@ -92,24 +155,39 @@ async def store_otp_in_redis(
         "provider_session_id": provider_session_id or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await redis.set(f"{OTP_REDIS_PREFIX}:{otp_session_id}", json.dumps(payload), ex=max(60, int(expiry_seconds)))
+    redis = await get_redis()
+    if redis:
+        await redis.set(f"{OTP_REDIS_PREFIX}:{otp_session_id}", json.dumps(payload), ex=max(60, int(expiry_seconds)))
+        return
+    await _store_otp_postgres(
+        otp_session_id=otp_session_id,
+        phone_number=phone_number,
+        otp_code=otp_code,
+        onboarding_session_id=onboarding_session_id,
+        expiry_seconds=expiry_seconds,
+        provider_session_id=provider_session_id,
+    )
 
 
 async def load_otp_from_redis(otp_session_id: str) -> dict | None:
     redis = await get_redis()
-    raw = await redis.get(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    if redis:
+        raw = await redis.get(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+    return await _load_otp_postgres(otp_session_id)
 
 
 async def delete_otp_from_redis(otp_session_id: str) -> None:
     redis = await get_redis()
-    await redis.delete(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
+    if redis:
+        await redis.delete(f"{OTP_REDIS_PREFIX}:{otp_session_id}")
+    await _delete_otp_postgres(otp_session_id)
 
 
 async def send_otp(phone_number: str) -> dict:

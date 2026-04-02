@@ -840,6 +840,15 @@ CREATE TABLE IF NOT EXISTS task_stream_spawn_locks (
 CREATE INDEX IF NOT EXISTS idx_task_stream_spawn_locks_expires_at
     ON task_stream_spawn_locks (expires_at);
 
+-- OTP sessions (Postgres fallback when REDIS_URL is not set)
+CREATE TABLE IF NOT EXISTS otp_sessions (
+    otp_session_id  TEXT PRIMARY KEY,
+    payload         JSONB NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_otp_sessions_expires_at
+    ON otp_sessions (expires_at);
+
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- END OF SETUP

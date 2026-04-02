@@ -100,9 +100,13 @@ jobs:
             "IKSHAN_GOOGLE_CLIENT_ID",
             "JWT_SECRET_KEY",
           ]
+          optional_secret_keys = {"REDIS_URL"}
           mapping = dict(base)
           for k in secret_keys:
             v = os.environ.get(k)
+            if k in optional_secret_keys:
+              mapping[k] = v or ""
+              continue
             if not v:
               raise SystemExit(f"Missing required env var: {k}")
             mapping[k] = v
