@@ -86,17 +86,33 @@ def _log(label: str, **fields: Any) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _extract_url_from_message(msg: str) -> str:
-    m = re.search(r"https?://\S+", msg or "")
-    if not m:
+    raw = msg or ""
+    m = re.search(r"https?://[^\s]+", raw, re.I)
+    if m:
+        return m.group(0).rstrip("),.;]\"'")
+    # Bare hostname (e.g. "endee.io" / "www.endee.io") — plan + skills need a URL
+    m2 = re.search(
+        r"(?:^|[\s\n])((?:https?://)?(?:www\.)?[\w-]+\.(?:[a-z]{2,24}))\b",
+        raw,
+        re.I,
+    )
+    if not m2:
         return ""
-    return m.group(0).rstrip("),.;]\"'")
+    candidate = m2.group(1).strip().rstrip("),.;]\"'")
+    low = candidate.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        return candidate
+    return f"https://{candidate.lstrip('/')}"
 
 
 def _is_execution_intent(message: str) -> bool:
     text = (message or "").strip().lower()
     if not text:
         return False
-    if _extract_url_from_message(text):
+    # Explicit research / analysis asks (even when URL is bare-domain only)
+    if re.search(r"\bdeep\s+analysis\b|\bdeep\s+dive\b|deep-dive", text):
+        return True
+    if _extract_url_from_message(message):
         return True
 
     execution_hints = (

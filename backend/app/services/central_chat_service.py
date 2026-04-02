@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, AsyncIterator, Literal
 
 from app.phase2.agent.orchestrator import RunOpts, run_agent_turn_stream
@@ -13,18 +14,41 @@ from app.phase2.stores import (
     save_stage_outputs,
     update_message_content,
 )
-from app.phase2.router import _resolve_agent_and_skill
+from app.phase2.router import _extract_url_from_message, _resolve_agent_and_skill
 from app.services import unified_chat_service
 
 
 ChatIntent = Literal["standard", "agentic"]
 
+# Seeded default in DB (see app.phase2.stores.DEFAULT_AGENTS)
+DEFAULT_RESEARCH_AGENT_ID = "research-orchestrator"
+
+
+def _should_route_standard_chat_to_research(message: str) -> bool:
+    """When agentId is missing, still run deep-research pipeline for URL + analysis intent."""
+    if not _extract_url_from_message(message):
+        return False
+    low = (message or "").strip().lower()
+    return bool(
+        re.search(r"\bdeep\s+analysis\b|\bdeep\s+dive\b|deep-dive", low)
+        or re.search(
+            r"\b(analyze|analysis|audit|research|competitor|market|scrape|crawl|website|business)\b",
+            low,
+        )
+    )
+
+
+def effective_agent_id_for_chat(message: str, requested_agent_id: str | None) -> str | None:
+    req = (requested_agent_id or "").strip()
+    if req:
+        return req
+    if _should_route_standard_chat_to_research(message):
+        return DEFAULT_RESEARCH_AGENT_ID
+    return None
+
 
 def detect_intent(message: str, agent_id: str | None) -> ChatIntent:
-    _ = message  # Reserved for future intent heuristics.
-    if (agent_id or "").strip():
-        return "agentic"
-    return "standard"
+    return "agentic" if effective_agent_id_for_chat(message, agent_id) else "standard"
 
 
 def _actor_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -39,6 +63,7 @@ async def run_message(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("message is required")
 
     requested_agent_id = str(payload.get("agentId") or "").strip() or None
+    effective_agent_id = effective_agent_id_for_chat(message, requested_agent_id)
     intent = detect_intent(message, requested_agent_id)
     session_id, user_id = _actor_from_payload(payload)
 
@@ -63,7 +88,8 @@ async def run_message(payload: dict[str, Any]) -> dict[str, Any]:
             "agentId": None,
         }
 
-    resolved = await _resolve_agent_and_skill(payload)
+    agent_payload = {**payload, "agentId": effective_agent_id}
+    resolved = await _resolve_agent_and_skill(agent_payload)
     conv = await get_or_create_conversation(
         str(payload.get("conversationId") or "").strip() or None,
         resolved["agentId"],
@@ -126,6 +152,7 @@ async def run_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         raise ValueError("message is required")
 
     requested_agent_id = str(payload.get("agentId") or "").strip() or None
+    effective_agent_id = effective_agent_id_for_chat(message, requested_agent_id)
     intent = detect_intent(message, requested_agent_id)
     session_id, user_id = _actor_from_payload(payload)
 
@@ -152,7 +179,8 @@ async def run_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         }
         return
 
-    resolved = await _resolve_agent_and_skill(payload)
+    agent_payload = {**payload, "agentId": effective_agent_id}
+    resolved = await _resolve_agent_and_skill(agent_payload)
     conv = await get_or_create_conversation(
         str(payload.get("conversationId") or "").strip() or None,
         resolved["agentId"],
