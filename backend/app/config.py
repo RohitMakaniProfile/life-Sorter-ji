@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_SPEAK: str = "5/minute"
     RATE_LIMIT_DEFAULT: str = "60/minute"
 
+    # ── Task stream (SSE) persistence: redis (default) or postgres ─
+    TASKSTREAM_BACKEND: str = "redis"
+
     # ── Computed Properties ────────────────────────────────────
 
     @property

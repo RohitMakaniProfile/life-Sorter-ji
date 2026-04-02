@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, AsyncIterator, Optional
 
@@ -11,15 +10,8 @@ from app.config import (
     REDIS_TASKSTREAM_PREFIX,
     REDIS_TASKSTREAM_TTL_SECONDS,
 )
+from app.task_stream.events import TaskStreamEvent
 from app.task_stream.redis_client import get_redis
-
-
-@dataclass(frozen=True)
-class TaskStreamEvent:
-    cursor: str
-    seq: int
-    type: str
-    data: dict[str, Any]
 
 
 class RedisTaskStreamStore:
@@ -44,6 +36,14 @@ class RedisTaskStreamStore:
 
     def _map_user_key(self, task_type: str, user_id: str) -> str:
         return f"{REDIS_TASKSTREAM_PREFIX}:map:{task_type}:user:{user_id}"
+
+    async def try_acquire_spawn_lock(self, lock_key: str) -> bool:
+        redis = await get_redis()
+        return bool(await redis.set(lock_key, "1", nx=True, ex=10))
+
+    async def release_spawn_lock(self, lock_key: str) -> None:
+        redis = await get_redis()
+        await redis.delete(lock_key)
 
     async def resolve_stream_id(
         self,

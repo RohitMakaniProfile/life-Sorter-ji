@@ -162,7 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
 
-    # ── Task stream (Redis-backed re-attach after refresh) ───────────────
+    # ── Task stream (Redis or Postgres; TASKSTREAM_BACKEND) ──────────────
     from app.task_stream.router import create_task_stream_router
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import TASK_STREAM_REGISTRY

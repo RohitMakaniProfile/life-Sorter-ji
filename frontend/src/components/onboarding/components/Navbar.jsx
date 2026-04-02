@@ -1,4 +1,8 @@
+import { useNavigate } from 'react-router-dom';
+
 export default function Navbar() {
+  const navigate = useNavigate();
+
   return (
     <nav className="relative z-10 flex items-center justify-between border-b border-[rgb(45,45,45)] bg-[rgb(15,15,15)] px-6 py-1.5">
       <div className="flex gap-2">
@@ -16,6 +20,7 @@ export default function Navbar() {
         </button>
         <button
           type="button"
+          onClick={() => navigate('/new')}
           className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -26,6 +31,7 @@ export default function Navbar() {
         </button>
         <button
           type="button"
+          onClick={() => navigate('/conversations')}
           className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
