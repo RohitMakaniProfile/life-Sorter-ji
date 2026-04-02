@@ -22,6 +22,7 @@ from typing import Any, Literal, Optional
 
 from app.config import get_settings
 from app.middleware.rate_limit import limiter
+from app.utils.url_sanitize import sanitize_http_url
 from app.services import session_store, agent_service
 from app.services.crawl_service import detect_url_type, run_background_crawl
 from app.services.persona_doc_service import get_doc_for_domain, get_diagnostic_sections
@@ -1081,21 +1082,19 @@ async def patch_session(request: Request, session_id: str, body: SessionPatchReq
         session_store.set_business_profile(session_id, body.scale_answers)
 
     if body.business_url:
-        normalized = body.business_url.strip()
-        if normalized and not normalized.startswith("http://") and not normalized.startswith("https://"):
-            normalized = "https://" + normalized
-        url_type = detect_url_type(normalized) if normalized else "website"
-        session_store.set_website_url(session_id, normalized, url_type)
-        session_store.set_crawl_status(session_id, "in_progress")
-        asyncio.create_task(run_background_crawl(session_id, normalized))
+        normalized = sanitize_http_url(body.business_url)
+        if normalized:
+            url_type = detect_url_type(normalized)
+            session_store.set_website_url(session_id, normalized, url_type)
+            session_store.set_crawl_status(session_id, "in_progress")
+            asyncio.create_task(run_background_crawl(session_id, normalized))
 
     if body.gbp_url:
         session = _get_session_or_404(session_id)
-        normalized_gbp = body.gbp_url.strip()
-        if normalized_gbp and not normalized_gbp.startswith("http://") and not normalized_gbp.startswith("https://"):
-            normalized_gbp = "https://" + normalized_gbp
-        session.gbp_url = normalized_gbp
-        session_store.update_session(session)
+        normalized_gbp = sanitize_http_url(body.gbp_url)
+        if normalized_gbp:
+            session.gbp_url = normalized_gbp
+            session_store.update_session(session)
 
     if body.skip_url:
         session = _get_session_or_404(session_id)

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import StageLayout from './components/StageLayout';
@@ -16,19 +16,32 @@ import { useOnboardingJourneyIdleOutcomeDemo } from './hooks/useOnboardingJourne
 import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
 import { outcomeOptions } from './constants';
-import { getToolsForSelection } from './toolService';
+import { getToolsForSelection, mapToolsToEarlyTools } from './toolService';
 import { apiPost } from '../../api/http';
 import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
-import { runViewTransition } from './runViewTransition';
-
 const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
 
-const patchUrlSubmit = (sessionId, businessUrl, gbpUrl = '') =>
-  coreApi.patchAgentSession(sessionId, { business_url: businessUrl, gbp_url: gbpUrl }).then((snapshot) => ({
+const ONBOARDING_PATCH_KEYS = ['outcome', 'domain', 'task', 'website_url', 'gbp_url'];
+
+function buildOnboardingPatch(fields) {
+  const o = {};
+  for (const k of ONBOARDING_PATCH_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(fields, k)) o[k] = fields[k];
+  }
+  return o;
+}
+
+/** Backend sanitizes URLs; only send fields the user filled in. */
+const patchSessionUrls = (sessionId, { websiteInput, gbpInput } = {}) => {
+  const body = {};
+  if (websiteInput) body.business_url = websiteInput;
+  if (gbpInput) body.gbp_url = gbpInput;
+  return coreApi.patchAgentSession(sessionId, body).then((snapshot) => ({
     ...snapshot,
     crawl_started: snapshot?.crawl_status === 'in_progress',
   }));
+};
 
 const advanceSession = (sessionId, payload) =>
   coreApi.advanceAgentSession(sessionId, payload).then((res) => res?.result ?? res);
@@ -100,132 +113,116 @@ export default function OnboardingApp() {
     setEarlyTools([]);
   };
 
-  const handleOutcomeClick = async (outcome) => {
-    runViewTransition(() => {
-      setSelectedOutcome(outcome);
-      setSelectedDomain(null);
-      setSelectedTask(null);
-      clearPostTask();
+  /** After layout/paint so wide journey content (domains/tasks) is measurable for scroll width. */
+  const scheduleScrollToEnd = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollToEnd());
     });
-    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
-    try {
-      const sid = await ensureSession();
-      await coreApi.patchAgentSession(sid, {
-        outcome: outcome.id,
-        outcome_label: `${outcome.text} (${outcome.subtext})`,
-      });
-      upsertOnboarding({ session_id: sid, outcome: outcome.id }).catch((e) => console.warn('onboarding DB', e));
-    } catch (err) {
-      console.warn('Outcome submit:', err.message);
-    }
-  };
+  }, [scrollToEnd]);
 
-  /** `previewOutcome` is set when the user clicks a domain from the outcome-hover preview without selecting the outcome first. */
-  const handleDomainClick = async (domain, previewOutcome) => {
-    runViewTransition(() => {
-      if (previewOutcome) {
-        setSelectedOutcome(previewOutcome);
+  /**
+   * Single path for onboarding row fields: POST `/api/v1/onboarding` with `session_id` + any of
+   * outcome, domain, task, website_url, gbp_url. `fields` uses only keys you intend to write (including `null` to clear).
+   */
+  const handleOnboardingFieldUpdate = useCallback(
+    async (fields, ui = {}) => {
+      const {
+        nextOutcome,
+        nextDomain,
+        nextTask,
+        clearPostTaskStages,
+        openUrlForm,
+        taskSetupAdvance,
+        toolContext,
+      } = ui;
+
+      if (nextOutcome !== undefined) setSelectedOutcome(nextOutcome);
+      if (nextDomain !== undefined) setSelectedDomain(nextDomain);
+      if (nextTask !== undefined) setSelectedTask(nextTask);
+      if (clearPostTaskStages) clearPostTask();
+      if (openUrlForm) {
+        setShowUrlForm(true);
+        setShowDeeperDive(false);
+        setShowDiagnostic(false);
+        setShowPrecision(false);
+        setShowComplete(false);
+        setToolPage(0);
       }
-      setSelectedDomain(domain);
-      setSelectedTask(null);
-      clearPostTask();
-    });
-    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
-    try {
-      const sid = await ensureSession();
-      if (previewOutcome) {
-        await coreApi.patchAgentSession(sid, {
-          outcome: previewOutcome.id,
-          outcome_label: `${previewOutcome.text} (${previewOutcome.subtext})`,
-        });
-        upsertOnboarding({ session_id: sid, outcome: previewOutcome.id }).catch((e) =>
-          console.warn('onboarding DB', e),
+      if (toolContext) {
+        const { tools } = getToolsForSelection(
+          toolContext.outcomeId,
+          toolContext.domain,
+          toolContext.task,
         );
+        setEarlyTools(mapToolsToEarlyTools(tools));
       }
-      await coreApi.patchAgentSession(sid, { domain });
-      upsertOnboarding({ session_id: sid, domain }).catch((e) => console.warn('onboarding DB', e));
-    } catch (err) {
-      console.warn('Domain submit:', err.message);
-    }
+
+      scheduleScrollToEnd();
+
+      const patch = buildOnboardingPatch(fields);
+      if (Object.keys(patch).length === 0) return;
+
+      try {
+        const sid = await ensureSession();
+        await upsertOnboarding({ session_id: sid, ...patch });
+        if (taskSetupAdvance && fields.task != null) {
+          advanceSession(sid, { action: 'task_setup', task: fields.task })
+            .then((data) => setDiagnosticData(data))
+            .catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Onboarding update:', err?.message || err);
+      }
+    },
+    [ensureSession, scheduleScrollToEnd],
+  );
+
+  const handleOutcomeClick = (outcome) => {
+    handleOnboardingFieldUpdate(
+      { outcome: outcome.id, domain: null, task: null },
+      {
+        nextOutcome: outcome,
+        nextDomain: null,
+        nextTask: null,
+        clearPostTaskStages: true,
+      },
+    );
   };
 
-  /** Optional preview args when the user clicks a task from hover previews without committing outcome/domain first. */
-  const handleTaskClick = async (task, previewOutcome, previewDomain) => {
-    const outcome = selectedOutcome ?? previewOutcome;
-    const domain = selectedDomain ?? previewDomain;
-    if (!outcome || !domain) {
+  /** `previewOutcome` when the user picks a domain while only hovering an outcome (not committed). */
+  const handleDomainClick = (domain, previewOutcome) => {
+    handleOnboardingFieldUpdate(
+      previewOutcome
+        ? { outcome: previewOutcome.id, domain, task: null }
+        : { domain, task: null },
+      {
+        ...(previewOutcome ? { nextOutcome: previewOutcome } : {}),
+        nextDomain: domain,
+        nextTask: null,
+        clearPostTaskStages: true,
+      },
+    );
+  };
+
+  const handleTaskClick = (task, previewOutcome, previewDomain) => {
+    const effectiveOutcome = selectedOutcome ?? previewOutcome;
+    const effectiveDomain = selectedDomain ?? previewDomain;
+    if (!effectiveOutcome || !effectiveDomain) {
       console.warn('Task click: missing outcome or domain');
       return;
     }
-
-    runViewTransition(() => {
-      if (previewOutcome) setSelectedOutcome(previewOutcome);
-      if (previewDomain) setSelectedDomain(previewDomain);
-      setSelectedTask(task);
-      setShowUrlForm(true);
-      setShowDeeperDive(false);
-      setShowDiagnostic(false);
-      setShowPrecision(false);
-      setShowComplete(false);
-      setToolPage(0);
+    const fields = { task };
+    if (previewOutcome) fields.outcome = previewOutcome.id;
+    if (previewDomain) fields.domain = previewDomain;
+    handleOnboardingFieldUpdate(fields, {
+      ...(previewOutcome ? { nextOutcome: previewOutcome } : {}),
+      ...(previewDomain != null ? { nextDomain: previewDomain } : {}),
+      nextTask: task,
+      clearPostTaskStages: true,
+      openUrlForm: true,
+      taskSetupAdvance: true,
+      toolContext: { outcomeId: effectiveOutcome.id, domain: effectiveDomain, task },
     });
-    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
-
-    const { tools } = getToolsForSelection(outcome.id, domain, task);
-    if (tools.length > 0) {
-      setEarlyTools(
-        tools.map((t) => {
-          const rawDesc = t.best_use_case || t.description || '';
-          const desc = rawDesc.length > 120 ? `${rawDesc.slice(0, 117)}...` : rawDesc;
-          let bullets = [];
-          if (t.key_pros) {
-            const raw = Array.isArray(t.key_pros)
-              ? t.key_pros
-              : t.key_pros
-                  .split('\n')
-                  .map((s) => s.replace(/^[•\-\s]+/, '').trim())
-                  .filter(Boolean);
-            bullets = raw.slice(0, 3).map((b) => (b.length > 70 ? `${b.slice(0, 67)}...` : b));
-          }
-          return {
-            name: t.name,
-            rating: t.rating || null,
-            description: desc,
-            bullets,
-            tag: t.category || 'RECOMMENDED',
-            url: t.url,
-          };
-        }),
-      );
-    } else {
-      setEarlyTools([]);
-    }
-
-    try {
-      const sid = await ensureSession();
-      if (previewOutcome) {
-        await coreApi.patchAgentSession(sid, {
-          outcome: previewOutcome.id,
-          outcome_label: `${previewOutcome.text} (${previewOutcome.subtext})`,
-        });
-        upsertOnboarding({ session_id: sid, outcome: previewOutcome.id }).catch((e) =>
-          console.warn('onboarding DB', e),
-        );
-      }
-      if (previewDomain) {
-        await coreApi.patchAgentSession(sid, { domain: previewDomain });
-        upsertOnboarding({ session_id: sid, domain: previewDomain }).catch((e) =>
-          console.warn('onboarding DB', e),
-        );
-      }
-      advanceSession(sid, { action: 'task_setup', task })
-        .then((data) => setDiagnosticData(data))
-        .catch(() => {});
-      upsertOnboarding({ session_id: sid, task }).catch((e) => console.warn('onboarding DB', e));
-    } catch (err) {
-      console.warn('Task submit:', err.message);
-    }
-    setTimeout(scrollToEnd, 100);
   };
 
   const handleUrlSubmit = async (e) => {
@@ -234,28 +231,17 @@ export default function OnboardingApp() {
     setUrlSubmitting(true);
     try {
       const sid = await ensureSession();
-      let websiteNorm = '';
-      let gbpNorm = '';
-      if (urlValue.trim()) {
-        let finalUrl = urlValue.trim();
-        if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
-        websiteNorm = finalUrl;
-        const res = await patchUrlSubmit(sid, finalUrl);
-        if (res?.crawl_started) {
+      const web = urlValue.trim();
+      const gbp = gbpValue.trim();
+      if (web || gbp) {
+        const res = await patchSessionUrls(sid, { websiteInput: web || undefined, gbpInput: gbp || undefined });
+        if (web && res?.crawl_started) {
           setCrawlStatus('in_progress');
           startCrawlPolling();
         }
-      }
-      if (gbpValue.trim()) {
-        let finalGbp = gbpValue.trim();
-        if (!/^https?:\/\//i.test(finalGbp)) finalGbp = `https://${finalGbp}`;
-        gbpNorm = finalGbp;
-        await patchUrlSubmit(sid, finalGbp);
-      }
-      if (websiteNorm || gbpNorm) {
         const patch = { session_id: sid };
-        if (websiteNorm) patch.website_url = websiteNorm;
-        if (gbpNorm) patch.gbp_url = gbpNorm;
+        if (web) patch.website_url = web;
+        if (gbp) patch.gbp_url = gbp;
         upsertOnboarding(patch).catch((e) => console.warn('onboarding DB', e));
       }
       await moveToScaleQuestions();
@@ -458,11 +444,7 @@ export default function OnboardingApp() {
     }
   };
 
-  const getWebsiteUrl = () => {
-    let u = (urlValue || '').trim();
-    if (u && !/^https?:\/\//i.test(u)) u = `https://${u}`;
-    return u;
-  };
+  const getWebsiteUrl = () => (urlValue || '').trim();
 
   const handleDeepAnalysis = () => {
     const url = getWebsiteUrl();

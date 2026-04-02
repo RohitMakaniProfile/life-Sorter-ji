@@ -10,6 +10,7 @@ import structlog
 
 from app.db import get_pool
 from app.services import session_store, user_session_service
+from app.utils.url_sanitize import sanitize_http_url
 
 logger = structlog.get_logger()
 
@@ -18,10 +19,22 @@ ALLOWED_PATCH_FIELDS = frozenset(
 )
 
 
+def _sanitize_onboarding_url_fields(d: dict[str, Any]) -> dict[str, Any]:
+    out = dict(d)
+    for key in ("website_url", "gbp_url"):
+        if key not in out:
+            continue
+        val = out[key]
+        if isinstance(val, str):
+            out[key] = sanitize_http_url(val)
+    return out
+
+
 def _allowed_updates(updates: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not updates:
         return {}
-    return {k: v for k, v in updates.items() if k in ALLOWED_PATCH_FIELDS}
+    raw = {k: v for k, v in updates.items() if k in ALLOWED_PATCH_FIELDS}
+    return _sanitize_onboarding_url_fields(raw)
 
 
 def _serialize_row(row: Any) -> dict[str, Any]:
