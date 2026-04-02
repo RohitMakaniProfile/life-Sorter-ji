@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import FlowNode from './FlowNode';
-import BranchArrows from './BranchArrows';
+import JourneyConnectors from './JourneyConnectors';
 import { OUTCOME_DOMAINS, DOMAIN_TASKS } from '../constants';
+
+const TASK_KEY_SEP = '|||';
 
 
 const colBase = 'flex shrink-0 items-center justify-center px-1.5';
@@ -10,34 +12,28 @@ const nodeWrap = 'relative transition-[opacity,transform] duration-300 ease-out'
 const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-30';
 
 /** Animates width when `open` toggles (flex `transition` cannot interpolate sibling reflow). */
-function JourneyGrow({ open, children, className = '' }) {
+const JourneyGrow = forwardRef(function JourneyGrow({ open, children, className = '' }, ref) {
   return (
     <div
-      className={`grid min-h-0 min-w-0 overflow-hidden transition-[grid-template-columns] duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${className}`}
+      ref={ref}
+      className={`grid min-h-0 min-w-0 self-stretch overflow-hidden transition-[grid-template-columns] duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${className}`}
       style={{ gridTemplateColumns: open ? '1fr' : '0fr' }}
     >
-      <div className="min-h-0 min-w-0">{children}</div>
+      <div className="flex h-full min-h-0 min-w-0 items-center">{children}</div>
     </div>
   );
-}
+});
+JourneyGrow.displayName = 'JourneyGrow';
 
 const arrowCol = `${colBase} flex shrink-0 items-center px-0.5`;
 
-function TaskArrowSegment({ branchDomains, branchDomainKey, tgtLabels }) {
-  return (
-    <div className={arrowCol}>
-      <BranchArrows
-        count={tgtLabels.length}
-        sourceIndex={branchDomains.indexOf(branchDomainKey)}
-        srcLabels={branchDomains}
-        tgtLabels={tgtLabels}
-      />
-    </div>
-  );
+function TaskArrowSpacer() {
+  return <div className={`${arrowCol} w-[70px] min-w-[70px]`} aria-hidden />;
 }
 
 function TaskNodesColumn({
   tasks,
+  branchDomainKey,
   selectedTask,
   onHoverTask,
   onTaskClick,
@@ -56,6 +52,8 @@ function TaskNodesColumn({
           return (
             <div
               key={t}
+              data-journey-anchor="task"
+              data-journey-key={`${branchDomainKey}${TASK_KEY_SEP}${t}`}
               className={`${nodeWrap} ${selectedTask && !isSel ? nodeWrapDimmed : ''}`}
               onMouseEnter={() => {
                 onJourneyUserActivity?.();
@@ -102,6 +100,7 @@ function DomainAndTaskColumns({
     selectedDomain == null && hoveredDomain ? hoveredDomain : undefined;
 
   const taskNodesProps = {
+    branchDomainKey,
     selectedTask,
     onHoverTask,
     onTaskClick,
@@ -120,15 +119,7 @@ function DomainAndTaskColumns({
 
   return (
     <>
-      <div className={arrowCol}>
-        <BranchArrows
-          count={branchDomains.length}
-          sourceIndex={outcomeOptions.findIndex((o) => o.id === effectiveOutcome.id)}
-          srcLabels={outcomeOptions.map((o) => o.text)}
-          srcHasSubtext
-          tgtLabels={branchDomains}
-        />
-      </div>
+      <div className={`${arrowCol} w-[70px] min-w-[70px]`} aria-hidden />
 
       <div className={colBase}>
         <div className={nodeCol}>
@@ -143,10 +134,12 @@ function DomainAndTaskColumns({
             return (
               <div
                 key={d}
+                data-journey-anchor="domain"
+                data-journey-key={d}
                 className={`${nodeWrap} ${dimDomain ? nodeWrapDimmed : ''}`}
                 onMouseEnter={() => {
                   onJourneyUserActivity?.();
-                  if (selectedOutcome != null) onHoverDomain(d);
+                  if (!selectedDomain) onHoverDomain(d);
                 }}
               >
                 <FlowNode
@@ -171,20 +164,12 @@ function DomainAndTaskColumns({
         {showTaskColumn &&
           (branchTasks.length <= 6 ? (
             <div className="flex flex-row flex-nowrap items-center">
-              <TaskArrowSegment
-                branchDomains={branchDomains}
-                branchDomainKey={branchDomainKey}
-                tgtLabels={branchTasks}
-              />
+              <TaskArrowSpacer />
               <TaskNodesColumn tasks={branchTasks} {...taskNodesProps} />
             </div>
           ) : (
             <div className="flex flex-row flex-nowrap items-center">
-              <TaskArrowSegment
-                branchDomains={branchDomains}
-                branchDomainKey={branchDomainKey}
-                tgtLabels={taskSplit.left}
-              />
+              <TaskArrowSpacer />
               <TaskNodesColumn tasks={taskSplit.left} {...taskNodesProps} />
               <TaskNodesColumn
                 tasks={taskSplit.right}
@@ -267,6 +252,8 @@ export default function OnboardingJourneyCanvas({
           return (
             <div
               key={opt.id}
+              data-journey-anchor="outcome"
+              data-journey-key={opt.id}
               className={`${nodeWrap} ${dimOutcome ? nodeWrapDimmed : ''}`}
               onMouseEnter={() => {
                 onJourneyUserActivity?.();
@@ -290,6 +277,41 @@ export default function OnboardingJourneyCanvas({
       </div>
     </div>
   );
+
+  const journeyLayoutRef = useRef(null);
+  const journeyGrowRef = useRef(null);
+
+  const journeyConnectorSegments = useMemo(() => {
+    const segments = [];
+    if (showDomainColumn && effectiveOutcome?.id && branchDomains.length > 0) {
+      segments.push({
+        key: 'outcome-domain',
+        show: true,
+        sourceType: 'outcome',
+        sourceKey: effectiveOutcome.id,
+        targetType: 'domain',
+        targetKeys: branchDomains,
+      });
+    }
+    if (showTaskColumn && branchDomainKey && branchTasks.length > 0) {
+      segments.push({
+        key: 'domain-task',
+        show: true,
+        sourceType: 'domain',
+        sourceKey: branchDomainKey,
+        targetType: 'task',
+        targetKeys: branchTasks.map((t) => `${branchDomainKey}${TASK_KEY_SEP}${t}`),
+      });
+    }
+    return segments;
+  }, [
+    showDomainColumn,
+    effectiveOutcome?.id,
+    branchDomains,
+    showTaskColumn,
+    branchDomainKey,
+    branchTasks,
+  ]);
 
   const branchProps = {
     showDomainColumn,
@@ -317,9 +339,14 @@ export default function OnboardingJourneyCanvas({
       onMouseLeave={clearBranchHover}
       onPointerDownCapture={() => onJourneyUserActivity?.()}
     >
-      <div className="flex h-full flex-row content-center items-center justify-center">
-        <div className="flex shrink-0 flex-col items-center">{outcomesBlock}</div>
-        <JourneyGrow open={showDomainColumn} className="max-w-full">
+      <div
+        ref={journeyLayoutRef}
+        className="relative flex min-h-full w-max min-w-full flex-1 flex-row items-stretch justify-center py-6"
+      >
+        <div className="relative z-10 flex shrink-0 flex-col items-center justify-center px-1.5">
+          {outcomesBlock}
+        </div>
+        <JourneyGrow ref={journeyGrowRef} open={showDomainColumn} className="relative z-10 max-w-full">
           {showDomainColumn ? (
             <div className="min-w-0 overflow-x-auto overflow-y-visible [scrollbar-width:thin]">
               <div className="flex flex-row flex-nowrap items-center" style={{ viewTransitionName: 'onb-branch' }}>
@@ -328,6 +355,12 @@ export default function OnboardingJourneyCanvas({
             </div>
           ) : null}
         </JourneyGrow>
+        <JourneyConnectors
+          rootRef={journeyLayoutRef}
+          scrollRef={canvasRef}
+          branchTransitionRef={journeyGrowRef}
+          segments={journeyConnectorSegments}
+        />
       </div>
     </div>
   );
