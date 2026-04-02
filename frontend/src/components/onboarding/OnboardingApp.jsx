@@ -16,11 +16,12 @@ import { useOnboardingSession } from './hooks/useOnboardingSession';
 import { useOnboardingIdleScreensaver } from './hooks/useOnboardingIdleScreensaver';
 import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
-import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
+import { outcomeOptions } from './constants';
 import { getToolsForSelection } from './toolService';
 import { apiPost } from '../../api/http';
 import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
+import { runViewTransition } from './runViewTransition';
 
 const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
 
@@ -46,9 +47,6 @@ export default function OnboardingApp() {
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
-  const [hoveredOutcome, setHoveredOutcome] = useState(null);
-  const [hoveredDomain, setHoveredDomain] = useState(null);
-  const [hoveredTask, setHoveredTask] = useState(null);
 
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [toolPage, setToolPage] = useState(0);
@@ -90,9 +88,6 @@ export default function OnboardingApp() {
 
   const pendingStreamSidRef = useRef(null);
 
-  const domains = selectedOutcome ? OUTCOME_DOMAINS[selectedOutcome.id] || [] : [];
-  const tasks = selectedDomain ? DOMAIN_TASKS[selectedDomain] || [] : [];
-
   const clearPostTask = () => {
     setShowUrlForm(false);
     setShowDeeperDive(false);
@@ -103,12 +98,13 @@ export default function OnboardingApp() {
   };
 
   const handleOutcomeClick = async (outcome) => {
-    setSelectedOutcome(outcome);
-    setSelectedDomain(null);
-    setSelectedTask(null);
-    clearPostTask();
-    setHoveredOutcome(null);
-    setTimeout(scrollToEnd, 50);
+    runViewTransition(() => {
+      setSelectedOutcome(outcome);
+      setSelectedDomain(null);
+      setSelectedTask(null);
+      clearPostTask();
+    });
+    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
     try {
       const sid = await ensureSession();
       await coreApi.patchAgentSession(sid, {
@@ -121,14 +117,28 @@ export default function OnboardingApp() {
     }
   };
 
-  const handleDomainClick = async (domain) => {
-    setSelectedDomain(domain);
-    setSelectedTask(null);
-    clearPostTask();
-    setHoveredDomain(null);
-    setTimeout(scrollToEnd, 50);
+  /** `previewOutcome` is set when the user clicks a domain from the outcome-hover preview without selecting the outcome first. */
+  const handleDomainClick = async (domain, previewOutcome) => {
+    runViewTransition(() => {
+      if (previewOutcome) {
+        setSelectedOutcome(previewOutcome);
+      }
+      setSelectedDomain(domain);
+      setSelectedTask(null);
+      clearPostTask();
+    });
+    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
     try {
       const sid = await ensureSession();
+      if (previewOutcome) {
+        await coreApi.patchAgentSession(sid, {
+          outcome: previewOutcome.id,
+          outcome_label: `${previewOutcome.text} (${previewOutcome.subtext})`,
+        });
+        upsertOnboarding({ session_id: sid, outcome: previewOutcome.id }).catch((e) =>
+          console.warn('onboarding DB', e),
+        );
+      }
       await coreApi.patchAgentSession(sid, { domain });
       upsertOnboarding({ session_id: sid, domain }).catch((e) => console.warn('onboarding DB', e));
     } catch (err) {
@@ -136,18 +146,29 @@ export default function OnboardingApp() {
     }
   };
 
-  const handleTaskClick = async (task) => {
-    setSelectedTask(task);
-    setShowUrlForm(true);
-    setShowDeeperDive(false);
-    setShowDiagnostic(false);
-    setShowPrecision(false);
-    setShowComplete(false);
-    setToolPage(0);
-    setHoveredTask(null);
-    setTimeout(scrollToEnd, 50);
+  /** Optional preview args when the user clicks a task from hover previews without committing outcome/domain first. */
+  const handleTaskClick = async (task, previewOutcome, previewDomain) => {
+    const outcome = selectedOutcome ?? previewOutcome;
+    const domain = selectedDomain ?? previewDomain;
+    if (!outcome || !domain) {
+      console.warn('Task click: missing outcome or domain');
+      return;
+    }
 
-    const { tools } = getToolsForSelection(selectedOutcome.id, selectedDomain, task);
+    runViewTransition(() => {
+      if (previewOutcome) setSelectedOutcome(previewOutcome);
+      if (previewDomain) setSelectedDomain(previewDomain);
+      setSelectedTask(task);
+      setShowUrlForm(true);
+      setShowDeeperDive(false);
+      setShowDiagnostic(false);
+      setShowPrecision(false);
+      setShowComplete(false);
+      setToolPage(0);
+    });
+    setTimeout(scrollToEnd, typeof document !== 'undefined' && document.startViewTransition ? 320 : 50);
+
+    const { tools } = getToolsForSelection(outcome.id, domain, task);
     if (tools.length > 0) {
       setEarlyTools(
         tools.map((t) => {
@@ -179,6 +200,21 @@ export default function OnboardingApp() {
 
     try {
       const sid = await ensureSession();
+      if (previewOutcome) {
+        await coreApi.patchAgentSession(sid, {
+          outcome: previewOutcome.id,
+          outcome_label: `${previewOutcome.text} (${previewOutcome.subtext})`,
+        });
+        upsertOnboarding({ session_id: sid, outcome: previewOutcome.id }).catch((e) =>
+          console.warn('onboarding DB', e),
+        );
+      }
+      if (previewDomain) {
+        await coreApi.patchAgentSession(sid, { domain: previewDomain });
+        upsertOnboarding({ session_id: sid, domain: previewDomain }).catch((e) =>
+          console.warn('onboarding DB', e),
+        );
+      }
       advanceSession(sid, { action: 'task_setup', task })
         .then((data) => setDiagnosticData(data))
         .catch(() => {});
@@ -531,14 +567,6 @@ export default function OnboardingApp() {
 
   return (
     <div className="flex h-screen max-h-screen flex-col overflow-hidden bg-[#111] bg-[radial-gradient(circle,rgba(255,255,255,0.18)_1px,transparent_1px)] bg-[length:14px_14px] font-sans text-white [&_button]:font-inherit [&_input]:font-inherit">
-      <ScreensaverPreview
-        active={showScreensaver}
-        onDismiss={(outcome) => {
-          setShowScreensaver(false);
-          if (outcome) handleOutcomeClick(outcome);
-        }}
-      />
-
       <Navbar />
       <OnboardingHero />
 
@@ -547,17 +575,9 @@ export default function OnboardingApp() {
         selectedOutcome={selectedOutcome}
         selectedDomain={selectedDomain}
         selectedTask={selectedTask}
-        hoveredOutcome={hoveredOutcome}
-        hoveredDomain={hoveredDomain}
-        hoveredTask={hoveredTask}
-        onHoverOutcome={setHoveredOutcome}
-        onHoverDomain={setHoveredDomain}
-        onHoverTask={setHoveredTask}
         onOutcomeClick={handleOutcomeClick}
         onDomainClick={handleDomainClick}
         onTaskClick={handleTaskClick}
-        domains={domains}
-        tasks={tasks}
         outcomeOptions={outcomeOptions}
       />
 

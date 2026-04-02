@@ -1,5 +1,15 @@
 /* App-wide Tailwind. Fonts: index.html <link>. @tailwindcss/vite scans the module graph. */
 @import "tailwindcss";
+
+/* Onboarding journey: morph outcomes + branch when layout changes (hover grid → selected row). */
+@supports (view-transition-name: none) {
+  ::view-transition-group(onb-outcomes),
+  ::view-transition-group(onb-branch),
+  ::view-transition-group(onb-tasks) {
+    animation-duration: 0.3s;
+    animation-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+}
 /* Enables `prose` / `prose-invert` in Phase 2 chat (markdown bubbles match standalone Phase 2). */
 @plugin '@tailwindcss/typography';
 
