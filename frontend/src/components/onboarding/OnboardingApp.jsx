@@ -1,8 +1,7 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import StageLayout from './components/StageLayout';
-import ScreensaverPreview from './stages/ScreensaverPreview';
 import UrlStage from './stages/UrlStage';
 import DeeperDiveStage from './stages/DeeperDiveStage';
 import DiagnosticStage from './stages/DiagnosticStage';
@@ -13,7 +12,7 @@ import OnboardingHero from './components/OnboardingHero';
 import OnboardingJourneyCanvas from './components/OnboardingJourneyCanvas';
 import OnboardingErrorToast from './components/OnboardingErrorToast';
 import { useOnboardingSession } from './hooks/useOnboardingSession';
-import { useOnboardingIdleScreensaver } from './hooks/useOnboardingIdleScreensaver';
+import { useOnboardingJourneyIdleOutcomeDemo } from './hooks/useOnboardingJourneyIdleOutcomeDemo';
 import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useOnboardingCrawlPolling } from './hooks/useOnboardingCrawlPolling';
 import { outcomeOptions } from './constants';
@@ -40,13 +39,17 @@ const phase2Path = (path) => `/phase2/${path}`;
 export default function OnboardingApp() {
   const navigate = useNavigate();
   const { sessionIdRef, ensureSession } = useOnboardingSession();
-  const { showScreensaver, setShowScreensaver } = useOnboardingIdleScreensaver();
-  const { canvasRef, scrollToEnd } = useOnboardingCanvasScroll();
-  const { setCrawlStatus, startCrawlPolling, waitForCrawl } = useOnboardingCrawlPolling(sessionIdRef);
-
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+
+  const outcomeIds = useMemo(() => outcomeOptions.map((o) => o.id), []);
+  const { programmaticHoveredOutcomeId, onJourneyDirectInteraction } = useOnboardingJourneyIdleOutcomeDemo(
+    !selectedOutcome,
+    outcomeIds,
+  );
+  const { canvasRef, scrollToEnd } = useOnboardingCanvasScroll();
+  const { setCrawlStatus, startCrawlPolling, waitForCrawl } = useOnboardingCrawlPolling(sessionIdRef);
 
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [toolPage, setToolPage] = useState(0);
@@ -579,6 +582,8 @@ export default function OnboardingApp() {
         onDomainClick={handleDomainClick}
         onTaskClick={handleTaskClick}
         outcomeOptions={outcomeOptions}
+        programmaticHoveredOutcomeId={programmaticHoveredOutcomeId}
+        onJourneyUserActivity={onJourneyDirectInteraction}
       />
 
       <OnboardingErrorToast error={error} onClear={clearError} />

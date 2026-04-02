@@ -45,6 +45,7 @@ function TaskNodesColumn({
   previewDomainForTask,
   colClassName = colBase,
   nodeColClassName = '',
+  onJourneyUserActivity,
 }) {
   const innerCol = nodeColClassName ? `${nodeCol} ${nodeColClassName}` : nodeCol;
   return (
@@ -56,13 +57,19 @@ function TaskNodesColumn({
             <div
               key={t}
               className={`${nodeWrap} ${selectedTask && !isSel ? nodeWrapDimmed : ''}`}
-              onMouseEnter={() => !selectedTask && onHoverTask(t)}
+              onMouseEnter={() => {
+                onJourneyUserActivity?.();
+                if (!selectedTask) onHoverTask(t);
+              }}
             >
               <FlowNode
                 label={t}
                 variant={isSel ? 'light' : 'dark'}
                 active={isSel}
-                onClick={() => onTaskClick(t, previewOutcomeForTask, previewDomainForTask)}
+                onClick={() => {
+                  onJourneyUserActivity?.();
+                  onTaskClick(t, previewOutcomeForTask, previewDomainForTask);
+                }}
               />
             </div>
           );
@@ -87,6 +94,7 @@ function DomainAndTaskColumns({
   onHoverTask,
   onDomainClick,
   onTaskClick,
+  onJourneyUserActivity,
 }) {
   const previewOutcomeForTask =
     selectedOutcome == null && effectiveOutcome ? effectiveOutcome : undefined;
@@ -99,6 +107,7 @@ function DomainAndTaskColumns({
     onTaskClick,
     previewOutcomeForTask,
     previewDomainForTask,
+    onJourneyUserActivity,
   };
 
   const taskSplit =
@@ -135,18 +144,22 @@ function DomainAndTaskColumns({
               <div
                 key={d}
                 className={`${nodeWrap} ${dimDomain ? nodeWrapDimmed : ''}`}
-                onMouseEnter={() => selectedOutcome != null && onHoverDomain(d)}
+                onMouseEnter={() => {
+                  onJourneyUserActivity?.();
+                  if (selectedOutcome != null) onHoverDomain(d);
+                }}
               >
                 <FlowNode
                   label={d}
                   variant={domainLooksActive ? 'light' : 'dark'}
                   active={domainLooksActive}
-                  onClick={() =>
+                  onClick={() => {
+                    onJourneyUserActivity?.();
                     onDomainClick(
                       d,
                       selectedOutcome == null && effectiveOutcome ? effectiveOutcome : undefined,
-                    )
-                  }
+                    );
+                  }}
                 />
               </div>
             );
@@ -195,6 +208,8 @@ export default function OnboardingJourneyCanvas({
   onDomainClick,
   onTaskClick,
   outcomeOptions,
+  programmaticHoveredOutcomeId = null,
+  onJourneyUserActivity,
 }) {
   const [hoveredOutcome, setHoveredOutcome] = useState(null);
   const [hoveredDomain, setHoveredDomain] = useState(null);
@@ -212,9 +227,13 @@ export default function OnboardingJourneyCanvas({
     setHoveredTask(null);
   }, [selectedTask]);
 
+  const mergedHoveredOutcomeId = hoveredOutcome ?? programmaticHoveredOutcomeId;
+
   const effectiveOutcome =
     selectedOutcome ??
-    (hoveredOutcome != null ? outcomeOptions.find((o) => o.id === hoveredOutcome) ?? null : null);
+    (mergedHoveredOutcomeId != null
+      ? outcomeOptions.find((o) => o.id === mergedHoveredOutcomeId) ?? null
+      : null);
 
   const branchDomains = effectiveOutcome ? OUTCOME_DOMAINS[effectiveOutcome.id] || [] : [];
 
@@ -239,17 +258,18 @@ export default function OnboardingJourneyCanvas({
       <div className={nodeCol}>
         {outcomeOptions.map((opt) => {
           const isCommitted = selectedOutcome?.id === opt.id;
-          const isHovered = hoveredOutcome === opt.id;
+          const isHovered = mergedHoveredOutcomeId === opt.id;
           const outcomeLooksActive = isCommitted || (!selectedOutcome && isHovered);
           const dimOutcome =
             (selectedOutcome && !isCommitted) ||
-            (!selectedOutcome && hoveredOutcome != null && hoveredOutcome !== opt.id);
+            (!selectedOutcome && mergedHoveredOutcomeId != null && mergedHoveredOutcomeId !== opt.id);
 
           return (
             <div
               key={opt.id}
               className={`${nodeWrap} ${dimOutcome ? nodeWrapDimmed : ''}`}
               onMouseEnter={() => {
+                onJourneyUserActivity?.();
                 setHoveredOutcome(opt.id);
                 setHoveredDomain(null);
               }}
@@ -259,7 +279,10 @@ export default function OnboardingJourneyCanvas({
                 subtext={opt.subtext}
                 variant={outcomeLooksActive ? 'light' : 'dark'}
                 active={outcomeLooksActive}
-                onClick={() => onOutcomeClick(opt)}
+                onClick={() => {
+                  onJourneyUserActivity?.();
+                  onOutcomeClick(opt);
+                }}
               />
             </div>
           );
@@ -284,6 +307,7 @@ export default function OnboardingJourneyCanvas({
     onHoverTask: setHoveredTask,
     onDomainClick,
     onTaskClick,
+    onJourneyUserActivity,
   };
 
   return (
@@ -291,6 +315,7 @@ export default function OnboardingJourneyCanvas({
       ref={canvasRef}
       className="min-h-0 flex-1 overflow-x-auto overflow-y-auto [scrollbar-color:rgba(255,255,255,0.12)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-white/10"
       onMouseLeave={clearBranchHover}
+      onPointerDownCapture={() => onJourneyUserActivity?.()}
     >
       <div className="flex h-full flex-row content-center items-center justify-center">
         <div className="flex shrink-0 flex-col items-center">{outcomesBlock}</div>
