@@ -14,10 +14,9 @@ import structlog
 
 from app.config import get_settings
 from app.data.personas import build_system_prompt
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 
 logger = structlog.get_logger()
-_ai = AIHelper()
 
 
 # ── Chat Completion ────────────────────────────────────────────

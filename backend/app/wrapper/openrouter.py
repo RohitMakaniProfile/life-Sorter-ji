@@ -30,10 +30,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
-
-TokenCb = Callable[[str], Awaitable[None] | None]
-_ai = AIHelper()
+from app.services.ai_helper import TokenCb, ai_helper as _ai
 
 
 class OpenRouter:

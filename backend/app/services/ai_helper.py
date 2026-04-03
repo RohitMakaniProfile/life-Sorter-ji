@@ -3,13 +3,22 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import httpx
 
+from app.config import OPENAI_MODEL, get_settings
 from app.services import openrouter_service
 
 TokenCb = Callable[[str], Awaitable[None] | None]
+
+
+@dataclass
+class AiChatResult:
+    message: str
+    input_tokens: int
+    output_tokens: int
 
 
 def _extract_json_object(text: str) -> str:
@@ -215,6 +224,74 @@ class AIHelper:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+        )
+
+    async def chat(
+        self,
+        message: str,
+        system_prompt: str = "",
+        conversation_history: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        provider: str | None = None,
+    ) -> AiChatResult:
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        for m in (conversation_history or []):
+            messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": "user", "content": message})
+
+        settings = get_settings()
+        model_id = settings.OPENROUTER_MODEL or OPENAI_MODEL
+        if provider in {"anthropic", "claude"}:
+            model_id = settings.OPENROUTER_CLAUDE_MODEL or model_id
+
+        response = await self.complete(
+            model=model_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=8192,
+        )
+        usage = response.get("usage") or {}
+        return AiChatResult(
+            message=str(response.get("message") or "").strip(),
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+        )
+
+    async def chat_stream(
+        self,
+        message: str,
+        system_prompt: str = "",
+        conversation_history: list[dict[str, Any]] | None = None,
+        on_token: TokenCb | None = None,
+        temperature: float = 0.7,
+        provider: str | None = None,
+    ) -> AiChatResult:
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        for m in (conversation_history or []):
+            messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": "user", "content": message})
+
+        settings = get_settings()
+        model_id = settings.OPENROUTER_MODEL or OPENAI_MODEL
+        if provider in {"anthropic", "claude"}:
+            model_id = settings.OPENROUTER_CLAUDE_MODEL or model_id
+
+        streamed = await self.complete_stream(
+            model=model_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=8192,
+            on_token=on_token,
+        )
+        usage = streamed.get("usage") or {}
+        return AiChatResult(
+            message=str(streamed.get("message") or "").strip(),
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
         )
 
 

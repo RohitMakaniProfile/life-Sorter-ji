@@ -25,10 +25,9 @@ import json
 
 import re
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 
 logger = structlog.get_logger()
-_ai = AIHelper()
 
 async def _call_openrouter_with_retry(
     *,

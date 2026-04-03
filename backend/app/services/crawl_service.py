@@ -28,11 +28,10 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 from app.services.crawl_persistence import persist_successful_crawl
 
 logger = structlog.get_logger()
-_ai = AIHelper()
 
 # Social media domains (for url_type detection)
 SOCIAL_DOMAINS = {

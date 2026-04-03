@@ -53,8 +53,6 @@ async def lifespan(app: FastAPI):
     )
 
     # Verify critical configuration
-    if not settings.openai_api_key_active:
-        logger.warning("⚠️  No OpenAI API key configured — chat/TTS endpoints will fail")
     if not settings.JUSPAY_API_KEY:
         logger.warning("⚠️  No JusPay API key configured — payment endpoints will fail")
 
@@ -168,6 +166,7 @@ def create_app() -> FastAPI:
         ai_chat,
         chat,
         admin_management,
+        agents,
         payments,
         plans,
         legacy,
@@ -179,6 +178,7 @@ def create_app() -> FastAPI:
     ChatRequest.model_rebuild()
     ChatResponse.model_rebuild()
 
+    app.include_router(agents.router, prefix="/api", tags=["Agents"])
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
     app.include_router(onboarding.router, prefix="/api/v1", tags=["Onboarding"])
     app.include_router(ai_chat.router, prefix="/api/v1")

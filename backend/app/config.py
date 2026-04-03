@@ -73,8 +73,6 @@ class Settings(BaseSettings):
     ]
 
     # ── OpenAI ─────────────────────────────────────────────────
-    OPENAI_API_KEY: str = ""
-    OPENAI_API_KEY_2: str = ""
     OPENAI_MODEL_NAME: str = "gpt-4o-mini"
 
     # ── OpenRouter (GLM-5 RCA) ──────────────────────────────────
@@ -138,11 +136,6 @@ class Settings(BaseSettings):
         if self.JUSPAY_ENVIRONMENT == JuspayEnvironment.PRODUCTION:
             return "https://api.juspay.in"
         return "https://sandbox.juspay.in"
-
-    @property
-    def openai_api_key_active(self) -> str:
-        """Return the primary key, fallback to secondary."""
-        return self.OPENAI_API_KEY or self.OPENAI_API_KEY_2
 
 
 @lru_cache

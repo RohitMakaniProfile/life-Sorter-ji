@@ -5,10 +5,8 @@ import re
 from typing import Any
 
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 from .gemini_models import get_planner_models
-
-_ai = AIHelper()
 
 _SYSTEM_PROMPT = """You extract **structured arguments** for a skill from the user's message and any **prior skill outputs** appended below.
 

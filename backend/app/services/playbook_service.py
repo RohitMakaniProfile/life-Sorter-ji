@@ -17,10 +17,9 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 
 logger = structlog.get_logger()
-_ai = AIHelper()
 
 # ══════════════════════════════════════════════════════════════
 #  SYSTEM PROMPTS — EXACT USER-PROVIDED TEXT (DO NOT MODIFY)

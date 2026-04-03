@@ -10,14 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app.phase2.ai import AiHelper
 from app.config import GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT, get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 from app.phase2.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
 import httpx
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
-_ai = AIHelper()
 
 
 def _json_default(value: Any) -> Any:
@@ -312,7 +310,6 @@ async def _summarize_single(
     except Exception:
         return fallback_text
     raw_json = raw_json[:120_000]
-    ai = AiHelper(temperature=0.2)
     prompt = "\n".join(
         [
             f"Skill: {skill_id}",
@@ -327,9 +324,10 @@ async def _summarize_single(
             raw_json,
         ]
     )
-    res = await ai.chat(
-        message=prompt,
+    res = await _ai.chat(
+        prompt,
         system_prompt="You are a precise data-to-text formatter. Keep full coverage with minimal redundancy.",
+        temperature=0.2,
     )
     await _emit_summary_token_usage(
         on_progress,
@@ -355,7 +353,6 @@ async def _summarize_multi_page(
     if not isinstance(pages, list) or not pages:
         return await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
 
-    ai = AiHelper(temperature=0.2)
     blocks: list[str] = []
 
     for idx, item in enumerate(pages, start=1):
@@ -378,9 +375,10 @@ async def _summarize_multi_page(
             ]
         )
         try:
-            res = await ai.chat(
-                message=prompt,
+            res = await _ai.chat(
+                prompt,
                 system_prompt="You compress webpage extraction text into faithful natural-language notes.",
+                temperature=0.2,
             )
             await _emit_summary_token_usage(
                 on_progress,
@@ -413,7 +411,6 @@ async def _summarize_multi_page_entries(
     if not isinstance(pages, list) or not pages:
         return [], await _summarize_single(skill_id, data, fallback_text, on_progress=on_progress)
 
-    ai = AiHelper(provider="openai", temperature=0.2)
     entries: list[dict[str, Any]] = []
     blocks: list[str] = []
 
@@ -437,9 +434,11 @@ async def _summarize_multi_page_entries(
             ]
         )
         try:
-            res = await ai.chat(
-                message=prompt,
+            res = await _ai.chat(
+                prompt,
                 system_prompt="You compress webpage extraction text into faithful natural-language notes.",
+                temperature=0.2,
+                provider="openai",
             )
             await _emit_summary_token_usage(
                 on_progress,
@@ -624,7 +623,7 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
             for model_id in model_ids:
                 try:
                     parsed = await _ai.complete_json_with_candidates(
-                        model_candidates=AIHelper.model_candidates(
+                        model_candidates=_ai.model_candidates(
                             model_id,
                             prefix_env="OPENROUTER_MODEL_PREFIX",
                         ),

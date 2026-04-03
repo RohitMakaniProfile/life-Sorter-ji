@@ -13,40 +13,31 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from .ai import AiHelper
+from app.services.ai_helper import ai_helper as _ai
 from .agent.final_formatter import format_final_answer
-from .agent.orchestrator import RunOpts, run_agent_turn_stream
 from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
-from app.middleware.auth_context import require_super_admin
 from app.skills.service import first_skill_id, get_skill, run_skill
 from app.services import unified_chat_service
 from .stores import (
     append_skill_streamed_text,
     append_assistant_placeholder,
     append_message,
-    create_agent,
     claim_plan_run_for_execution,
     create_plan_run,
     create_skill_call,
-    delete_agent,
-    ensure_default_agents,
     get_agent,
-    get_conversation,
     get_or_create_conversation,
     get_plan_run,
     get_skill_calls_by_message_id,
     get_skill_calls_by_message_id_full,
-    get_stage_outputs,
     get_token_usage,
-    list_agents,
     save_token_usage,
     fetch_skill_call_output,
     push_skill_output,
     save_stage_outputs,
     set_skill_call_result,
-    update_agent,
     update_message_content,
     update_message_meta,
     update_plan_run,
@@ -523,16 +514,17 @@ async def _create_plan_draft(
 
         if _should_stream_page_nl(sid):
             async def _page_worker() -> None:
-                ai = AiHelper(provider="openai", temperature=0.2)
                 while True:
                     meta = await page_queue.get()
                     if meta is None:
                         break
                     try:
                         prompt = _build_page_nl_prompt(sid, meta)
-                        r = await ai.chat(
-                            message=prompt,
+                        r = await _ai.chat(
+                            prompt,
                             system_prompt="You convert web extraction objects into compact factual notes.",
+                            temperature=0.2,
+                            provider="openai",
                         )
                         page_url = str(meta.get("url") or "").strip()
                         note = (r.message or "").strip()
@@ -789,8 +781,6 @@ async def _create_plan_draft(
     await _emit_plan_progress(emit_progress, "Creating plan draft", event="plan-markdown-generation")
     _log("plan-markdown-generation-start", conversation_id=conv.get("id"), plan_message_id=plan_message_id)
     try:
-        ai = AiHelper(temperature=0.2)
-
         async def _on_plan_token(tok: str) -> None:
             if emit_token is None:
                 return
@@ -799,10 +789,11 @@ async def _create_plan_draft(
             except Exception:
                 pass
 
-        ai_result = await ai.chat_stream(
-            message=plan_prompt,
+        ai_result = await _ai.chat_stream(
+            plan_prompt,
             system_prompt="You are a planning assistant. Output only Markdown. No code fences.",
             on_token=_on_plan_token if emit_token is not None else None,
+            temperature=0.2,
         )
         plan_markdown = ai_result.message.strip()
         await save_token_usage(
@@ -872,33 +863,6 @@ async def _create_plan_draft(
     }
 
 
-def _build_retry_message(
-    original_message: str,
-    retry_from_stage: str,
-    stage_outputs: dict[str, str],
-    skill_stages: list[str] | None = None,
-) -> str:
-    stages = skill_stages or []
-    stage_idx = stages.index(retry_from_stage) if retry_from_stage in stages else -1
-    if stage_idx <= 0:
-        return original_message
-    prior_outputs = [
-        f"[{stages[i]} output]\n{stage_outputs[stages[i]]}"
-        for i in range(stage_idx)
-        if stages[i] in stage_outputs and stage_outputs[stages[i]]
-    ]
-    if not prior_outputs:
-        return original_message
-    return "\n".join([
-        f'RETRY from stage "{retry_from_stage}". Previous stages already completed successfully:',
-        "",
-        "\n\n".join(prior_outputs),
-        "",
-        f"Original request: {original_message}",
-        "",
-        f"Resume from step: {retry_from_stage}. Skip all prior steps.",
-    ])
-
 
 def _parse_checklist_items(markdown: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -960,71 +924,6 @@ def _mark_checklist_from_skill(items: list[dict[str, Any]], skill_id: str, summa
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-
-@router.get("/api/agents")
-async def p2_agents_list() -> dict[str, Any]:
-    return {"agents": await list_agents()}
-
-
-@router.post("/api/agents")
-async def p2_agents_create(req: Request) -> JSONResponse:
-    require_super_admin(req)
-    body = await req.json()
-    agent_id = str(body.get("id") or "").strip()
-    name = str(body.get("name") or "").strip()
-    if not agent_id:
-        raise HTTPException(status_code=400, detail="id is required")
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-    try:
-        agent = await create_agent(
-            {
-                "id": agent_id,
-                "name": name,
-                "emoji": body.get("emoji") or "🤖",
-                "description": body.get("description") or "",
-                "allowedSkillIds": body.get("allowedSkillIds") if isinstance(body.get("allowedSkillIds"), list) else [],
-                "skillSelectorContext": body.get("skillSelectorContext") or "",
-                "finalOutputFormattingContext": body.get("finalOutputFormattingContext") or "",
-            }
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse(status_code=201, content={"agent": agent})
-
-
-@router.get("/api/agents/{agent_id}")
-async def p2_agents_get(agent_id: str) -> dict[str, Any]:
-    agent = await get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return {"agent": agent}
-
-
-@router.patch("/api/agents/{agent_id}")
-async def p2_agents_patch(agent_id: str, req: Request) -> dict[str, Any]:
-    require_super_admin(req)
-    body = await req.json()
-    patch: dict[str, Any] = {}
-    for key in ["name", "emoji", "description", "allowedSkillIds", "skillSelectorContext", "finalOutputFormattingContext"]:
-        if key in body:
-            patch[key] = body[key]
-    updated = await update_agent(agent_id, patch)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return {"agent": updated}
-
-
-@router.delete("/api/agents/{agent_id}")
-async def p2_agents_delete(agent_id: str, req: Request) -> JSONResponse:
-    # Require super admin for destructive changes.
-    # (Listing/view endpoints remain accessible for normal users.)
-    require_super_admin(req)
-    ok = await delete_agent(agent_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return JSONResponse(status_code=204, content=None)
-
 
 @router.get("/api/files/download")
 async def p2_files_download(path: str = Query(...)) -> FileResponse:
@@ -1094,162 +993,6 @@ async def p2_chat_message(req: Request) -> dict[str, Any]:
         "planMarkdown": draft["planMarkdown"],
     }
 
-
-async def p2_chat_stream(req: Request) -> StreamingResponse:
-    body = await req.json()
-    message = str(body.get("message") or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
-    session_id, user_id = _actor_from_payload(body)
-    if not str(body.get("agentId") or "").strip():
-        async def standard_generator():
-            try:
-                out = await unified_chat_service.run_standard_chat(
-                    message=message,
-                    persona=str(body.get("persona") or "default"),
-                    context=body.get("context") if isinstance(body.get("context"), dict) else None,
-                    conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
-                    conversation_id=str(body.get("conversationId") or "").strip() or None,
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-                yield _sse({"token": out["message"]})
-                yield _sse(
-                    {
-                        "done": True,
-                        "mode": "standard",
-                        "conversationId": out["conversationId"],
-                        "usage": out.get("usage"),
-                        "stageOutputs": {},
-                        "outputFile": None,
-                    }
-                )
-            except Exception as exc:
-                yield _sse({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
-        return StreamingResponse(standard_generator(), media_type="text/event-stream")
-
-    retry_from_stage = str(body.get("retryFromStage") or "").strip()
-    retry_stage_outputs: dict[str, str] = body.get("stageOutputs") or {}
-    if retry_from_stage and isinstance(retry_stage_outputs, dict):
-        message = _build_retry_message(message, retry_from_stage, retry_stage_outputs)
-
-    resolved = await _resolve_agent_and_skill(body)
-    conv = await get_or_create_conversation(
-        body.get("conversationId"),
-        resolved["agentId"],
-        session_id=session_id,
-        user_id=user_id,
-    )
-
-    await append_message(conv["id"], "user", message)
-    assistant_message_id = await append_assistant_placeholder(conv["id"])
-
-    merged_stage_outputs = await get_stage_outputs(conv["id"])
-
-    async def generator():
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
-        done = asyncio.Event()
-
-        async def emit(event: dict[str, Any]) -> None:
-            await queue.put(_sse(event))
-
-        async def emit_progress(event: dict[str, Any]) -> None:
-            meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
-            if str(meta.get("kind") or "") == "token-usage":
-                await save_token_usage(
-                    assistant_message_id,
-                    str(meta.get("model") or (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL)),
-                    int(meta.get("inputTokens") or 0),
-                    int(meta.get("outputTokens") or 0),
-                    stage=str(meta.get("stage") or "chat-execution"),
-                    provider=str(meta.get("provider") or ("anthropic" if CLAUDE_API_KEY else "openai")),
-                    session_id=session_id,
-                )
-            await emit({"progress": event})
-
-        async def worker() -> None:
-            try:
-                tokens_emitted = 0
-
-                async def on_stage(stage: str, label: str, idx: int) -> None:
-                    await emit({"stage": stage, "label": label, "stageIndex": idx, "agentId": resolved["agentId"]})
-
-                async def on_token(token: str) -> None:
-                    nonlocal tokens_emitted
-                    await emit({"token": token})
-                    tokens_emitted += len(token)
-
-                await emit({"stage": "thinking", "label": "Thinking", "stageIndex": 0, "agentId": resolved["agentId"]})
-
-                result = await run_agent_turn_stream(
-                    message,
-                    conv.get("messages") or [],
-                    resolved["skillId"],
-                    on_stage=on_stage,
-                    on_token=on_token,
-                    on_progress=emit_progress,
-                    opts=RunOpts(
-                        allowed_skill_ids=resolved.get("allowedSkillIds") or None,
-                        contexts=resolved.get("contexts") or {},
-                        conversation_id=conv["id"],
-                        message_id=assistant_message_id,
-                    ),
-                )
-
-                text = result.text or ""
-                if result.status == "error" and not text:
-                    text = "I could not run the automation for this request. Please try again."
-
-                if text and tokens_emitted == 0:
-                    await emit({"token": text})
-                elif result.status == "error" and tokens_emitted == 0:
-                    await emit({"token": text})
-
-                skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
-                await update_message_content(conv["id"], assistant_message_id, text, None, skills_count)
-                await save_stage_outputs(conv["id"], merged_stage_outputs, None)
-
-                token_usage = await get_token_usage(assistant_message_id)
-                await emit(
-                    {
-                        "done": True,
-                        "conversationId": conv["id"],
-                        "messageId": assistant_message_id,
-                        "runId": result.run_id,
-                        "model": CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
-                        "durationMs": result.duration_ms,
-                        "stageOutputs": merged_stage_outputs,
-                        "outputFile": None,
-                        "agentId": resolved["agentId"],
-                        "tokenUsage": token_usage,
-                    }
-                )
-            except Exception as exc:
-                await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
-            finally:
-                done.set()
-
-        asyncio.create_task(worker())
-
-        while not done.is_set() or not queue.empty():
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=15)
-                yield chunk
-            except asyncio.TimeoutError:
-                yield b": ping\n\n"
-
-    return StreamingResponse(generator(), media_type="text/event-stream")
-
-
-async def p2_chat_plan(req: Request) -> dict[str, Any]:
-    body = await req.json()
-    message = str(body.get("message") or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-    if not str(body.get("agentId") or "").strip():
-        raise HTTPException(status_code=400, detail="agentId is required for plan mode")
-    return await _create_plan_draft(body=body)
 
 
 async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
@@ -1637,16 +1380,17 @@ async def execute_plan_approval_work(
             page_worker_task: asyncio.Task | None = None
             if _should_stream_page_nl(sid):
                 async def _page_worker() -> None:
-                    ai = AiHelper(provider="openai", temperature=0.2)
                     while True:
                         meta = await page_queue.get()
                         if meta is None:
                             break
                         try:
                             prompt = _build_page_nl_prompt(sid, meta)
-                            r = await ai.chat(
-                                message=prompt,
+                            r = await _ai.chat(
+                                prompt,
                                 system_prompt="You convert web extraction objects into compact factual notes.",
+                                temperature=0.2,
+                                provider="openai",
                             )
                             page_url = str(meta.get("url") or "").strip()
                             note = (r.message or "").strip()

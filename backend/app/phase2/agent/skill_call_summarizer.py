@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..ai import AiHelper
+from app.services.ai_helper import ai_helper as _ai
 
 
-async def build_calls_summary(skill_calls: list[dict[str, Any]], ai: AiHelper) -> str:
+async def build_calls_summary(skill_calls: list[dict[str, Any]]) -> str:
     """
     Build a compact routing summary over recent skill calls.
     Used by the skill selector to decide which skills to run next.
@@ -17,7 +17,7 @@ async def build_calls_summary(skill_calls: list[dict[str, Any]], ai: AiHelper) -
     recent = skill_calls[-8:]
 
     try:
-        result = await ai.chat(
+        result = await _ai.chat(
             message="\n".join([
                 "Summarize prior tool/skill calls for routing the NEXT skill.",
                 "Requirements:",

@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
-from ..ai import AiHelper
 from app.config import OPENAI_MODEL, get_settings
+from app.services.ai_helper import ai_helper as _ai
 
 TokenCb = Callable[[str], Awaitable[None] | None]
 
@@ -44,7 +44,7 @@ async def format_final_answer(
         for c in skill_calls
     )
 
-    formatter_ai = AiHelper(temperature=0.3, provider="anthropic") if use_claude_model else AiHelper(temperature=0.3)
+    _provider = "anthropic" if use_claude_model else None
 
     final_output_context = (contexts.get("finalOutputFormattingContext") or "").strip()
 
@@ -80,7 +80,7 @@ async def format_final_answer(
     total_output_tokens = 0
 
     # First pass
-    stream_result = await formatter_ai.chat_stream(message=prompt, system_prompt=system, on_token=on_token)
+    stream_result = await _ai.chat_stream(prompt, system_prompt=system, on_token=on_token, temperature=0.3, provider=_provider)
     chunk = (stream_result.message or "").strip()
     full_text = chunk
     total_input_tokens += int(stream_result.input_tokens or 0)
@@ -106,11 +106,13 @@ async def format_final_answer(
                 tail,
             ]
         )
-        stream_result = await formatter_ai.chat_stream(
-            message=continue_prompt,
+        stream_result = await _ai.chat_stream(
+            continue_prompt,
             system_prompt=system,
             conversation_history=[{"role": "assistant", "content": full_text}],
             on_token=on_token,
+            temperature=0.3,
+            provider=_provider,
         )
         next_chunk = (stream_result.message or "").strip()
         if not next_chunk:

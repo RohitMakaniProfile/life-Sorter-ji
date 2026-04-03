@@ -7,12 +7,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
-from ..ai import AiHelper
 from app.config import get_settings
-from app.services.ai_helper import AIHelper
+from app.services.ai_helper import ai_helper as _ai
 from app.skills.service import SkillManifest, SkillRunResult, get_skill, list_skills, run_skill
-
-_ai = AIHelper()
 from ..stores import (
     create_skill_call,
     get_skill_calls_by_message_id,
@@ -238,7 +235,6 @@ def _optimal_parallel_count(unchecked_count: int) -> int:
 
 
 async def _mark_checklist_items_from_summary(
-    ai: AiHelper,
     checklist_items: list[dict[str, Any]],
     *,
     skill_id: str,
@@ -253,7 +249,7 @@ async def _mark_checklist_items_from_summary(
         "skillSummary": summary_text[:12000],
     }
     try:
-        res = await ai.chat(
+        res = await _ai.chat(
             message="\n".join(
                 [
                     "Given unchecked checklist items and one skill summary, return which checklist items are now satisfied.",
@@ -410,7 +406,6 @@ async def run_agent_turn_stream(
             opts.message_id,
         )
 
-    ai = AiHelper(temperature=0.3)
     model_ids = get_planner_models()
 
     allowed_skill_ids = opts.allowed_skill_ids
@@ -437,7 +432,7 @@ async def run_agent_turn_stream(
         if message_id_opt:
             skill_calls = await get_skill_calls_by_message_id(message_id_opt)
 
-        calls_summary = await build_calls_summary(skill_calls, ai)
+        calls_summary = await build_calls_summary(skill_calls)
         unchecked_items = _unchecked_items(checklist_items)
         parallel_limit = _optimal_parallel_count(len(unchecked_items)) if unchecked_items else 3
 
@@ -471,7 +466,7 @@ async def run_agent_turn_stream(
         for model_id in model_ids:
             try:
                 parsed = await _ai.complete_json_with_candidates(
-                    model_candidates=AIHelper.model_candidates(
+                    model_candidates=_ai.model_candidates(
                         model_id,
                         prefix_env="OPENROUTER_MODEL_PREFIX",
                     ),
