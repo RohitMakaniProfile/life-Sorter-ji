@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 from app.config import OPENAI_MODEL, get_settings
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
+
+_ai = AIHelper()
 
 TokenCb = Callable[[str], Awaitable[None] | None]
 
@@ -48,8 +50,12 @@ class AiHelper:
         messages.append({"role": "user", "content": message})
 
         settings = get_settings()
-        response = await openrouter_service.chat_completion(
-            model=settings.OPENROUTER_MODEL or OPENAI_MODEL,
+        model_id = settings.OPENROUTER_MODEL or OPENAI_MODEL
+        if self._provider in {"anthropic", "claude"}:
+            # Use OpenRouter Claude model when the caller requests anthropic/claude.
+            model_id = settings.OPENROUTER_CLAUDE_MODEL or model_id
+        response = await _ai.complete(
+            model=model_id,
             messages=messages,
             temperature=self._temperature,
             max_tokens=8192,
@@ -85,8 +91,11 @@ class AiHelper:
         messages.append({"role": "user", "content": message})
 
         settings = get_settings()
-        streamed = await openrouter_service.chat_completion_stream(
-            model=settings.OPENROUTER_MODEL or OPENAI_MODEL,
+        model_id = settings.OPENROUTER_MODEL or OPENAI_MODEL
+        if self._provider in {"anthropic", "claude"}:
+            model_id = settings.OPENROUTER_CLAUDE_MODEL or model_id
+        streamed = await _ai.complete_stream(
+            model=model_id,
             messages=messages,
             temperature=self._temperature,
             max_tokens=8192,

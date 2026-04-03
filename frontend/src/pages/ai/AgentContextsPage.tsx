@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
 import type { AgentId, UiAgent } from '../../api/types';
 import { getAgent, updateAgent } from '../../api';
-import { getIsAdmin, getIsSuperAdmin, getUserIdFromJwt } from '../../api/authSession';
+import { getIsSuperAdmin } from '../../api/authSession';
 
 type TabId = 'selector' | 'final';
 type EditorMode = 'edit' | 'preview';
@@ -39,8 +39,6 @@ export default function AgentContextsPage() {
   const navigate = useNavigate();
   const id = (agentId ?? '') as AgentId;
   const isSuperAdmin = getIsSuperAdmin();
-  const isAdmin = getIsAdmin();
-  const currentUserId = getUserIdFromJwt();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -59,15 +57,7 @@ export default function AgentContextsPage() {
 
   const createdBy = agent?.createdByUserId ?? null;
   const isSystem = createdBy == null;
-  const canEdit =
-    isLocalEnv
-      ? true
-      :
-    !agent
-      ? false
-      : !isSystem
-        ? (!!currentUserId && String(createdBy) === String(currentUserId))
-        : (agent.isLocked ? !!isSuperAdmin : (!!isSuperAdmin || !!isAdmin));
+  const canEdit = isLocalEnv || isSuperAdmin;
 
   useEffect(() => {
     if (!id) return;
@@ -158,7 +148,7 @@ export default function AgentContextsPage() {
         </div>
         <div className="flex items-center gap-2">
           <NavLink
-            to="/agents"
+            to="/admin/agents"
             className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800"
           >
             Back
@@ -240,7 +230,7 @@ export default function AgentContextsPage() {
                 onClick={async () => {
                   // Save current contexts, then go back to Agents list
                   await handleSave();
-                  navigate('/agents');
+                  navigate('/admin/agents');
                 }}
                 disabled={saving}
                 className="text-xs text-slate-400 hover:text-slate-100 disabled:opacity-60"

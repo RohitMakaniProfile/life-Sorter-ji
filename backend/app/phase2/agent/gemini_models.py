@@ -10,9 +10,9 @@ _DEFAULT_GEMINI_MODELS = [
 ]
 
 
-def get_gemini_models() -> list[str]:
+def get_planner_models() -> list[str]:
     """
-    Return ordered list of Gemini model IDs to try.
+    Return ordered list of planning model IDs to try on OpenRouter.
     On 503/429/404 the caller tries the next until one succeeds or the list is exhausted.
     Set GEMINI_MODELS (comma-separated) or GEMINI_MODEL (single) to override.
     """
@@ -26,3 +26,10 @@ def get_gemini_models() -> list[str]:
         rest = [m for m in _DEFAULT_GEMINI_MODELS if m != lst[0]]
         return lst + rest
     return lst
+
+
+def get_gemini_models() -> list[str]:
+    """
+    Backward-compatible alias for legacy imports.
+    """
+    return get_planner_models()

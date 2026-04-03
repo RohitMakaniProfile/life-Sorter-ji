@@ -19,6 +19,7 @@ from .ai import AiHelper
 from .agent.final_formatter import format_final_answer
 from .agent.orchestrator import RunOpts, run_agent_turn_stream
 from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
+from app.middleware.auth_context import require_super_admin
 from app.skills.service import first_skill_id, get_skill, run_skill
 from app.services import unified_chat_service
 from .stores import (
@@ -967,6 +968,7 @@ async def p2_agents_list() -> dict[str, Any]:
 
 @router.post("/api/agents")
 async def p2_agents_create(req: Request) -> JSONResponse:
+    require_super_admin(req)
     body = await req.json()
     agent_id = str(body.get("id") or "").strip()
     name = str(body.get("name") or "").strip()
@@ -1001,6 +1003,7 @@ async def p2_agents_get(agent_id: str) -> dict[str, Any]:
 
 @router.patch("/api/agents/{agent_id}")
 async def p2_agents_patch(agent_id: str, req: Request) -> dict[str, Any]:
+    require_super_admin(req)
     body = await req.json()
     patch: dict[str, Any] = {}
     for key in ["name", "emoji", "description", "allowedSkillIds", "skillSelectorContext", "finalOutputFormattingContext"]:
@@ -1013,7 +1016,10 @@ async def p2_agents_patch(agent_id: str, req: Request) -> dict[str, Any]:
 
 
 @router.delete("/api/agents/{agent_id}")
-async def p2_agents_delete(agent_id: str) -> JSONResponse:
+async def p2_agents_delete(agent_id: str, req: Request) -> JSONResponse:
+    # Require super admin for destructive changes.
+    # (Listing/view endpoints remain accessible for normal users.)
+    require_super_admin(req)
     ok = await delete_agent(agent_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")

@@ -30,9 +30,10 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from app.config import get_settings
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
 
 TokenCb = Callable[[str], Awaitable[None] | None]
+_ai = AIHelper()
 
 
 class OpenRouter:
@@ -68,7 +69,7 @@ class OpenRouter:
 
         Use complete_full() if you also need usage stats for logging.
         """
-        result = await openrouter_service.chat_completion(
+        result = await _ai.complete(
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -92,7 +93,7 @@ class OpenRouter:
             text  = result["message"]
             usage = result["usage"]   # prompt_tokens, completion_tokens, total_tokens
         """
-        return await openrouter_service.chat_completion(
+        return await _ai.complete(
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -120,7 +121,7 @@ class OpenRouter:
 
             text = await llm.stream(system=PROMPT, user=ctx, on_token=on_token)
         """
-        result = await openrouter_service.chat_completion_stream(
+        result = await _ai.complete_stream(
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -146,7 +147,7 @@ class OpenRouter:
                 {"role": "user",      "content": "follow-up"},
             ])
         """
-        result = await openrouter_service.chat_completion(
+        result = await _ai.complete(
             model=self.model,
             messages=messages,
             temperature=self.temperature,
@@ -156,7 +157,7 @@ class OpenRouter:
 
     async def complete_messages_full(self, messages: list[dict]) -> dict[str, Any]:
         """Multi-turn variant that returns {"message": str, "usage": {...}}."""
-        return await openrouter_service.chat_completion(
+        return await _ai.complete(
             model=self.model,
             messages=messages,
             temperature=self.temperature,
@@ -169,7 +170,7 @@ class OpenRouter:
         on_token: TokenCb | None = None,
     ) -> str:
         """Streaming version of complete_messages. Returns full text when done."""
-        result = await openrouter_service.chat_completion_stream(
+        result = await _ai.complete_stream(
             model=self.model,
             messages=messages,
             temperature=self.temperature,

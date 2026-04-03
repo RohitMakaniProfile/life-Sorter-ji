@@ -26,6 +26,7 @@ from app.services.otp_service import (
     verify_otp as verify_otp_with_2factor_api,
 )
 from app.services.system_config_service import get_config_value, parse_bool
+from app.services.admin_access_service import resolve_admin_flags
 from app.services.jwt_service import create_access_token, decode_and_verify_access_token
 from app.auth.identity import verify_google_or_firebase_token
 from app.db import get_pool
@@ -102,6 +103,9 @@ class GoogleAuthResponse(BaseModel):
     message: str
     token: str | None = None
     user: dict | None = None
+    # Flags derived from server-side allowlists; used by the frontend to gate admin UI.
+    isAdmin: bool = False
+    isSuperAdmin: bool = False
 
 
 class AuthMeResponse(BaseModel):
@@ -343,6 +347,7 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             "name": name,
             "phone_number": phone_number,
             "onboarding_session_id": onboarding_session_id,
+            **(await resolve_admin_flags(email)),
         },
     )
     await delete_otp_from_redis(req.otp_session_id)
@@ -439,11 +444,13 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "avatar_url": avatar_url,
             "google_sub": google_sub,
             "onboarding_session_id": req.session_id,
+            **(await resolve_admin_flags(email)),
         },
     )
 
     logger.info("Google exchange successful", email=email, has_session=bool(req.session_id))
 
+    flags = await resolve_admin_flags(email)
     return GoogleAuthResponse(
         success=True,
         message=f"Signed in as {name or email}",
@@ -456,6 +463,8 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "avatar_url": avatar_url,
             "onboarding_session_id": req.session_id,
         },
+        isAdmin=flags.get("admin", False),
+        isSuperAdmin=flags.get("super", False),
     )
 
 

@@ -25,9 +25,10 @@ import json
 
 import re
 from app.config import get_settings
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
 
 logger = structlog.get_logger()
+_ai = AIHelper()
 
 async def _call_openrouter_with_retry(
     *,
@@ -40,7 +41,7 @@ async def _call_openrouter_with_retry(
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            return await openrouter_service.chat_completion(
+            return await _ai.complete(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -277,7 +278,7 @@ async def generate_task_alignment_filter(
 
         # Attach metadata
         result["_meta"] = {
-            "service": "claude_openrouter",
+            "service": "openrouter",
             "model": model,
             "purpose": "task_alignment_filter",
             "system_prompt": TASK_FILTER_SYSTEM_PROMPT,
@@ -968,7 +969,7 @@ async def generate_next_rca_question(
 
         # Attach metadata for context pool
         result["_meta"] = {
-            "service": "claude_openrouter",
+            "service": "openrouter",
             "model": model,
             "purpose": "rca_question",
             "system_prompt": SYSTEM_PROMPT,
@@ -1219,7 +1220,7 @@ async def generate_precision_questions(
 
         # Attach metadata for context pool to each question
         _meta = {
-            "service": "claude_openrouter",
+            "service": "openrouter",
             "model": model,
             "purpose": "precision_questions",
             "system_prompt": system_prompt,

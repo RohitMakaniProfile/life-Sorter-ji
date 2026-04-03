@@ -8,8 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 from ..ai import AiHelper
-from app.config import GEMINI_API_KEY
+from app.config import get_settings
+from app.services.ai_helper import AIHelper
 from app.skills.service import SkillManifest, SkillRunResult, get_skill, list_skills, run_skill
+
+_ai = AIHelper()
 from ..stores import (
     create_skill_call,
     get_skill_calls_by_message_id,
@@ -17,7 +20,7 @@ from ..stores import (
     push_skill_output,
     set_skill_call_result,
 )
-from .gemini_models import get_gemini_models
+from .gemini_models import get_planner_models
 from .skill_call_summarizer import build_calls_summary
 from .skill_input_extractor import extract_skill_args
 from .final_formatter import format_final_answer, FormatterResult
@@ -193,12 +196,12 @@ def _build_planning_prompt(
     return "\n".join(p for p in parts if isinstance(p, str) and p.strip() != "")
 
 
-def _is_retryable_gemini(err_msg: str) -> bool:
+def _is_retryable_model(err_msg: str) -> bool:
     lower = err_msg.lower()
     return any(k in lower for k in ["503", "429", "unavailable", "resource_exhausted", "overloaded", "high demand"])
 
 
-def _is_404_gemini(err_msg: str) -> bool:
+def _is_404_model(err_msg: str) -> bool:
     lower = err_msg.lower()
     return any(k in lower for k in ["404", "not_found", '"code":404'])
 
@@ -393,18 +396,22 @@ async def run_agent_turn_stream(
             duration_ms=0,
         )
 
-    if not GEMINI_API_KEY:
+    settings = get_settings()
+    if not (settings.OPENROUTER_API_KEY or "").strip():
         return await run_single_skill_fallback(
-            message, skill_id, manifest, history,
-            on_stage, on_token, on_progress,
-            opts.conversation_id, opts.message_id,
+            message,
+            skill_id,
+            manifest,
+            history,
+            on_stage,
+            on_token,
+            on_progress,
+            opts.conversation_id,
+            opts.message_id,
         )
 
-    from google import genai  # type: ignore
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
     ai = AiHelper(temperature=0.3)
-    model_ids = get_gemini_models()
+    model_ids = get_planner_models()
 
     allowed_skill_ids = opts.allowed_skill_ids
     contexts = opts.contexts or {}
@@ -419,12 +426,12 @@ async def run_agent_turn_stream(
     start = time.time()
     last_skill_result: dict[str, Any] | None = None
     last_skill_raw_output = ""
-    gemini_unavailable = False
+    plan_unavailable = False
     checklist_source = str(contexts.get("planMarkdown") or message)
     checklist_items = _parse_checklist_items(checklist_source)
 
     for loop in range(MAX_LOOPS):
-        if gemini_unavailable:
+        if plan_unavailable:
             break
 
         if message_id_opt:
@@ -458,35 +465,20 @@ async def run_agent_turn_stream(
             parallel_limit=parallel_limit,
         )
 
-        plan_response_schema = {
-            "type": "object",
-            "properties": {
-                "done": {"type": "boolean", "description": "True if no further skills should run"},
-                "skillIds": {
-                    "type": "array",
-                    "description": "Ids of skills to run in parallel this round; empty when done",
-                    "items": {"type": "string"},
-                },
-            },
-            "required": ["done", "skillIds"],
-            "additionalProperties": False,
-        }
-
         plan: dict[str, Any] = {"done": True, "skillIds": []}
         last_plan_error: Exception | None = None
 
         for model_id in model_ids:
             try:
-                plan_result = await client.aio.models.generate_content(
-                    model=model_id,
-                    contents=planning_prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": plan_response_schema,
-                    },
+                parsed = await _ai.complete_json_with_candidates(
+                    model_candidates=AIHelper.model_candidates(
+                        model_id,
+                        prefix_env="OPENROUTER_MODEL_PREFIX",
+                    ),
+                    messages=[{"role": "user", "content": planning_prompt}],
+                    temperature=0.3,
+                    max_tokens=900,
                 )
-                raw = (plan_result.text or "").strip()
-                parsed = json.loads(raw)
                 skill_ids_raw = parsed.get("skillIds") or []
                 if isinstance(skill_ids_raw, str):
                     skill_ids_raw = [skill_ids_raw] if skill_ids_raw else []
@@ -498,18 +490,27 @@ async def run_agent_turn_stream(
                 break
             except Exception as e:
                 last_plan_error = e
-                err_msg = str(e)
-                if _is_404_gemini(err_msg):
-                    gemini_unavailable = True
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if status_code == 404:
+                    plan_unavailable = True
                     break
-                if _is_retryable_gemini(err_msg) and model_ids.index(model_id) < len(model_ids) - 1:
+                # For retryable/transient failures, try next model id.
+                if status_code in (429, 503) and model_ids.index(model_id) < len(model_ids) - 1:
                     continue
                 break
 
-        if gemini_unavailable:
-            break
-        if last_plan_error:
-            break
+        if plan_unavailable or last_plan_error:
+            return await run_single_skill_fallback(
+                message,
+                skill_id,
+                manifest,
+                history,
+                on_stage,
+                on_token,
+                on_progress,
+                conversation_id,
+                message_id_opt,
+            )
         if loop == 0:
             seed_url = _extract_url(message)
             already_used_playwright = any(c.get("skillId") == "scrape-playwright" for c in skill_calls)
@@ -687,7 +688,7 @@ async def run_agent_turn_stream(
         if persist_to_db and message_id_opt:
             skill_calls = await get_skill_calls_by_message_id(message_id_opt)
 
-    if gemini_unavailable or (not skill_calls and not last_skill_result):
+    if plan_unavailable or (not skill_calls and not last_skill_result):
         return await run_single_skill_fallback(
             message, skill_id, manifest, history,
             on_stage, on_token, on_progress,

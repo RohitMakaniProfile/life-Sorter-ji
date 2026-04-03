@@ -788,7 +788,9 @@ VALUES
     ('auth.otp_expiry_seconds', '300', 'OTP expiry in seconds'),
     ('auth.otp_bypass_code', '000000', 'Fixed OTP code used when bypass mode is enabled'),
     ('auth.otp_bypass_enabled', 'false', 'Enable OTP bypass for local/dev testing'),
-    ('auth.otp_send_sms_enabled', 'true', 'If false, OTP is generated and stored but SMS send is skipped')
+    ('auth.otp_send_sms_enabled', 'true', 'If false, OTP is generated and stored but SMS send is skipped'),
+    ('auth.super_admin_emails', '[]', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
+    ('auth.admin_emails', '[]', 'JSON array of admin emails. (Admin UI features can optionally use this.)')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS otp_provider_logs (

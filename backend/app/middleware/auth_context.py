@@ -119,3 +119,38 @@ def require_request_user(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
 
+
+def get_request_auth_claims(request: Request) -> dict[str, Any] | None:
+    return getattr(request.state, "auth_claims", None)
+
+
+def _coerce_bool_flag(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        raw = v.strip().lower()
+        return raw in ("1", "true", "yes", "on")
+    return False
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    claims = get_request_auth_claims(request) or {}
+    if not claims:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not _coerce_bool_flag(claims.get("admin")):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return claims
+
+
+def require_super_admin(request: Request) -> dict[str, Any]:
+    claims = get_request_auth_claims(request) or {}
+    if not claims:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not _coerce_bool_flag(claims.get("super")):
+        raise HTTPException(status_code=403, detail="Super-admin access required")
+    return claims
+

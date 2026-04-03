@@ -11,6 +11,10 @@ import InternalGoogleLoginPage from './pages/ai/InternalGoogleLoginPage';
 import Layout from './components/ai/Layout';
 import PaymentPage from './pages/PaymentPage';
 import { getConversations } from './api';
+import AdminLoginPage from './pages/AdminLoginPage';
+import RequireSuperAdmin from './components/RequireSuperAdmin';
+import AdminSystemConfigPage from './pages/AdminSystemConfigPage';
+import AdminObservabilityPage from './pages/AdminObservabilityPage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -48,15 +52,28 @@ function App() {
       <UiAgentsProvider>
         <BrowserRouter>
           <Routes>
-            <Route path="login-internal" element={<InternalGoogleLoginPage mode="internal" />} />
-            <Route path="login-admin" element={<InternalGoogleLoginPage mode="admin" />} />
+            <Route path="admin/login" element={<AdminLoginPage />} />
+
+            {/* Backwards-compatible routes (can be removed later). */}
+            <Route path="login-internal" element={<Navigate to="/admin/login?mode=internal" replace />} />
+            <Route path="login-admin" element={<Navigate to="/admin/login?mode=admin" replace />} />
             <Route element={<Layout />}>
               <Route path="chat" element={<DefaultChat />} />
               <Route path="chat/:conversationId" element={<ChatWithId />} />
               <Route path="new" element={<ChatPage key="new" />} />
               <Route path="conversations" element={<ConversationsPage />} />
-              <Route path="agents" element={<AgentsPage />} />
-              <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
+              <Route path="agents" element={<RequireSuperAdmin />}>
+                <Route index element={<AgentsPage />} />
+                <Route path=":agentId/contexts" element={<AgentContextsPage />} />
+              </Route>
+
+              <Route path="admin" element={<RequireSuperAdmin />}>
+                <Route index element={<Navigate to="/admin/observability" replace />} />
+                <Route path="observability" element={<AdminObservabilityPage />} />
+                <Route path="config" element={<AdminSystemConfigPage />} />
+                <Route path="agents" element={<AgentsPage />} />
+                <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
+              </Route>
             </Route>
             <Route path="/" element={<OnboardingApp />} />
             <Route path="payment" element={<PaymentPage />} />

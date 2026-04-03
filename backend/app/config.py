@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     JUSPAY_PAYMENT_PAGE_CLIENT_ID: str = ""
     JUSPAY_BASE_URL: str = ""  # Override base URL (e.g., HDFC SmartGateway)
     JUSPAY_ENVIRONMENT: JuspayEnvironment = JuspayEnvironment.SANDBOX
+    JUSPAY_TEST_CARD_NUMBER: str = ""
+    JUSPAY_TEST_CARD_EXPIRY: str = ""
+    JUSPAY_TEST_CARD_CVV: str = ""
+    JUSPAY_TEST_CARD_OTP: str = ""
 
     # ── Frontend ───────────────────────────────────────────────
     FRONTEND_URL: str = "https://ikshan.in"

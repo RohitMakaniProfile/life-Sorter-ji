@@ -20,6 +20,7 @@ from app.db import connect_db as p2_connect_db
 from app.skills.service import load_skills as p2_load_skills
 from app.phase2.stores import ensure_default_agents as p2_ensure_agents
 from app.db import close_db as p2_close_db
+from app.services.system_config_service import upsert_system_config_entry
 
 # ── Structured Logging ─────────────────────────────────────────
 structlog.configure(
@@ -65,25 +66,45 @@ async def lifespan(app: FastAPI):
     from app.services.rca_tree_service import load_tree
     load_tree()
 
-    # Auto-ingest RAG tools if API key is available
-    if settings.openai_api_key_active:
-        try:
-            from app.rag.ingest import ingest_tools
-            result = await ingest_tools()
-            logger.info(
-                "🔍 RAG tools auto-ingested",
-                total=result.tools_ingested,
-                errors=len(result.errors),
-                status=result.status,
-            )
-        except Exception as e:
-            logger.warning("⚠️  RAG auto-ingest failed (tools won't be available)", error=str(e))
-    else:
-        logger.warning("⚠️  Skipping RAG ingest — no OpenAI API key for embeddings")
-
     # ── Phase 2: Research Agent startup ───────────────────────────────────────
     try:
         await p2_connect_db()
+
+        # Dev bootstrap: make JusPay sandbox test-card details visible/editable
+        # in `/admin/config` via the `system_config` table.
+        try:
+            if settings.is_development:
+                card_number = (settings.JUSPAY_TEST_CARD_NUMBER or "").strip()
+                card_expiry = (settings.JUSPAY_TEST_CARD_EXPIRY or "").strip()
+                card_cvv = (settings.JUSPAY_TEST_CARD_CVV or "").strip()
+                card_otp = (settings.JUSPAY_TEST_CARD_OTP or "").strip()
+
+                # Only bootstrap if at least one field is configured.
+                if card_number or card_expiry or card_cvv or card_otp:
+                    await upsert_system_config_entry(
+                        "JUSPAY_TEST_CARD_NUMBER",
+                        card_number,
+                        "JusPay sandbox test card number (development only)",
+                    )
+                    await upsert_system_config_entry(
+                        "JUSPAY_TEST_CARD_EXPIRY",
+                        card_expiry,
+                        "JusPay sandbox test card expiry (development only)",
+                    )
+                    await upsert_system_config_entry(
+                        "JUSPAY_TEST_CARD_CVV",
+                        card_cvv,
+                        "JusPay sandbox test card CVV (development only)",
+                    )
+                    await upsert_system_config_entry(
+                        "JUSPAY_TEST_CARD_OTP",
+                        card_otp,
+                        "JusPay sandbox test card OTP (development only)",
+                    )
+                    logger.info("✅ Bootstrapped JusPay test card into system_config")
+        except Exception as e:
+            logger.warning("⚠️ JusPay test-card bootstrap failed", error=str(e))
+
         p2_load_skills()
         await p2_ensure_agents()
         logger.info("✅ Phase 2 (Research Agent) started")
@@ -146,6 +167,7 @@ def create_app() -> FastAPI:
         auth,
         ai_chat,
         chat,
+        admin_management,
         payments,
         plans,
         legacy,
@@ -163,6 +185,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
     app.include_router(plans.router, prefix="/api/v1", tags=["Plans"])
+    app.include_router(admin_management.router, prefix="/api/v1", tags=["Admin"])
 
     # ── Task stream (Redis or Postgres; TASKSTREAM_BACKEND) ──────────────
     from app.task_stream.router import create_task_stream_router

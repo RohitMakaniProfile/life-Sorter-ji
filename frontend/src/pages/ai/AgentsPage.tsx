@@ -1,15 +1,13 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUiAgents } from '../../context/UiAgentsContext';
-import { getIsAdmin, getIsSuperAdmin, getUserIdFromJwt } from '../../api/authSession';
+import { getIsSuperAdmin } from '../../api/authSession';
 
 export default function AgentsPage() {
   const navigate = useNavigate();
   const { agents, agentsLoading, skills, activeAgentId, setActiveAgentId, createAgent, updateAgent, deleteAgent } =
     useUiAgents();
   const isSuperAdmin = getIsSuperAdmin();
-  const isAdmin = getIsAdmin();
-  const currentUserId = getUserIdFromJwt();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -17,18 +15,10 @@ export default function AgentsPage() {
     Boolean((import.meta as any)?.env?.DEV) ||
     (typeof window !== 'undefined' &&
       (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'));
-  const canCreateAgent = isLocalEnv || isSuperAdmin || isAdmin || !!currentUserId;
+  const canCreateAgent = isLocalEnv || isSuperAdmin;
 
   const canEditAgent = (agent: any): boolean => {
-    if (isLocalEnv) return true;
-    const createdBy = agent?.createdByUserId ?? null;
-    const isSystem = createdBy == null;
-    if (!isSystem) {
-      return !!currentUserId && String(createdBy) === String(currentUserId);
-    }
-    // system agents: preserve your earlier rules
-    if (agent?.isLocked) return !!isSuperAdmin;
-    return !!isSuperAdmin || !!isAdmin;
+    return isLocalEnv || isSuperAdmin;
   };
 
   const handleToggleSkill = (agentId: string, skillId: string) => {
@@ -177,7 +167,7 @@ export default function AgentsPage() {
                       onClick={(e) => {
                         e.stopPropagation();
                       if (!canEdit) return;
-                      navigate(`/agents/${encodeURIComponent(agent.id)}/contexts`);
+                      navigate(`/admin/agents/${encodeURIComponent(agent.id)}/contexts`);
                       }}
                       className={`px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors pointer-events-auto ${
                         isActive

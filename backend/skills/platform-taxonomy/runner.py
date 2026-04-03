@@ -48,39 +48,69 @@ def _domain(url: str) -> str:
     return ""
 
 
-def _gemini_generate_json(prompt: str, model: str) -> Dict[str, Any]:
-  api_key = os.getenv("GEMINI_API_KEY")
-  if not api_key:
-    raise RuntimeError("GEMINI_API_KEY is not set")
+def _openrouter_model_candidates(model_id: str) -> List[str]:
+  raw = (model_id or "").strip()
+  if not raw:
+    return []
+  # If already namespaced (e.g. google/gemini-...), treat as OpenRouter id.
+  if "/" in raw:
+    return [raw]
+  prefix = os.getenv("OPENROUTER_GEMINI_MODEL_PREFIX", "google/")
+  prefix = (prefix or "google/").strip().rstrip("/") + "/"
+  candidate = f"{prefix}{raw}"
+  if candidate == raw:
+    return [raw]
+  return [candidate, raw]
 
-  endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-  params = {"key": api_key}
-  body = {
-    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-    "generationConfig": {
-      "responseMimeType": "application/json",
-      "temperature": 0.2
-    }
+
+def _openrouter_generate_json(prompt: str, model_id: str) -> Dict[str, Any]:
+  api_key = os.getenv("OPENROUTER_API_KEY")
+  if not api_key:
+    raise RuntimeError("OPENROUTER_API_KEY is not set")
+
+  candidates = _openrouter_model_candidates(model_id)
+  if not candidates:
+    raise RuntimeError("No OpenRouter model candidates resolved")
+
+  endpoint = "https://openrouter.ai/api/v1/chat/completions"
+  headers = {
+    "Authorization": f"Bearer {api_key.strip()}",
+    "Content-Type": "application/json",
+    "HTTP-Referer": "https://ikshan.ai",
+    "X-Title": "Ikshan Unified LLM",
   }
 
-  resp = requests.post(endpoint, params=params, json=body, timeout=40)
-  resp.raise_for_status()
-  data = resp.json()
+  last_exc: Optional[Exception] = None
+  for model in candidates:
+    try:
+      payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 2000,
+      }
+      resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+      if resp.status_code == 404:
+        continue
+      resp.raise_for_status()
+      data = resp.json()
+      content = (
+        data.get("choices", [{}])[0]
+          .get("message", {})
+          .get("content", "")
+      )
+      text = (content or "").strip()
+      m = re.search(r"\{[\s\S]*\}", text)
+      if not m:
+        raise RuntimeError(f"OpenRouter returned no JSON object (model={model})")
+      return json.loads(m.group(0))
+    except Exception as e:
+      last_exc = e
+      continue
 
-  # Extract text from candidates
-  parts = (
-    data.get("candidates", [{}])[0]
-      .get("content", {})
-      .get("parts", [])
-  )
-  text = "".join([p.get("text", "") for p in parts])
-  text = text.strip()
-
-  # Strip fences if any
-  m = re.search(r"\{[\s\S]*\}", text)
-  if not m:
-    raise RuntimeError("Gemini returned no JSON object")
-  return json.loads(m.group(0))
+  if last_exc:
+    raise last_exc
+  raise RuntimeError("OpenRouter taxonomy generation failed")
 
 
 def main() -> None:
@@ -133,6 +163,7 @@ def main() -> None:
     if len(candidate_domains) >= 30:
       break
 
+  # Backwards-compatible: keep the existing env var name, but resolve it to an OpenRouter model id.
   model = os.getenv("GEMINI_TAXONOMY_MODEL") or "gemini-2.5-flash"
 
   prompt = "\n".join([
@@ -170,7 +201,7 @@ def main() -> None:
   ])
 
   try:
-    taxonomy = _gemini_generate_json(prompt, model=model)
+    taxonomy = _openrouter_generate_json(prompt, model_id=model)
   except Exception as e:
     # fallback: minimal taxonomy using domains only
     taxonomy = {

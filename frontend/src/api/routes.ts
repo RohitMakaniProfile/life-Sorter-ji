@@ -6,6 +6,13 @@ export const API_ROUTES = {
     sendOtp: '/api/v1/auth/send-otp',
     verifyOtp: '/api/v1/auth/verify-otp',
   },
+  admin: {
+    management: {
+      observability: '/api/v1/admin/management/observability',
+      config: '/api/v1/admin/management/config',
+      configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
+    },
+  },
   onboarding: {
     upsert: '/api/v1/onboarding',
     toolsByQ1Q2Q3: '/api/v1/onboarding/tools/by-q1-q2-q3',

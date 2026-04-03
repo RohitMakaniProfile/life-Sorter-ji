@@ -32,7 +32,7 @@ class SessionStage(str, Enum):
 class LLMCallLog(BaseModel):
     """A single LLM API call record for the context pool."""
     timestamp: str = ""
-    service: str = ""            # "openai" or "claude_openrouter"
+    service: str = ""            # e.g. "openrouter"
     model: str = ""
     purpose: str = ""            # "early_recommendations", "rca_question", "precision_questions", etc.
     system_prompt: str = ""

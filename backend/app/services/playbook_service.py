@@ -17,9 +17,10 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
 
 logger = structlog.get_logger()
+_ai = AIHelper()
 
 # ══════════════════════════════════════════════════════════════
 #  SYSTEM PROMPTS — EXACT USER-PROVIDED TEXT (DO NOT MODIFY)
@@ -519,7 +520,7 @@ async def _call_claude(
     result: dict[str, Any] | None = None
     for attempt in range(max_retries):
         try:
-            result = await openrouter_service.chat_completion(
+            result = await _ai.complete(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -953,7 +954,7 @@ async def run_agent_c_stream(
         "You MUST include all 10 steps — do NOT stop early. Exactly 10 numbered steps."
     )
 
-    result = await openrouter_service.chat_completion_stream(
+    result = await _ai.complete_stream(
         model=settings.OPENROUTER_CLAUDE_MODEL,
         messages=[
             {"role": "system", "content": AGENT3_PROMPT},

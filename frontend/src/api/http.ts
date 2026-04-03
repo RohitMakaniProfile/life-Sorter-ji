@@ -40,17 +40,20 @@ function maybeRedirectOn401(pathOrUrl: string): void {
   if (typeof window === 'undefined') return;
   try {
     const path = pathForAuth(pathOrUrl);
+    const isAdminApi = path.startsWith('/api/v1/admin');
     const protectedApi =
       path.startsWith('/api/v1/ai-chat') ||
       path.startsWith('/api/agents') ||
-      path.startsWith('/api/files/download');
+      path.startsWith('/api/files/download') ||
+      isAdminApi;
     if (!protectedApi) return;
     const p = window.location.pathname || '';
-    if (p.includes('/login-internal') || p.includes('/login-admin')) return;
+    if (p.includes('/admin/login')) return;
     if (authRedirect401Lock) return;
     authRedirect401Lock = true;
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
     window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
-    window.location.href = '/login-internal';
+    window.location.href = `/admin/login?mode=${isAdminApi ? 'admin' : 'internal'}&next=${next}`;
   } catch {
     // ignore
   }

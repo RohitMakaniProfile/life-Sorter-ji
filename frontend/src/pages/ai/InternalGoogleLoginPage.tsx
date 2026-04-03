@@ -23,8 +23,9 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
     if (
       decoded &&
       decoded.length < 500 &&
-      !decoded.includes('/login-internal') &&
-      !decoded.includes('/login-admin')
+        !decoded.includes('/login-internal') &&
+        !decoded.includes('/login-admin') &&
+        !decoded.includes('/admin/login')
     ) {
       next = decoded;
     }
@@ -143,11 +144,15 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
       <div className="w-full max-w-md border border-zinc-800 rounded-xl p-6 bg-zinc-900">
         <div className="text-sm uppercase tracking-wide text-zinc-400">
-          {mode === 'admin' ? 'Phase2 Admin Login' : 'Phase2 Internal Login'}
+          {mode === 'admin' ? 'Admin Login' : 'Sign in'}
         </div>
-        <h1 className="text-xl font-semibold mt-1">Sign in with Google</h1>
+        <h1 className="text-xl font-semibold mt-1">
+          Sign in with Google{mode === 'admin' ? ' (Super-admin)' : ''}
+        </h1>
         <p className="text-sm text-zinc-400 mt-2">
-          This page is not linked from the UI. Only allowlisted internal emails can sign in.
+          {mode === 'admin'
+            ? 'Only allowlisted super-admin emails can access admin pages.'
+            : 'Only allowlisted internal users can access the app.'}
         </p>
 
         <div className="mt-5 flex flex-col gap-3">
@@ -162,7 +167,7 @@ export default function InternalGoogleLoginPage({ mode }: { mode: 'internal' | '
               navigate('/chat', { replace: true });
             }}
           >
-            Back to Phase2
+            Back to chat
           </button>
         </div>
 

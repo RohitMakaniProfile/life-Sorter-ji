@@ -28,10 +28,11 @@ import httpx
 import structlog
 
 from app.config import get_settings
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
 from app.services.crawl_persistence import persist_successful_crawl
 
 logger = structlog.get_logger()
+_ai = AIHelper()
 
 # Social media domains (for url_type detection)
 SOCIAL_DOMAINS = {
@@ -847,7 +848,7 @@ async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
         import time as _time
         _t0 = _time.time()
 
-        response = await openrouter_service.chat_completion(
+        response = await _ai.complete(
             model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -874,7 +875,7 @@ async def generate_crawl_summary(crawl_raw: dict, website_url: str) -> dict:
             "crawl_status": "complete",
             "completed_at": datetime.utcnow().isoformat() + "Z",
             "_meta": {
-                "service": "openai",
+                "service": "openrouter",
                 "model": settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
                 "system_prompt": system_prompt,
                 "user_message": user_message,
@@ -1257,7 +1258,7 @@ async def generate_gbp_summary(crawl_raw: dict, url: str) -> dict:
         import time as _time
         _t0 = _time.time()
 
-        response = await openrouter_service.chat_completion(
+        response = await _ai.complete(
             model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1284,7 +1285,7 @@ async def generate_gbp_summary(crawl_raw: dict, url: str) -> dict:
             "crawl_status": "complete",
             "completed_at": datetime.utcnow().isoformat() + "Z",
             "_meta": {
-                "service": "openai",
+                "service": "openrouter",
                 "model": settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
                 "system_prompt": system_prompt,
                 "user_message": user_message,

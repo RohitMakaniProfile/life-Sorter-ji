@@ -137,3 +137,30 @@ export interface UiAgent {
   finalOutputFormattingContext?: string;
 }
 
+export interface SystemConfigEntry {
+  key: string;
+  value: string;
+  description: string;
+  updatedAt: string;
+}
+
+export interface ServiceHealthEntry {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface RecentErrorEntry {
+  source: string;
+  at: string;
+  message: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface ObservabilitySnapshot {
+  snapshotAt: string;
+  services: ServiceHealthEntry[];
+  counters: Record<string, number>;
+  recentErrors: RecentErrorEntry[];
+}
+

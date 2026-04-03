@@ -7,9 +7,6 @@ fastapi[standard]==0.115.12
 uvicorn[standard]==0.34.2
 pydantic-settings==2.9.1
 
-# AI & LLM
-openai==1.82.0
-
 # HTTP Client (async)
 httpx==0.28.1
 
@@ -28,10 +25,6 @@ orjson==3.10.18
 
 # Document parsing
 python-docx==1.1.2
-
-# RAG Pipeline — Vector search for tool recommendations
-qdrant-client==1.13.3
-numpy==2.2.6
 
 # HTML parsing for website crawling
 beautifulsoup4==4.13.3

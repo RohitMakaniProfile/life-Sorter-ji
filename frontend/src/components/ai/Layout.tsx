@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useUiAgents } from '../../context/UiAgentsContext';
 import { IKSHAN_AUTH_TOKEN_KEY } from '../../config/authStorage';
+import { getIsSuperAdmin } from '../../api/authSession';
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { agents, activeAgentId } = useUiAgents();
+  const isSuperAdmin = getIsSuperAdmin();
   const AUTH_JWT_STORAGE_KEY = IKSHAN_AUTH_TOKEN_KEY;
   const ACTIVE_KEY = 'ikshan-active-agent-id';
   const agentDef = agents.find((a) => a.id === activeAgentId) ?? agents[0] ?? {
@@ -52,10 +54,24 @@ export default function Layout() {
             <span className="text-lg text-slate-200 group-hover:text-white">🕒</span>
             <span className="text-sm text-slate-200 group-hover:text-white">History</span>
           </NavLink>
-          <NavLink to="/agents" className={navLinkClass}>
-            <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>
-            <span className="text-sm text-slate-200 group-hover:text-white">Agents</span>
-          </NavLink>
+          {isSuperAdmin && (
+            <NavLink to="/admin/agents" className={navLinkClass}>
+              <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>
+              <span className="text-sm text-slate-200 group-hover:text-white">Agents (Edit)</span>
+            </NavLink>
+          )}
+          {isSuperAdmin && (
+            <NavLink to="/admin/observability" className={navLinkClass}>
+              <span className="text-lg text-slate-200 group-hover:text-white">📈</span>
+              <span className="text-sm text-slate-200 group-hover:text-white">Observability</span>
+            </NavLink>
+          )}
+          {isSuperAdmin && (
+            <NavLink to="/admin/config" className={navLinkClass}>
+              <span className="text-lg text-slate-200 group-hover:text-white">⚙️</span>
+              <span className="text-sm text-slate-200 group-hover:text-white">System Config</span>
+            </NavLink>
+          )}
           <NavLink to="/new" className={navLinkClass}>
             <span className="text-lg text-slate-200 group-hover:text-white">✨</span>
             <span className="text-sm text-slate-200 group-hover:text-white">New Chat</span>
@@ -85,7 +101,7 @@ export default function Layout() {
                 } catch {
                   // ignore
                 }
-                window.location.href = '/login-internal';
+                window.location.href = '/admin/login?mode=internal';
               }}
               className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800"
             >

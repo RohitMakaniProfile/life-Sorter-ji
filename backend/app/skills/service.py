@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.phase2.ai import AiHelper
-from app.config import GEMINI_API_KEY, GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT
+from app.config import GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT, get_settings
+from app.services.ai_helper import AIHelper
 from app.phase2.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
 import httpx
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
+_ai = AIHelper()
 
 
 def _json_default(value: Any) -> Any:
@@ -276,6 +278,8 @@ async def _emit_summary_token_usage(
 ) -> None:
     if on_progress is None:
         return
+    settings = get_settings()
+    active_model = (settings.OPENROUTER_MODEL or OPENAI_MODEL).strip()
     try:
         await on_progress(
             {
@@ -285,8 +289,8 @@ async def _emit_summary_token_usage(
                 "meta": {
                     "kind": "token-usage",
                     "stage": stage,
-                    "provider": ("anthropic" if CLAUDE_API_KEY else "openai"),
-                    "model": (CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL),
+                    "provider": "openrouter",
+                    "model": active_model,
                     "inputTokens": int(input_tokens or 0),
                     "outputTokens": int(output_tokens or 0),
                 },
@@ -602,10 +606,8 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
     language_hint = str(args.get("language", "") or args.get("languageHint", "")).strip()
     landing_summary = str(args.get("landingSummary", "")).strip() or message[:3500]
 
-    if GEMINI_API_KEY:
+    if (get_settings().OPENROUTER_API_KEY or "").strip():
         try:
-            from google import genai  # type: ignore
-
             prompt = _SCOUT_PROMPT_TEMPLATE.format(
                 business_url=business_url or "(unknown)",
                 region_hint=region_hint or "(none)",
@@ -616,21 +618,20 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
             if GEMINI_SCOUT_MODELS:
                 model_ids = [m.strip() for m in GEMINI_SCOUT_MODELS.split(",") if m.strip()]
             else:
-                from app.phase2.agent.gemini_models import get_gemini_models
-                model_ids = get_gemini_models()
-
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            last_err: Exception | None = None
+                from app.phase2.agent.gemini_models import get_planner_models
+                model_ids = get_planner_models()
 
             for model_id in model_ids:
                 try:
-                    res = await client.aio.models.generate_content(
-                        model=model_id,
-                        contents=prompt,
-                        config={"response_mime_type": "application/json"},
+                    parsed = await _ai.complete_json_with_candidates(
+                        model_candidates=AIHelper.model_candidates(
+                            model_id,
+                            prefix_env="OPENROUTER_MODEL_PREFIX",
+                        ),
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                        max_tokens=2200,
                     )
-                    raw = (res.text or "").strip()
-                    parsed = json.loads(raw)
 
                     normalized = {
                         "businessTypeGuess": parsed.get("businessTypeGuess") or "",
@@ -655,10 +656,8 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
                     return SkillRunResult(status="ok", text=text, error=None, data=data, duration_ms=int((time.time() - started) * 1000))
 
                 except Exception as e:
-                    last_err = e
-                    err_msg = str(e).lower()
-                    is_retryable = any(k in err_msg for k in ["503", "429", "unavailable", "resource_exhausted", "overloaded", "high demand"])
-                    if is_retryable and model_ids.index(model_id) < len(model_ids) - 1:
+                    status_code = getattr(getattr(e, "response", None), "status_code", None)
+                    if status_code in (429, 503) and model_ids.index(model_id) < len(model_ids) - 1:
                         continue
                     break
 

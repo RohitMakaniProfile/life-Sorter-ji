@@ -14,9 +14,10 @@ import structlog
 
 from app.config import get_settings
 from app.data.personas import build_system_prompt
-from app.services import openrouter_service
+from app.services.ai_helper import AIHelper
 
 logger = structlog.get_logger()
+_ai = AIHelper()
 
 
 # ── Chat Completion ────────────────────────────────────────────
@@ -69,7 +70,7 @@ async def chat_completion(
         model=settings.OPENAI_MODEL_NAME,
     )
 
-    response = await openrouter_service.chat_completion(
+    response = await _ai.complete(
         model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
         messages=messages,  # type: ignore[arg-type]
         temperature=temperature,
@@ -101,7 +102,7 @@ async def company_search_gpt(
         Raw GPT response string (JSON expected).
     """
     settings = get_settings()
-    response = await openrouter_service.chat_completion(
+    response = await _ai.complete(
         model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
         messages=[
             {"role": "system", "content": search_prompt},
@@ -128,7 +129,7 @@ async def company_explanation_gpt(
         Human-friendly explanation string.
     """
     settings = get_settings()
-    response = await openrouter_service.chat_completion(
+    response = await _ai.complete(
         model=settings.OPENROUTER_MODEL or settings.OPENAI_MODEL_NAME,
         messages=[
             {"role": "system", "content": explanation_prompt},

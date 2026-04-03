@@ -4,8 +4,11 @@ import json
 import re
 from typing import Any
 
-from app.config import GEMINI_API_KEY
-from .gemini_models import get_gemini_models
+from app.config import get_settings
+from app.services.ai_helper import AIHelper
+from .gemini_models import get_planner_models
+
+_ai = AIHelper()
 
 _SYSTEM_PROMPT = """You extract **structured arguments** for a skill from the user's message and any **prior skill outputs** appended below.
 
@@ -99,12 +102,10 @@ async def extract_skill_args(
     if not input_schema or not isinstance(input_schema.get("properties"), dict):
         return None
 
-    if not GEMINI_API_KEY:
+    if not (get_settings().OPENROUTER_API_KEY or "").strip():
         return None
 
     try:
-        from google import genai  # type: ignore
-
         props: dict[str, Any] = input_schema.get("properties", {})
         fields_desc = "\n".join(
             f"- {key} ({prop.get('type', 'string')}"
@@ -124,35 +125,36 @@ async def extract_skill_args(
             "USER MESSAGE (may include a trailing PRIOR SKILL OUTPUTS block from earlier skills):",
             message,
         ])
+        model_ids = get_planner_models()
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        model_ids = get_gemini_models()
-
-        raw = ""
+        parsed: dict[str, Any] | None = None
         last_err: Exception | None = None
         for model_id in model_ids:
             try:
-                resp = await client.aio.models.generate_content(
-                    model=model_id,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"},
+                parsed = await _ai.complete_json_with_candidates(
+                    model_candidates=AIHelper.model_candidates(
+                        model_id,
+                        prefix_env="OPENROUTER_MODEL_PREFIX",
+                    ),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=700,
                 )
-                raw = (resp.text or "").strip()
                 last_err = None
                 break
             except Exception as e:
                 err_msg = str(e)
                 last_err = e
-                if _is_404(err_msg) and model_ids.index(model_id) < len(model_ids) - 1:
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if (status_code == 404 or _is_404(err_msg)) and model_ids.index(model_id) < len(model_ids) - 1:
                     continue
-                if _is_retryable(err_msg) and model_ids.index(model_id) < len(model_ids) - 1:
-                    continue
+                if status_code in (429, 503) or _is_retryable(err_msg):
+                    if model_ids.index(model_id) < len(model_ids) - 1:
+                        continue
                 break
 
-        if last_err or not raw:
+        if last_err or not parsed:
             return None
-
-        parsed = json.loads(_extract_json_from_raw(raw))
 
         prior = _parse_prior_platforms(message)
         if prior:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 from ..ai import AiHelper
-from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
+from app.config import OPENAI_MODEL, get_settings
 
 TokenCb = Callable[[str], Awaitable[None] | None]
 
@@ -35,18 +35,16 @@ async def format_final_answer(
 ) -> FormatterResult:
     """
     Produce the final user-facing answer by summarizing all skill calls.
-    Uses streaming LLM (Claude if available, else OpenAI).
+    Uses streaming LLM via OpenRouter (Claude model if configured, else OpenRouter default).
     """
+    settings = get_settings()
+    use_claude_model = bool((settings.OPENROUTER_CLAUDE_MODEL or "").strip())
     skills_markdown = "\n".join(
         f"### {c.get('skillId', '?')}\n\n{(c.get('rawText') or '').strip() or '(no summary available)'}\n"
         for c in skill_calls
     )
 
-    formatter_ai = (
-        AiHelper(temperature=0.3, provider="anthropic")
-        if CLAUDE_API_KEY
-        else AiHelper(temperature=0.3)
-    )
+    formatter_ai = AiHelper(temperature=0.3, provider="anthropic") if use_claude_model else AiHelper(temperature=0.3)
 
     final_output_context = (contexts.get("finalOutputFormattingContext") or "").strip()
 
@@ -137,8 +135,8 @@ async def format_final_answer(
         error=error,
         stage_outputs=stage_outputs,
         duration_ms=duration_ms,
-        model=CLAUDE_MODEL if CLAUDE_API_KEY else OPENAI_MODEL,
-        provider="anthropic" if CLAUDE_API_KEY else "openai",
+        model=(settings.OPENROUTER_CLAUDE_MODEL or OPENAI_MODEL) if use_claude_model else (settings.OPENROUTER_MODEL or OPENAI_MODEL),
+        provider="anthropic" if use_claude_model else "openai",
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
     )
