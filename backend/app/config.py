@@ -147,7 +147,7 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# ── Runtime constants for phase2 and shared services ───────────────────────────
+# ── Runtime constants for DoableClaw agent and shared services ─────────────────
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -199,7 +199,7 @@ def _resolve_database_url() -> str:
 
 def _resolve_python_bin() -> str:
     """
-    Interpreter used to run phase2 skill subprocesses.
+    Interpreter used to run DoableClaw agent skill subprocesses.
     """
     raw = os.getenv("PYTHON_BIN", "").strip()
     if raw:
@@ -225,7 +225,7 @@ PYTHON_BIN = _resolve_python_bin()
 STORAGE_BUCKET = _getenv("STORAGE_BUCKET", str(_BACKEND_DIR / "storage-bucket"))
 SKILLS_ROOT = Path(_getenv("SKILLS_ROOT", str(_BACKEND_DIR / "skills")))
 
-# LLM defaults used by phase2 components.
+# LLM defaults used by DoableClaw agent components.
 OPENAI_MODEL = _getenv("OPENAI_MODEL", "gpt-4.1")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "").strip()
 CLAUDE_MODEL = _getenv("CLAUDE_MODEL", "claude-sonnet-4-6")

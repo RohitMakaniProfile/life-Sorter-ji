@@ -92,7 +92,7 @@ def _json_dumps(value: Any) -> str:
     except Exception as exc:
         try:
             print(
-                "[phase2.stores] json-dumps-failed",
+                "[doable_claw_agent.stores] json-dumps-failed",
                 {
                     "error": str(exc),
                     "value_type": type(value).__name__,

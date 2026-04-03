@@ -4,8 +4,8 @@ import asyncio
 import re
 from typing import Any, AsyncIterator, Literal
 
-from app.phase2.agent.orchestrator import RunOpts, run_agent_turn_stream
-from app.phase2.stores import (
+from app.doable_claw_agent.agent.orchestrator import RunOpts, run_agent_turn_stream
+from app.doable_claw_agent.stores import (
     append_assistant_placeholder,
     append_message,
     get_or_create_conversation,
@@ -14,13 +14,13 @@ from app.phase2.stores import (
     save_stage_outputs,
     update_message_content,
 )
-from app.phase2.router import _extract_url_from_message, _resolve_agent_and_skill
+from app.services.agent_checklist_service import _extract_url_from_message, _resolve_agent_and_skill
 from app.services import unified_chat_service
 
 
 ChatIntent = Literal["standard", "agentic"]
 
-# Seeded default in DB (see app.phase2.stores.DEFAULT_AGENTS)
+# Seeded default in DB (see app.doable_claw_agent.stores.DEFAULT_AGENTS)
 DEFAULT_RESEARCH_AGENT_ID = "research-orchestrator"
 
 

@@ -5,22 +5,19 @@ import json
 import re
 import time as _time
 import traceback
-from functools import lru_cache
-from datetime import datetime
-from pathlib import Path
 from collections.abc import Awaitable, Callable
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import HTTPException
 
 from app.services.ai_helper import ai_helper as _ai
-from .agent.final_formatter import format_final_answer
-from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL, STORAGE_BUCKET
+from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
 from app.skills.service import first_skill_id, get_skill, run_skill
-from app.services import unified_chat_service
-from .stores import (
+from app.doable_claw_agent.agent.final_formatter import format_final_answer
+from app.doable_claw_agent.stores import (
     append_skill_streamed_text,
     append_assistant_placeholder,
     append_message,
@@ -43,46 +40,48 @@ from .stores import (
     update_plan_run,
 )
 
-router = APIRouter()
-_PLAN_BG_TASKS: dict[str, asyncio.Task] = {}
+
+def _log(label: str, **fields: Any) -> None:
+    try:
+        print(f"[agent_checklist_service] {label} | {json.dumps(fields, default=str, ensure_ascii=False)}")
+    except Exception:
+        print(f"[agent_checklist_service] {label} | <log-serialize-error>")
 
 
-def is_plan_background_task_running(plan_id: str) -> bool:
-    task = _PLAN_BG_TASKS.get(plan_id)
+# ── Background task registry ──────────────────────────────────────────────────
+
+_CHECKLIST_BG_TASKS: dict[str, asyncio.Task] = {}
+
+
+def is_checklist_task_running(plan_id: str) -> bool:
+    task = _CHECKLIST_BG_TASKS.get(plan_id)
     return bool(task and not task.done())
 
 
-def _register_plan_bg_task(plan_id: str, task: asyncio.Task) -> None:
-    _PLAN_BG_TASKS[plan_id] = task
+def _register_checklist_task(plan_id: str, task: asyncio.Task) -> None:
+    _CHECKLIST_BG_TASKS[plan_id] = task
 
     def _cleanup(done_task: asyncio.Task) -> None:
-        current = _PLAN_BG_TASKS.get(plan_id)
+        current = _CHECKLIST_BG_TASKS.get(plan_id)
         if current is done_task:
-            _PLAN_BG_TASKS.pop(plan_id, None)
+            _CHECKLIST_BG_TASKS.pop(plan_id, None)
 
     task.add_done_callback(_cleanup)
 
 
-def _actor_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+# ── Payload / message helpers ─────────────────────────────────────────────────
+
+def actor_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None
     user_id = str(payload.get("userId") or payload.get("user_id") or "").strip() or None
     return session_id, user_id
 
-def _log(label: str, **fields: Any) -> None:
-    try:
-        print(f"[phase2.router] {label} | {json.dumps(fields, default=str, ensure_ascii=False)}")
-    except Exception:
-        print(f"[phase2.router] {label} | <log-serialize-error>")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _extract_url_from_message(msg: str) -> str:
     raw = msg or ""
     m = re.search(r"https?://[^\s]+", raw, re.I)
     if m:
         return m.group(0).rstrip("),.;]\"'")
-    # Bare hostname (e.g. "endee.io" / "www.endee.io") — plan + skills need a URL
     m2 = re.search(
         r"(?:^|[\s\n])((?:https?://)?(?:www\.)?[\w-]+\.(?:[a-z]{2,24}))\b",
         raw,
@@ -97,48 +96,23 @@ def _extract_url_from_message(msg: str) -> str:
     return f"https://{candidate.lstrip('/')}"
 
 
-def _is_execution_intent(message: str) -> bool:
+def is_execution_intent(message: str) -> bool:
     text = (message or "").strip().lower()
     if not text:
         return False
-    # Explicit research / analysis asks (even when URL is bare-domain only)
     if re.search(r"\bdeep\s+analysis\b|\bdeep\s+dive\b|deep-dive", text):
         return True
     if _extract_url_from_message(message):
         return True
 
     execution_hints = (
-        "analyze",
-        "audit",
-        "report",
-        "strategy",
-        "research",
-        "competitor",
-        "market",
-        "crawl",
-        "scrape",
-        "playbook",
-        "roadmap",
-        "go to market",
-        "gtm",
-        "positioning",
-        "icp",
-        "persona",
-        "pricing",
-        "website",
-        "business",
+        "analyze", "audit", "report", "strategy", "research", "competitor",
+        "market", "crawl", "scrape", "playbook", "roadmap", "go to market",
+        "gtm", "positioning", "icp", "persona", "pricing", "website", "business",
     )
     conversational_hints = (
-        "what is",
-        "who is",
-        "explain",
-        "define",
-        "difference between",
-        "how are you",
-        "hello",
-        "hi",
-        "thanks",
-        "thank you",
+        "what is", "who is", "explain", "define", "difference between",
+        "how are you", "hello", "hi", "thanks", "thank you",
     )
     if any(h in text for h in conversational_hints) and not any(h in text for h in execution_hints):
         return False
@@ -153,10 +127,10 @@ def _skill_display_name(skill_id: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def _load_default_phase2_contexts() -> dict[str, str]:
+def _load_default_agent_contexts() -> dict[str, str]:
     cfg_dir = Path(__file__).resolve().parents[2] / "config"
-    processing = cfg_dir / "phase2_processing.context.md"
-    output = cfg_dir / "phase2_output.context.md"
+    processing = cfg_dir / "doable_claw_processing.context.md"
+    output = cfg_dir / "doable_claw_output.context.md"
     try:
         processing_text = processing.read_text(encoding="utf-8").strip()
     except Exception:
@@ -207,26 +181,23 @@ def _build_page_nl_prompt(skill_id: str, meta: dict[str, Any]) -> str:
             continue
         lines.append(f"{t}: {c}")
     element_sequence = "\n".join(lines)[:14000]
-    body = str(meta.get("snapshot") or "")
-    body = body[:6000]
-    return "\n".join(
-        [
-            f"Skill: {skill_id}",
-            f"URL: {url}",
-            f"Title: {title}",
-            f"Meta description: {desc}",
-            "",
-            "Convert this structured page extraction into concise natural language.",
-            "Preserve key evidence, remove repetition, do not invent facts.",
-            "Use the DOM sequence to preserve local context between headings and nearby items.",
-            "",
-            "DOM-ordered typed elements:",
-            element_sequence,
-            "",
-            "Fallback raw text (only if needed):",
-            body,
-        ]
-    )
+    body = str(meta.get("snapshot") or "")[:6000]
+    return "\n".join([
+        f"Skill: {skill_id}",
+        f"URL: {url}",
+        f"Title: {title}",
+        f"Meta description: {desc}",
+        "",
+        "Convert this structured page extraction into concise natural language.",
+        "Preserve key evidence, remove repetition, do not invent facts.",
+        "Use the DOM sequence to preserve local context between headings and nearby items.",
+        "",
+        "DOM-ordered typed elements:",
+        element_sequence,
+        "",
+        "Fallback raw text (only if needed):",
+        body,
+    ])
 
 
 def _scrape_failure_recoverable(err: str | None) -> bool:
@@ -373,20 +344,9 @@ def _normalize_scout_queries(
     return deduped, operation_type, covered_region, market_guess, business_name
 
 
-def _allowed_file_path(path: str) -> bool:
-    if ".." in path:
-        return False
-    allowed = [Path("/tmp").resolve(), Path(STORAGE_BUCKET).resolve()]
-    p = Path(path).resolve()
-    for root in allowed:
-        if p == root or str(p).startswith(str(root) + "/"):
-            return True
-    return False
-
-
 async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
     default_skill = first_skill_id() or "platform-scout"
-    default_contexts = _load_default_phase2_contexts()
+    default_contexts = _load_default_agent_contexts()
 
     agent_id = str(payload.get("agentId") or "").strip()
     allowed_from_request = payload.get("allowedSkillIds") if isinstance(payload.get("allowedSkillIds"), list) else []
@@ -423,26 +383,9 @@ async def _resolve_agent_and_skill(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _json_default(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
+# ── Checklist helpers ─────────────────────────────────────────────────────────
 
-
-def _sse(data: dict[str, Any]) -> bytes:
-    try:
-        return f"data: {json.dumps(data, ensure_ascii=False, default=_json_default)}\n\n".encode("utf-8")
-    except Exception as exc:
-        _log(
-            "sse-serialize-failed",
-            error=str(exc),
-            data_type=type(data).__name__,
-            data_keys=list(data.keys()) if isinstance(data, dict) else None,
-        )
-        raise
-
-
-async def _emit_plan_progress(
+async def _emit_checklist_progress(
     cb,
     message: str,
     *,
@@ -459,14 +402,75 @@ async def _emit_plan_progress(
     })
 
 
-async def _create_plan_draft(
+def parse_checklist_items(markdown: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for ln in (markdown or "").splitlines():
+        line = ln.strip()
+        if not line.startswith(("- [", "* [")):
+            continue
+        done = line.lower().startswith("- [x]") or line.lower().startswith("* [x]")
+        text = re.sub(r"^[-*]\s+\[[ xX]\]\s+", "", line).strip()
+        if text:
+            items.append({"text": text, "done": done})
+    return items
+
+
+def render_checklist(markdown: str, items: list[dict[str, Any]]) -> str:
+    item_idx = 0
+    out: list[str] = []
+    for ln in (markdown or "").splitlines():
+        line = ln
+        stripped = line.strip()
+        if stripped.startswith(("- [", "* [")) and item_idx < len(items):
+            prefix = line[: len(line) - len(line.lstrip())]
+            marker = "- [x]" if items[item_idx].get("done") else "- [ ]"
+            out.append(f"{prefix}{marker} {items[item_idx].get('text', '')}".rstrip())
+            item_idx += 1
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def mark_checklist_from_skill(items: list[dict[str, Any]], skill_id: str, summary: str) -> list[str]:
+    changed: list[str] = []
+    hay = f"{skill_id} {summary}".lower()
+
+    def mark(terms: list[str], extra: list[str] | None = None) -> None:
+        for it in items:
+            if it.get("done"):
+                continue
+            t = str(it.get("text") or "").lower()
+            matches_item = any(k in t for k in terms)
+            matches_summary = any(k in hay for k in (extra or []))
+            if matches_item or matches_summary:
+                it["done"] = True
+                changed.append(str(it.get("text") or ""))
+
+    if skill_id == "platform-scout":
+        mark(["market", "scope", "region", "local", "global", "inferred business profile"], ["market", "scope", "region", "local", "global"])
+        mark(["competitor quer", "review quer", "search quer"], ["queries", "competitor", "reviews"])
+    if skill_id == "web-search":
+        mark(["competitor", "alternatives", "review", "listing", "sources", "urls"], ["results", "review", "competitor", "http"])
+    if skill_id in ("business-scan", "scrape-agentbrowser", "scrape-playwright", "scrape-bs4"):
+        mark(["on-site", "onsite", "landing page", "business context", "site evidence", "crawl"], ["page", "site", "pricing", "about", "service"])
+    if skill_id == "platform-taxonomy":
+        mark(["taxonomy", "ecosystem", "platform categories", "domain rules"], ["taxonomy", "category", "domain"])
+    if skill_id == "classify-links":
+        mark(["classify", "classification", "bucket", "categor"], ["classified", "category", "bucket"])
+
+    return changed
+
+
+# ── Plan draft creation ───────────────────────────────────────────────────────
+
+async def create_plan_draft(
     *,
     body: dict[str, Any],
     emit_progress=None,
     emit_token=None,
 ) -> dict[str, Any]:
     message = str(body.get("message") or "").strip()
-    session_id, user_id = _actor_from_payload(body)
+    session_id, user_id = actor_from_payload(body)
     _log("plan-draft-start", message_preview=message[:200], has_emit_progress=emit_progress is not None)
     resolved = await _resolve_agent_and_skill(body)
     conv = await get_or_create_conversation(
@@ -498,7 +502,7 @@ async def _create_plan_draft(
         options=["Approve", "Cancel"],
     )
 
-    await _emit_plan_progress(emit_progress, "Analyzing request context", event="plan-started")
+    await _emit_checklist_progress(emit_progress, "Analyzing request context", event="plan-started")
     url = _extract_url_from_message(message)
 
     async def _run_skill_for_plan(sid: str, args: dict[str, Any], input_msg: str) -> Any:
@@ -544,8 +548,6 @@ async def _create_plan_draft(
                         pass
             page_worker_task = asyncio.create_task(_page_worker())
 
-        # Stream skill-call start into the plan-building stream so the UI context panel
-        # can show exactly what is running during plan creation.
         if emit_progress is not None:
             try:
                 await emit_progress(
@@ -568,7 +570,6 @@ async def _create_plan_draft(
 
         async def _on_prog(event: dict[str, Any]) -> None:
             meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
-            # Ensure meta always includes skillId for client-side inference.
             try:
                 if isinstance(meta, dict) and sid:
                     meta = {**meta, "skillId": sid}
@@ -583,7 +584,6 @@ async def _create_plan_draft(
                 and isinstance(meta, dict)
             ):
                 await page_queue.put(meta)
-            # Persist progress so SSE followers can replay it during background execution.
             evt = str(meta.get("event") or "").strip().lower()
             if evt == "checkpoint" and isinstance(meta.get("payload"), dict):
                 try:
@@ -605,7 +605,6 @@ async def _create_plan_draft(
                     )
                 except Exception:
                     pass
-            # Forward progress to plan stream (UI) for live context panel.
             if emit_progress is not None:
                 try:
                     await emit_progress(event)
@@ -675,13 +674,13 @@ async def _create_plan_draft(
 
     if url:
         _log("plan-url-detected", url=url)
-        await _emit_plan_progress(emit_progress, "Reading business information from website", event="business-scan-start")
+        await _emit_checklist_progress(emit_progress, "Reading business information from website", event="business-scan-start")
         scan_res, crawl_res = await asyncio.gather(
             _run_skill_for_plan("business-scan", scan_args, message),
             _run_skill_for_plan("scrape-playwright", crawl_args_plan, message),
         )
     else:
-        await _emit_plan_progress(
+        await _emit_checklist_progress(
             emit_progress,
             "No URL detected, planning from your prompt context",
             event="no-url",
@@ -701,7 +700,7 @@ async def _create_plan_draft(
         f"scrape-playwright (page excerpts):\n{crawl_pages_excerpt}" if crawl_pages_excerpt else "",
     ]))
     scout_args: dict[str, Any] = {"businessUrl": url, "regionHint": "", "language": ""} if url else {}
-    await _emit_plan_progress(emit_progress, "Inferring business scope and discovery queries", event="platform-scout-start")
+    await _emit_checklist_progress(emit_progress, "Inferring business scope and discovery queries", event="platform-scout-start")
     scout_res = await _run_skill_for_plan("platform-scout", scout_args, scout_input) if url else None
     scout_data: Any = scout_res.data if scout_res else None
 
@@ -709,7 +708,7 @@ async def _create_plan_draft(
         scout_data or {}, scan_data or {}, url
     )
     business_ref = business_name or "business"
-    await _emit_plan_progress(
+    await _emit_checklist_progress(
         emit_progress,
         f"Searching {business_ref} related information on web",
         event="web-search-start",
@@ -778,7 +777,7 @@ async def _create_plan_draft(
         ("web-search candidate URLs:\n" + "\n".join(f"- {u}" for u in candidate_urls[:30])) if candidate_urls else "",
     ]))
 
-    await _emit_plan_progress(emit_progress, "Creating plan draft", event="plan-markdown-generation")
+    await _emit_checklist_progress(emit_progress, "Creating plan draft", event="plan-markdown-generation")
     _log("plan-markdown-generation-start", conversation_id=conv.get("id"), plan_message_id=plan_message_id)
     try:
         async def _on_plan_token(tok: str) -> None:
@@ -850,7 +849,7 @@ async def _create_plan_draft(
     await update_message_content(conv["id"], plan_message_id, plan_markdown)
     await update_message_meta(conv["id"], plan_message_id, "plan", plan_run["id"])
 
-    await _emit_plan_progress(emit_progress, "Plan ready for your approval", event="plan-ready", kind="done")
+    await _emit_checklist_progress(emit_progress, "Plan ready for your approval", event="plan-ready", kind="done")
     return {
         "conversationId": conv["id"],
         "planId": plan_run["id"],
@@ -863,221 +862,9 @@ async def _create_plan_draft(
     }
 
 
+# ── Plan approval & execution ─────────────────────────────────────────────────
 
-def _parse_checklist_items(markdown: str) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for ln in (markdown or "").splitlines():
-        line = ln.strip()
-        if not line.startswith(("- [", "* [")):
-            continue
-        done = line.lower().startswith("- [x]") or line.lower().startswith("* [x]")
-        text = re.sub(r"^[-*]\s+\[[ xX]\]\s+", "", line).strip()
-        if text:
-            items.append({"text": text, "done": done})
-    return items
-
-
-def _render_checklist(markdown: str, items: list[dict[str, Any]]) -> str:
-    item_idx = 0
-    out: list[str] = []
-    for ln in (markdown or "").splitlines():
-        line = ln
-        stripped = line.strip()
-        if stripped.startswith(("- [", "* [")) and item_idx < len(items):
-            prefix = line[: len(line) - len(line.lstrip())]
-            marker = "- [x]" if items[item_idx].get("done") else "- [ ]"
-            out.append(f"{prefix}{marker} {items[item_idx].get('text', '')}".rstrip())
-            item_idx += 1
-        else:
-            out.append(line)
-    return "\n".join(out)
-
-
-def _mark_checklist_from_skill(items: list[dict[str, Any]], skill_id: str, summary: str) -> list[str]:
-    changed: list[str] = []
-    hay = f"{skill_id} {summary}".lower()
-
-    def mark(terms: list[str], extra: list[str] | None = None) -> None:
-        for it in items:
-            if it.get("done"):
-                continue
-            t = str(it.get("text") or "").lower()
-            matches_item = any(k in t for k in terms)
-            matches_summary = any(k in hay for k in (extra or []))
-            if matches_item or matches_summary:
-                it["done"] = True
-                changed.append(str(it.get("text") or ""))
-
-    if skill_id == "platform-scout":
-        mark(["market", "scope", "region", "local", "global", "inferred business profile"], ["market", "scope", "region", "local", "global"])
-        mark(["competitor quer", "review quer", "search quer"], ["queries", "competitor", "reviews"])
-    if skill_id == "web-search":
-        mark(["competitor", "alternatives", "review", "listing", "sources", "urls"], ["results", "review", "competitor", "http"])
-    if skill_id in ("business-scan", "scrape-agentbrowser", "scrape-playwright", "scrape-bs4"):
-        mark(["on-site", "onsite", "landing page", "business context", "site evidence", "crawl"], ["page", "site", "pricing", "about", "service"])
-    if skill_id == "platform-taxonomy":
-        mark(["taxonomy", "ecosystem", "platform categories", "domain rules"], ["taxonomy", "category", "domain"])
-    if skill_id == "classify-links":
-        mark(["classify", "classification", "bucket", "categor"], ["classified", "category", "bucket"])
-
-    return changed
-
-
-# ── Routes ────────────────────────────────────────────────────────────────────
-
-@router.get("/api/files/download")
-async def p2_files_download(path: str = Query(...)) -> FileResponse:
-    if not _allowed_file_path(path):
-        raise HTTPException(status_code=403, detail="Access denied")
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-    media = "audio/mpeg" if p.name.endswith(".mp3") else "video/mp4"
-    return FileResponse(str(p), media_type=media, filename=p.name)
-
-
-async def p2_chat_message(req: Request) -> dict[str, Any]:
-    body = await req.json()
-    message = str(body.get("message") or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
-    session_id, user_id = _actor_from_payload(body)
-    # No agent selected => phase1-style normal chat flow.
-    if not str(body.get("agentId") or "").strip():
-        out = await unified_chat_service.run_standard_chat(
-            message=message,
-            persona=str(body.get("persona") or "default"),
-            context=body.get("context") if isinstance(body.get("context"), dict) else None,
-            conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
-            conversation_id=str(body.get("conversationId") or "").strip() or None,
-            session_id=session_id,
-            user_id=user_id,
-        )
-        return {
-            "message": out["message"],
-            "conversationId": out["conversationId"],
-            "mode": "standard",
-            "usage": out.get("usage"),
-            "stageOutputs": {},
-            "outputFile": None,
-        }
-
-    # Agent selected, but prompt is regular conversation => use normal LLM chat.
-    if not _is_execution_intent(message):
-        out = await unified_chat_service.run_standard_chat(
-            message=message,
-            persona=str(body.get("persona") or "default"),
-            context=body.get("context") if isinstance(body.get("context"), dict) else None,
-            conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
-            conversation_id=str(body.get("conversationId") or "").strip() or None,
-            session_id=session_id,
-            user_id=user_id,
-        )
-        return {
-            "message": out["message"],
-            "conversationId": out["conversationId"],
-            "mode": "standard",
-            "usage": out.get("usage"),
-            "stageOutputs": {},
-            "outputFile": None,
-        }
-
-    # Agent selected + execution intent => plan-first flow, execution happens only after approval.
-    draft = await _create_plan_draft(body=body)
-    return {
-        "mode": "agentic-plan",
-        "conversationId": draft["conversationId"],
-        "planId": draft["planId"],
-        "planMessageId": draft["planMessageId"],
-        "planMarkdown": draft["planMarkdown"],
-    }
-
-
-
-async def p2_chat_plan_stream(req: Request) -> StreamingResponse:
-    body = await req.json()
-    message = str(body.get("message") or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-    if not str(body.get("agentId") or "").strip():
-        raise HTTPException(status_code=400, detail="agentId is required for plan mode")
-
-    if not _is_execution_intent(message):
-        session_id, user_id = _actor_from_payload(body)
-
-        async def standard_generator():
-            try:
-                out = await unified_chat_service.run_standard_chat(
-                    message=message,
-                    persona=str(body.get("persona") or "default"),
-                    context=body.get("context") if isinstance(body.get("context"), dict) else None,
-                    conversation_history=body.get("conversationHistory") if isinstance(body.get("conversationHistory"), list) else None,
-                    conversation_id=str(body.get("conversationId") or "").strip() or None,
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-                yield _sse({"token": out["message"]})
-                yield _sse(
-                    {
-                        "done": True,
-                        "mode": "standard",
-                        "conversationId": out["conversationId"],
-                        "usage": out.get("usage"),
-                        "stageOutputs": {},
-                        "outputFile": None,
-                    }
-                )
-            except Exception as exc:
-                yield _sse({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
-
-        return StreamingResponse(standard_generator(), media_type="text/event-stream")
-
-    async def generator():
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
-        done = asyncio.Event()
-
-        async def emit(event: dict[str, Any]) -> None:
-            await queue.put(_sse(event))
-
-        async def emit_progress(event: dict[str, Any]) -> None:
-            await emit({"progress": event})
-
-        async def worker() -> None:
-            try:
-                _log("plan-stream-worker-start")
-                await emit({"stage": "thinking", "label": "Building plan", "stageIndex": 0})
-                result = await _create_plan_draft(body=body, emit_progress=emit_progress, emit_token=emit)
-                _log("plan-stream-worker-done", plan_id=result.get("planId"), conversation_id=result.get("conversationId"))
-                await emit({
-                    "done": True,
-                    "conversationId": result.get("conversationId"),
-                    "planId": result.get("planId"),
-                    "planMessageId": result.get("planMessageId"),
-                    "planMarkdown": result.get("planMarkdown"),
-                    "agentId": result.get("agentId"),
-                    "skillId": result.get("skillId"),
-                })
-            except Exception as exc:
-                _log("plan-stream-worker-error", error=str(exc), traceback=traceback.format_exc())
-                await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
-            finally:
-                done.set()
-
-        asyncio.create_task(worker())
-
-        while not done.is_set() or not queue.empty():
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=15)
-                yield chunk
-            except asyncio.TimeoutError:
-                yield b": ping\n\n"
-
-    return StreamingResponse(generator(), media_type="text/event-stream")
-
-
-
-async def _prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str | None]:
+async def prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str | None]:
     """Load conversation, apply markdown patch, claim plan (draft/approved → executing)."""
     plan_id = str(body.get("planId") or "").strip()
     if not plan_id:
@@ -1085,7 +872,7 @@ async def _prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], 
     if not str(body.get("agentId") or "").strip():
         raise HTTPException(status_code=400, detail="agentId is required for plan execution")
 
-    session_id, user_id = _actor_from_payload(body)
+    session_id, user_id = actor_from_payload(body)
     resolved = await _resolve_agent_and_skill(body)
     conv = await get_or_create_conversation(
         body.get("conversationId"),
@@ -1116,7 +903,7 @@ async def _prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], 
 
 async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, Any]:
     """Start plan execution in a detached asyncio task (survives client disconnect)."""
-    conv, plan, resolved, plan_id, session_id = await _prepare_plan_approval(body)
+    conv, plan, resolved, plan_id, session_id = await prepare_plan_approval(body)
     assistant_message_id = await append_assistant_placeholder(conv["id"])
     await update_plan_run(plan_id, {"executionMessageId": assistant_message_id})
 
@@ -1140,7 +927,7 @@ async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, A
             await update_plan_run(plan_id, {"status": "error"})
 
     t = asyncio.create_task(_bg())
-    _register_plan_bg_task(plan_id, t)
+    _register_checklist_task(plan_id, t)
     return {
         "conversationId": conv["id"],
         "planId": plan_id,
@@ -1171,7 +958,6 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
     if status in ("draft", "approved"):
         return await schedule_plan_approval_background(body)
 
-    # Allow retry from failed runs: move error -> approved, then start again.
     if status == "error":
         await update_plan_run(plan_id, {"status": "approved"})
         return await schedule_plan_approval_background(body)
@@ -1179,7 +965,7 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
     if status != "executing":
         raise HTTPException(status_code=409, detail=f"plan is {status}")
 
-    session_id, user_id = _actor_from_payload(body)
+    session_id, user_id = actor_from_payload(body)
     resolved = await _resolve_agent_and_skill(body)
     conv = await get_or_create_conversation(
         body.get("conversationId"),
@@ -1193,7 +979,7 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
         assistant_message_id = await append_assistant_placeholder(conv["id"])
         await update_plan_run(plan_id, {"executionMessageId": assistant_message_id})
 
-    if is_plan_background_task_running(plan_id):
+    if is_checklist_task_running(plan_id):
         return {
             "conversationId": conv["id"],
             "planId": plan_id,
@@ -1223,7 +1009,7 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
             await update_plan_run(plan_id, {"status": "error"})
 
     t = asyncio.create_task(_bg())
-    _register_plan_bg_task(plan_id, t)
+    _register_checklist_task(plan_id, t)
     return {
         "conversationId": conv["id"],
         "planId": plan_id,
@@ -1232,7 +1018,6 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
         "runningTaskRefFound": True,
         "resumedFromMissingTaskRef": True,
     }
-
 
 
 async def execute_plan_approval_work(
@@ -1250,10 +1035,10 @@ async def execute_plan_approval_work(
         exec_start_ms = _time.time() * 1000
         tokens_emitted = 0
         await emit({"stage": "thinking", "label": "Executing plan", "stageIndex": 0, "agentId": resolved["agentId"]})
-    
+
         steps = plan.get("planJson", {}).get("steps", []) if isinstance(plan.get("planJson"), dict) else []
         plan_markdown_live = str(plan.get("planMarkdown") or "")
-        checklist_items = _parse_checklist_items(plan_markdown_live)
+        checklist_items = parse_checklist_items(plan_markdown_live)
         user_message = ""
         for msg in reversed(conv.get("messages") or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
@@ -1263,7 +1048,7 @@ async def execute_plan_approval_work(
                     break
         stage_outputs: dict[str, str] = {}
         step_results: dict[str, Any] = {}
-    
+
         previous_execution_message_id = str(plan.get("executionMessageId") or "").strip()
         reusable_by_skill: dict[str, dict[str, Any]] = {}
         if previous_execution_message_id and previous_execution_message_id != assistant_message_id:
@@ -1300,19 +1085,18 @@ async def execute_plan_approval_work(
             skill_name = _skill_display_name(sid)
             if resolved.get("allowedSkillIds") and sid not in (resolved.get("allowedSkillIds") or []):
                 continue
-    
+
             step_args: dict[str, Any] = dict(step.get("args") or {})
 
-            # Retry optimization: reuse successful outputs from previous interrupted/failed attempt.
             reused = reusable_by_skill.get(sid)
             if reused is not None:
                 step_results[step_id] = {"text": reused.get("text"), "data": reused.get("data")}
                 if isinstance(reused.get("text"), str) and reused.get("text"):
                     stage_outputs[sid] = str(reused.get("text"))
                 if checklist_items:
-                    changed_items = _mark_checklist_from_skill(checklist_items, sid, str(reused.get("text") or ""))
+                    changed_items = mark_checklist_from_skill(checklist_items, sid, str(reused.get("text") or ""))
                     if changed_items:
-                        plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
+                        plan_markdown_live = render_checklist(plan_markdown_live, checklist_items)
                         await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
                         if plan.get("planMessageId"):
                             await update_message_content(
@@ -1371,9 +1155,9 @@ async def execute_plan_approval_work(
                 step_args.setdefault("businessType", str(result_block.get("businessTypeGuess") or ""))
                 step_args.setdefault("operationType", scope if scope in ("local", "global") else "")
                 step_args.setdefault("coveredRegion", str(result_block.get("coveredRegion") or ""))
-    
+
             await emit({"stage": "running", "label": f"Running {skill_name}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
-    
+
             run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
             call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
             page_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -1424,7 +1208,7 @@ async def execute_plan_approval_work(
                     },
                 }
             )
-    
+
             async def on_progress(event: dict[str, Any]) -> None:
                 meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
                 if (
@@ -1480,7 +1264,7 @@ async def execute_plan_approval_work(
                         }
                     )
                 await emit_progress(event)
-    
+
             if sid == "scrape-playwright":
                 _SCRAPE_AUTO_RESUME_ATTEMPTS = 2
                 result = None
@@ -1524,7 +1308,7 @@ async def execute_plan_approval_work(
                 await page_queue.put(None)
                 await page_worker_task
             step_results[step_id] = {"text": result.text, "data": result.data}
-    
+
             await set_skill_call_result(call_id, "error" if result.status == "error" else "done", result.text, result.data, result.error)
             await emit_progress(
                 {
@@ -1543,9 +1327,9 @@ async def execute_plan_approval_work(
                 }
             )
             if checklist_items and result.status != "error":
-                changed_items = _mark_checklist_from_skill(checklist_items, sid, result.text or "")
+                changed_items = mark_checklist_from_skill(checklist_items, sid, result.text or "")
                 if changed_items:
-                    plan_markdown_live = _render_checklist(plan_markdown_live, checklist_items)
+                    plan_markdown_live = render_checklist(plan_markdown_live, checklist_items)
                     await update_plan_run(plan_id, {"planMarkdown": plan_markdown_live})
                     if plan.get("planMessageId"):
                         await update_message_content(
@@ -1566,11 +1350,12 @@ async def execute_plan_approval_work(
                             },
                         }
                     )
-    
+
             if result.text:
                 stage_outputs[sid] = result.text
-    
+
         formatter_calls = await get_skill_calls_by_message_id(assistant_message_id)
+
         async def _on_final_token(token: str) -> None:
             nonlocal tokens_emitted
             tokens_emitted += len(token)
@@ -1587,6 +1372,7 @@ async def execute_plan_approval_work(
                 }
             )
             await emit({"token": token})
+
         fmt = await format_final_answer(
             message=user_message or (plan.get("planMarkdown") or ""),
             start_ms=exec_start_ms,
@@ -1607,11 +1393,11 @@ async def execute_plan_approval_work(
         final_text = (fmt.text or "").strip()
         if final_text and tokens_emitted == 0:
             await emit({"token": final_text})
-    
+
         skills_count = len(await get_skill_calls_by_message_id(assistant_message_id))
         await update_message_content(conv["id"], assistant_message_id, final_text, None, skills_count)
         await save_stage_outputs(conv["id"], stage_outputs, None)
-    
+
         await update_plan_run(plan_id, {"status": "done"})
         token_usage = await get_token_usage(assistant_message_id)
         await emit(
@@ -1631,43 +1417,3 @@ async def execute_plan_approval_work(
     except Exception as exc:
         await update_plan_run(plan_id, {"status": "error"})
         await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})
-
-async def _approve_plan_stream_body(body: dict[str, Any]) -> StreamingResponse:
-    conv, plan, resolved, plan_id, session_id = await _prepare_plan_approval(body)
-    assistant_message_id = await append_assistant_placeholder(conv["id"])
-
-    async def generator():
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
-        done = asyncio.Event()
-
-        async def emit(event: dict[str, Any]) -> None:
-            await queue.put(_sse(event))
-
-        async def emit_progress(event: dict[str, Any]) -> None:
-            await emit({"progress": event})
-
-        async def worker() -> None:
-            try:
-                await execute_plan_approval_work(
-                    plan_id=plan_id,
-                    conv=conv,
-                    plan=plan,
-                    resolved=resolved,
-                    assistant_message_id=assistant_message_id,
-                    session_id=session_id,
-                    emit=emit,
-                    emit_progress=emit_progress,
-                )
-            finally:
-                done.set()
-
-        asyncio.create_task(worker())
-
-        while not done.is_set() or not queue.empty():
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=15)
-                yield chunk
-            except asyncio.TimeoutError:
-                yield b": ping\n\n"
-
-    return StreamingResponse(generator(), media_type="text/event-stream")

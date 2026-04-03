@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.phase2 import router as phase2_router
-from app.phase2.stores import append_message, get_conversation, get_plan_run, update_plan_run
+from app.doable_claw_agent import router as agent_router
+from app.doable_claw_agent.stores import append_message, get_conversation, get_plan_run, update_plan_run
 from app.repositories import chat_repository
 from app.services import central_chat_service
 
@@ -95,7 +95,7 @@ async def send_message(req: Request) -> dict[str, Any]:
                 "sessionId": body.get("sessionId"),
                 "userId": body.get("userId"),
             }
-            started = await phase2_router.schedule_plan_approval_background(approve_body)
+            started = await agent_router.schedule_plan_approval_background(approve_body)
             return {
                 "mode": "option",
                 "conversationId": conversation_id,
@@ -116,7 +116,7 @@ async def send_message(req: Request) -> dict[str, Any]:
         }
 
     if str(body.get("agentId") or "").strip():
-        return await phase2_router.p2_chat_message(req)
+        return await agent_router.agent_message(req)
     try:
         return await central_chat_service.run_message(body)
     except ValueError as exc:
@@ -183,7 +183,7 @@ async def send_message_background(req: Request) -> dict[str, Any]:
             "sessionId": body.get("sessionId"),
             "userId": body.get("userId"),
         }
-        started = await phase2_router.ensure_plan_approval_background(approve_body)
+        started = await agent_router.ensure_plan_approval_background(approve_body)
         return {
             "mode": "option",
             "conversationId": conversation_id_direct,
@@ -227,7 +227,7 @@ async def send_message_background(req: Request) -> dict[str, Any]:
         "sessionId": body.get("sessionId"),
         "userId": body.get("userId"),
     }
-    started = await phase2_router.ensure_plan_approval_background(approve_body)
+    started = await agent_router.ensure_plan_approval_background(approve_body)
     return {
         "mode": "option",
         "conversationId": conversation_id,
@@ -261,7 +261,7 @@ async def send_message_stream(req: Request) -> StreamingResponse:
                 "sessionId": body.get("sessionId"),
                 "userId": body.get("userId"),
             }
-            return await phase2_router._approve_plan_stream_body(approve_body)
+            return await agent_router._approve_plan_stream_body(approve_body)
         if lower == "cancel":
             plan_id = str(last_assistant.get("planId") or "").strip()
             if plan_id:
@@ -275,7 +275,7 @@ async def send_message_stream(req: Request) -> StreamingResponse:
             return StreamingResponse(cancel_generator(), media_type="text/event-stream")
 
     if str(body.get("agentId") or "").strip():
-        return await phase2_router.p2_chat_plan_stream(req)
+        return await agent_router.agent_chat_plan_stream(req)
 
     async def generator():
         try:
@@ -300,7 +300,7 @@ async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, An
     return {
         "planId": plan_id.strip(),
         "status": row.get("status"),
-        "runningTaskRefFound": phase2_router.is_plan_background_task_running(plan_id.strip()),
+        "runningTaskRefFound": agent_router.is_plan_background_task_running(plan_id.strip()),
     }
 
 

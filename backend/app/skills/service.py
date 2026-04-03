@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from app.config import GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT, get_settings
 from app.services.ai_helper import ai_helper as _ai
-from app.phase2.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
+from app.doable_claw_agent.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
 import httpx
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
@@ -617,7 +617,7 @@ async def _run_platform_scout(message: str, args: dict[str, Any] | None, on_prog
             if GEMINI_SCOUT_MODELS:
                 model_ids = [m.strip() for m in GEMINI_SCOUT_MODELS.split(",") if m.strip()]
             else:
-                from app.phase2.agent.gemini_models import get_planner_models
+                from app.doable_claw_agent.agent.gemini_models import get_planner_models
                 model_ids = get_planner_models()
 
             for model_id in model_ids:

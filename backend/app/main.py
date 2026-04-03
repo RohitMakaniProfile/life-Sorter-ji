@@ -16,10 +16,9 @@ from app.config import get_settings
 from app.middleware.auth_context import attach_request_auth_context
 from app.middleware.rate_limit import setup_rate_limiter
 
-from app.db import connect_db as p2_connect_db
-from app.skills.service import load_skills as p2_load_skills
-from app.phase2.stores import ensure_default_agents as p2_ensure_agents
-from app.db import close_db as p2_close_db
+from app.db import connect_db, close_db
+from app.skills.service import load_skills
+from app.doable_claw_agent.stores import ensure_default_agents
 from app.services.system_config_service import upsert_system_config_entry
 
 # ── Structured Logging ─────────────────────────────────────────
@@ -64,9 +63,9 @@ async def lifespan(app: FastAPI):
     from app.services.rca_tree_service import load_tree
     load_tree()
 
-    # ── Phase 2: Research Agent startup ───────────────────────────────────────
+    # ── DoableClaw Agent startup ───────────────────────────────────────────────
     try:
-        await p2_connect_db()
+        await connect_db()
 
         # Dev bootstrap: make JusPay sandbox test-card details visible/editable
         # in `/admin/config` via the `system_config` table.
@@ -103,17 +102,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("⚠️ JusPay test-card bootstrap failed", error=str(e))
 
-        p2_load_skills()
-        await p2_ensure_agents()
-        logger.info("✅ Phase 2 (Research Agent) started")
+        load_skills()
+        await ensure_default_agents()
+        logger.info("✅ DoableClaw Agent started")
     except Exception as e:
-        logger.warning("⚠️  Phase 2 startup failed — research agent routes unavailable", error=str(e))
+        logger.warning("⚠️  DoableClaw Agent startup failed — research agent routes unavailable", error=str(e))
 
     yield
 
-    # ── Phase 2 shutdown ───────────────────────────────────────────────────────
+    # ── DoableClaw Agent shutdown ──────────────────────────────────────────────
     try:
-        await p2_close_db()
+        await close_db()
     except Exception:
         pass
 
@@ -206,9 +205,9 @@ def create_app() -> FastAPI:
     # Legacy routes for frontend compatibility (/api/chat, /api/companies, etc.)
     app.include_router(legacy.router, prefix="/api", tags=["Legacy"])
 
-    # ── Phase 2: Research Agent routes (/api/chat/*, /api/agents, /api/skills) ─
-    from app.phase2.router import router as phase2_router
-    app.include_router(phase2_router, tags=["Phase2-ResearchAgent"])
+    # ── DoableClaw Agent routes (/api/chat/*, /api/agents, /api/skills) ─────────
+    from app.doable_claw_agent.router import router as doable_claw_router
+    app.include_router(doable_claw_router, tags=["DoableClaw-ResearchAgent"])
 
     @app.get("/health", tags=["System"])
     async def health_check():
