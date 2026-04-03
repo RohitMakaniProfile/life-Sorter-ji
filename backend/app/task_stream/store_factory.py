@@ -17,7 +17,7 @@ def get_task_stream_store() -> RedisTaskStreamStore | PostgresTaskStreamStore:
 
     Env: TASKSTREAM_BACKEND=redis | postgres
     If backend requests redis but REDIS_URL is not set, falls back to postgres.
-    Postgres requires migration 014_task_stream_postgres.sql applied.
+    Postgres requires task_stream_* tables from backend/migrations/cloud_sql_full_setup.sql.
     """
     global _store
     if _store is None:

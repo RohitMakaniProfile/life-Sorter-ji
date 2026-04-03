@@ -147,6 +147,7 @@ def create_app() -> FastAPI:
         ai_chat,
         chat,
         payments,
+        plans,
         legacy,
         onboarding,
     )
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_chat.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(payments.router, prefix="/api/v1", tags=["Payments"])
+    app.include_router(plans.router, prefix="/api/v1", tags=["Plans"])
 
     # ── Task stream (Redis or Postgres; TASKSTREAM_BACKEND) ──────────────
     from app.task_stream.router import create_task_stream_router

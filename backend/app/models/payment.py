@@ -12,14 +12,24 @@ from pydantic import BaseModel, Field
 class CreateOrderRequest(BaseModel):
     """Request body for creating a JusPay payment order."""
     model_config = {"extra": "ignore"}
-    amount: float = Field(..., description="Payment amount (e.g., 1000.00)")
-    customer_id: str = Field(..., min_length=1, description="Unique customer identifier")
-    customer_email: str = Field(default="", description="Customer email address")
-    customer_phone: str = Field(default="", description="Customer phone number")
+    amount: float = Field(
+        default=0,
+        description="Ignored when plan_slug is set (server uses catalog price). Kept for older clients.",
+    )
+    customer_id: str = Field(
+        default="",
+        description="Ignored for authenticated checkout; server sends JWT users.id to JusPay as customer_id.",
+    )
+    customer_email: str = Field(default="", description="Optional; server falls back to profile email")
+    customer_phone: str = Field(default="", description="Optional; server falls back to profile phone")
     return_url: str = Field(default="", description="Redirect URL after payment")
-    description: str = Field(default="", description="Order description")
+    description: str = Field(default="", description="Order description (optional; defaults from plan name)")
     udf1: str = Field(default="", description="User-defined field 1")
     udf2: str = Field(default="", description="User-defined field 2")
+    plan_slug: Optional[str] = Field(
+        default=None,
+        description="Catalog plan slug (e.g. deep_analysis_l1). Required; amount from plans; checkout bound to JWT user.",
+    )
 
 
 class CreateOrderResponse(BaseModel):
@@ -78,3 +88,49 @@ class PaymentVerification(BaseModel):
     txn_id: Optional[str] = None
     reason: Optional[str] = None
     status: Optional[str] = None
+
+
+class PaymentCompleteRequest(BaseModel):
+    """Complete checkout: verify JusPay order and grant plan (user from JWT; plan bound at create-order)."""
+
+    model_config = {"extra": "ignore"}
+    order_id: str = Field(..., min_length=1, description="JusPay order_id to verify and redeem")
+
+
+class CapabilityState(BaseModel):
+    """Aggregated access for one product capability across all active grants."""
+
+    allowed: bool
+    unlimited: bool = False
+    credits_remaining: Optional[int] = None
+
+
+class PlanGrantSummary(BaseModel):
+    plan_slug: str
+    plan_name: str
+    order_id: str
+    credits_remaining: Optional[int] = None
+    credits_unlimited: bool
+    granted_at: Optional[str] = None
+    features: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserEntitlementsResponse(BaseModel):
+    """Plans purchased by this authenticated user plus merged capabilities (credits; NULL pool = unlimited)."""
+
+    user_id: str
+    grants: list[PlanGrantSummary] = Field(default_factory=list)
+    capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
+
+
+class PlanCatalogRow(BaseModel):
+    """Public plan row for pricing UI."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    price_inr: float
+    credits_allocation: Optional[int] = None
+    features: dict[str, Any] = Field(default_factory=dict)
+    display_order: int = 0

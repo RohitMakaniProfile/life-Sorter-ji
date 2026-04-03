@@ -18,9 +18,31 @@ from typing import Optional
 import httpx
 import structlog
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 logger = structlog.get_logger()
+
+
+def _juspay_diagnostics(settings: Settings) -> dict:
+    """
+    Safe fields for debugging 401 / env mismatches (never log full API key).
+    """
+    key = settings.JUSPAY_API_KEY or ""
+    stripped = key.strip()
+    tail = stripped[-4:] if len(stripped) >= 4 else ("****" if stripped else "")
+    return {
+        "juspay_base_url": settings.juspay_base_url,
+        "juspay_post_orders_url": f"{settings.juspay_base_url}/orders",
+        "juspay_environment": settings.JUSPAY_ENVIRONMENT.value,
+        "juspay_merchant_id": (settings.JUSPAY_MERCHANT_ID or "").strip() or "(empty)",
+        "juspay_payment_page_client_id_set": bool((settings.JUSPAY_PAYMENT_PAGE_CLIENT_ID or "").strip()),
+        "juspay_api_key_length": len(key),
+        "juspay_api_key_stripped_length": len(stripped),
+        "juspay_api_key_tail": tail,
+        "juspay_api_key_has_leading_or_trailing_space": key != stripped,
+        "juspay_api_key_has_newline": "\n" in key or "\r" in key,
+        "juspay_api_key_configured": bool(stripped),
+    }
 
 
 def _auth_header() -> str:
@@ -91,31 +113,42 @@ async def create_order(
         "udf2": udf2,
     }
 
+    diag = _juspay_diagnostics(settings)
     logger.info(
         "Creating JusPay order",
         order_id=order_id,
         amount=amount,
         customer_id=customer_id,
-        environment=settings.JUSPAY_ENVIRONMENT.value,
+        **diag,
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         headers = _default_headers()
         headers["x-routing-id"] = customer_id
+        post_url = f"{settings.juspay_base_url}/orders"
 
         response = await client.post(
-            f"{settings.juspay_base_url}/orders",
+            post_url,
             headers=headers,
             data=payload,
         )
 
         if response.status_code != 200:
             error_text = response.text
-            logger.error(
-                "JusPay create order failed",
-                status=response.status_code,
-                response=error_text[:500],
-            )
+            log_kw = {
+                "status": response.status_code,
+                "response": error_text[:800],
+                **diag,
+                "request_url": post_url,
+            }
+            if response.status_code == 401:
+                log_kw["hint"] = (
+                    "401 UNAUTHORIZED: API key rejected for this host. "
+                    "Use UAT keys from HDFC SmartGateway dashboard with JUSPAY_BASE_URL=https://smartgateway.hdfcuat.bank.in; "
+                    "production keys only work with https://smartgateway.hdfc.bank.in. "
+                    "Strip whitespace/newlines from JUSPAY_API_KEY in .env if lengths differ."
+                )
+            logger.error("JusPay create order failed", **log_kw)
             return {
                 "success": False,
                 "error": f"JusPay API error: {response.status_code}",
@@ -198,34 +231,31 @@ async def get_order_status(order_id: str) -> dict:
 # ── Verify Payment for Stage 2 Access ─────────────────────────
 
 
-async def verify_payment_for_stage2(order_id: str) -> dict:
+async def verify_charged_order(order_id: str, minimum_amount_inr: float) -> dict:
     """
-    Verify that a payment has been completed for Stage 2 chat access.
+    Verify that a JusPay order is CHARGED and paid amount is at least minimum_amount_inr.
 
-    Checks:
-      1. Order exists in JusPay
-      2. Status is CHARGED (payment completed)
-      3. Amount matches expected Stage 2 price
-
-    Args:
-        order_id: The JusPay order ID to verify.
-
-    Returns:
-        dict with 'verified' bool and details.
+    Use plan-specific `minimum_amount_inr` from the catalog when completing a purchase.
     """
+    from decimal import Decimal
+
     status = await get_order_status(order_id)
 
     if not status.get("success"):
         return {"verified": False, "reason": "Could not fetch order status"}
 
-    EXPECTED_AMOUNT = 499.0  # ₹499 — must match exactly
-
     order_status = status.get("status", "").upper()
-    paid_amount   = float(status.get("amount") or 0)
+    raw_amt = status.get("amount")
+    try:
+        paid_amount = Decimal(str(raw_amt or 0))
+    except Exception:
+        paid_amount = Decimal(0)
+
+    minimum = Decimal(str(minimum_amount_inr))
 
     if order_status != "CHARGED":
         logger.warning(
-            "Stage 2 payment not completed",
+            "JusPay order not charged",
             order_id=order_id,
             status=order_status,
         )
@@ -235,30 +265,37 @@ async def verify_payment_for_stage2(order_id: str) -> dict:
             "status": order_status,
         }
 
-    if paid_amount < EXPECTED_AMOUNT:
+    if paid_amount < minimum:
         logger.warning(
-            "Stage 2 payment amount mismatch",
+            "JusPay payment amount below minimum",
             order_id=order_id,
-            paid=paid_amount,
-            expected=EXPECTED_AMOUNT,
+            paid=str(paid_amount),
+            minimum=str(minimum),
         )
         return {
             "verified": False,
-            "reason": f"Amount paid ₹{paid_amount} is less than required ₹{EXPECTED_AMOUNT}",
-            "paid_amount": paid_amount,
+            "reason": f"Amount paid ₹{paid_amount} is less than required ₹{minimum}",
+            "paid_amount": float(paid_amount),
         }
 
     logger.info(
-        "Stage 2 payment verified",
+        "JusPay order verified",
         order_id=order_id,
-        amount=paid_amount,
+        amount=str(paid_amount),
     )
     return {
         "verified": True,
         "order_id": order_id,
-        "amount": paid_amount,
+        "amount": float(paid_amount),
         "txn_id": status.get("txn_id"),
     }
+
+
+async def verify_payment_for_stage2(order_id: str) -> dict:
+    """
+    Legacy Stage 2 gate (₹499 minimum). Prefer plan-based verification for new flows.
+    """
+    return await verify_charged_order(order_id, 499.0)
 
 
 # ── Refund ─────────────────────────────────────────────────────

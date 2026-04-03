@@ -41,6 +41,8 @@ jobs:
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_DEV }}" >> $GITHUB_ENV
             echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_DEV }}" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.development.json" >> $GITHUB_ENV
+            echo "JUSPAY_API_KEY=${{ secrets.JUSPAY_API_KEY_DEV }}" >> $GITHUB_ENV
+            echo "JUSPAY_RESPONSE_KEY=${{ secrets.JUSPAY_RESPONSE_KEY_DEV }}" >> $GITHUB_ENV
           else
             echo "SERVICE=ikshan-be-prod" >> $GITHUB_ENV
             echo "REPO=ikshan-be-prod" >> $GITHUB_ENV
@@ -48,6 +50,8 @@ jobs:
             echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
             echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_PROD }}" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.production.json" >> $GITHUB_ENV
+            echo "JUSPAY_API_KEY=${{ secrets.JUSPAY_API_KEY_PROD }}" >> $GITHUB_ENV
+            echo "JUSPAY_RESPONSE_KEY=${{ secrets.JUSPAY_RESPONSE_KEY_PROD }}" >> $GITHUB_ENV
           fi
 
       - name: Set runtime env defaults
@@ -99,6 +103,8 @@ jobs:
             "SERP_API_KEY",
             "IKSHAN_GOOGLE_CLIENT_ID",
             "JWT_SECRET_KEY",
+            "JUSPAY_API_KEY",
+            "JUSPAY_RESPONSE_KEY",
           ]
           optional_secret_keys = {"REDIS_URL"}
           mapping = dict(base)
@@ -158,6 +164,8 @@ jobs:
           SERP_API_KEY: ${{ secrets.SERPER_API_KEY }}
           IKSHAN_GOOGLE_CLIENT_ID: ${{ secrets.IKSHAN_GOOGLE_CLIENT_ID }}
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          JUSPAY_API_KEY: ${{ env.JUSPAY_API_KEY }}
+          JUSPAY_RESPONSE_KEY: ${{ env.JUSPAY_RESPONSE_KEY }}
 
       - name: Build & Push Docker Image
         run: |

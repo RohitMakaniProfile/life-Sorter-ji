@@ -18,10 +18,12 @@ import { useOnboardingCanvasScroll } from './hooks/useOnboardingCanvasScroll';
 import { useCrawlTaskStream } from './hooks/useCrawlTaskStream';
 import { outcomeOptions } from './onboardingJourneyData';
 import { mapToolsToEarlyTools } from './toolService';
-import { apiPost } from '../../api/http';
+import { apiGet, apiPost } from '../../api/http';
 import { API_ROUTES } from '../../api/routes';
 import { coreApi } from '../../api/services/core';
 import { usePlaybookTaskStream } from './hooks/usePlaybookTaskStream';
+import { PAYMENT_CONTINUE_WEBSITE_URL_KEY, canUseDeepAnalysisReport } from '../../lib/paymentAccess';
+import { getUserIdFromJwt } from '../../api/authSession';
 import FlowNode from './components/FlowNode';
 import STATIC_SCALE_QUESTIONS from './data/scale_questions.json';
 const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
@@ -37,14 +39,60 @@ function buildOnboardingPatch(fields) {
   return o;
 }
 
-const RESEARCH_ORCHESTRATOR_AGENT_ID = 'business-research';
-const phase2Path = (path) => `/${path}`;
 const TASK_KEY_SEP = '|||';
 
 const toRectObj = (r) => ({ top: r.top, left: r.left, width: r.width, height: r.height });
 
 export default function OnboardingApp() {
   const navigate = useNavigate();
+
+  /**
+   * JusPay return hits `FRONTEND_URL` (often `/`). Record premium server-side and open the global payment page.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const orderId = params.get('order_id');
+    if (!orderId) return;
+
+    const uid = getUserIdFromJwt();
+
+    const stripPaymentQuery = () => {
+      try {
+        window.history.replaceState({}, '', window.location.pathname);
+      } catch (_) {
+        /* ignore */
+      }
+    };
+
+    (async () => {
+      if (!uid) {
+        stripPaymentQuery();
+        if (!cancelled) {
+          navigate('/payment', {
+            replace: true,
+            state: {
+              paymentError: 'Sign in with your mobile number to finish confirming payment.',
+            },
+          });
+        }
+        return;
+      }
+      try {
+        await apiPost(API_ROUTES.payments.complete, { order_id: orderId });
+        stripPaymentQuery();
+        if (!cancelled) navigate('/payment', { replace: true });
+      } catch (err) {
+        stripPaymentQuery();
+        const msg = err?.message || 'Could not confirm payment.';
+        if (!cancelled) navigate('/payment', { replace: true, state: { paymentError: msg } });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
   const { sessionIdRef, ensureSession } = useOnboardingSession();
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
@@ -487,15 +535,38 @@ export default function OnboardingApp() {
 
   const getWebsiteUrl = () => (urlValue || '').trim();
 
-  const handleDeepAnalysis = () => {
+  const handleDeepAnalysis = async () => {
     const url = getWebsiteUrl();
-    const userLine = url ? `${url}\n\nDo deep analysis.` : '';
-    navigate(phase2Path('new'), {
-      state: {
-        agentId: RESEARCH_ORCHESTRATOR_AGENT_ID,
-        ...(userLine ? { initialMessage: userLine } : {}),
-      },
-    });
+    try {
+      if (url) sessionStorage.setItem(PAYMENT_CONTINUE_WEBSITE_URL_KEY, url);
+      else sessionStorage.removeItem(PAYMENT_CONTINUE_WEBSITE_URL_KEY);
+    } catch {
+      // ignore
+    }
+
+    if (!getUserIdFromJwt()) {
+      setError('Verify your mobile number (playbook unlock step) before deep analysis.');
+      return;
+    }
+
+    try {
+      const ent = await apiGet(API_ROUTES.payments.entitlements);
+      if (canUseDeepAnalysisReport(ent)) {
+        const userLine = url ? `${url}\n\nDo deep analysis.` : '';
+        navigate('/new', {
+          state: {
+            agentId: 'business-research',
+            ...(userLine ? { initialMessage: userLine } : {}),
+          },
+        });
+        return;
+      }
+    } catch (err) {
+      setError(err?.message || 'Could not load plan entitlements.');
+      return;
+    }
+
+    navigate('/payment', { state: { intent: 'deep-analysis', websiteUrl: url || undefined } });
   };
 
   const handleBackToStep1 = () => {

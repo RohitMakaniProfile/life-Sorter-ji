@@ -1,11 +1,13 @@
 """
 ═══════════════════════════════════════════════════════════════
-PAYMENTS ROUTER — JusPay Payment Lifecycle
+PAYMENTS ROUTER — JusPay + plan catalog checkout
 ═══════════════════════════════════════════════════════════════
-POST /api/v1/payments/create-order   — create JusPay order
-POST /api/v1/payments/webhook        — receive & verify webhook
-GET  /api/v1/payments/status/{id}    — check order status
-POST /api/v1/payments/refund         — initiate refund
+POST /api/v1/payments/create-order     — JusPay order (Bearer JWT; plan_slug; binds checkout to users.id)
+GET  /api/v1/payments/entitlements     — user grants + capabilities (Bearer JWT)
+POST /api/v1/payments/complete         — verify payment + insert user_plan_grants (Bearer JWT)
+POST /api/v1/payments/webhook          — receive & verify webhook
+GET  /api/v1/payments/status/{id}      — check order status
+POST /api/v1/payments/refund           — initiate refund
 """
 
 # Note: Do NOT use `from __future__ import annotations` here — it breaks
@@ -15,21 +17,69 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.config import get_settings
+from app.middleware.auth_context import require_request_user
 from app.middleware.rate_limit import limiter
 from app.middleware.security import verify_juspay_signature
 from app.models.payment import (
+    CapabilityState,
     CreateOrderRequest,
     CreateOrderResponse,
+    PaymentCompleteRequest,
     PaymentStatusResponse,
     PaymentVerification,
+    PlanGrantSummary,
     RefundRequest,
+    UserEntitlementsResponse,
     WebhookPayload,
 )
-from app.services import juspay_service
+from app.services import juspay_service, payment_entitlement_service
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+@router.get("/payments/entitlements", response_model=UserEntitlementsResponse)
+@limiter.limit("60/minute")
+async def user_entitlements(request: Request):
+    """
+    Plans granted to the authenticated user (JWT), merged capabilities, and credit pools (NULL = unlimited).
+    """
+    user = require_request_user(request)
+    uid = str(user.get("id") or "").strip()
+    raw = await payment_entitlement_service.get_user_entitlements(user_id=uid)
+    caps = {k: CapabilityState(**v) for k, v in raw.get("capabilities", {}).items()}
+    grants = [PlanGrantSummary(**g) for g in raw.get("grants", [])]
+    return UserEntitlementsResponse(
+        user_id=raw["user_id"],
+        grants=grants,
+        capabilities=caps,
+    )
+
+
+@router.post("/payments/complete", response_model=dict)
+@limiter.limit("20/minute")
+async def complete_plan_checkout(request: Request, body: PaymentCompleteRequest = Body(...)):
+    """
+    After JusPay redirect: verify payment and insert a plan grant (same user as checkout; JWT required).
+    """
+    settings = get_settings()
+    if not settings.JUSPAY_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment service unavailable — JusPay not configured.",
+        )
+
+    user = require_request_user(request)
+    uid = str(user.get("id") or "").strip()
+
+    ok, err = await payment_entitlement_service.complete_plan_purchase(
+        user_id=uid,
+        order_id=body.order_id,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Could not complete payment")
+    return {"success": True}
 
 
 @router.post("/payments/callback")
@@ -58,8 +108,7 @@ async def create_order(request: Request, body: CreateOrderRequest = Body(...)):
     """
     Create a JusPay payment order.
 
-    Returns a `client_auth_token` that the frontend uses to initialize
-    the JusPay payment SDK. The token is valid for 15 minutes.
+    Requires `Authorization: Bearer` and `plan_slug`. Amount and checkout binding use `plans` + `users.id`.
     """
     settings = get_settings()
 
@@ -69,15 +118,39 @@ async def create_order(request: Request, body: CreateOrderRequest = Body(...)):
             detail="Payment service unavailable — JusPay not configured.",
         )
 
+    user = require_request_user(request)
+    uid = str(user.get("id") or "").strip()
+
+    slug = (body.plan_slug or "").strip()
+    if not slug:
+        raise HTTPException(
+            status_code=400,
+            detail="plan_slug is required.",
+        )
+
+    from app.services import plan_catalog_service as _plan_catalog
+
+    plan = await _plan_catalog.fetch_plan_by_slug(slug)
+    if not plan:
+        raise HTTPException(status_code=404, detail=f"Unknown or inactive plan: {slug}")
+
+    amount_str = str(plan["price_inr"])
+    desc = (body.description or "").strip() or str(plan.get("name") or slug)
+    udf1 = slug
+
+    extra_udf2 = (body.udf2 or "").strip()
+    user_tag = f"user:{uid}"
+    udf2_val = f"{user_tag}|{extra_udf2}" if extra_udf2 else user_tag
+
     result = await juspay_service.create_order(
-        amount=str(body.amount),
-        customer_id=body.customer_id,
-        customer_email=body.customer_email,
-        customer_phone=body.customer_phone,
+        amount=amount_str,
+        customer_id=uid,
+        customer_email=(body.customer_email or "").strip() or str(user.get("email") or ""),
+        customer_phone=(body.customer_phone or "").strip() or str(user.get("phone_number") or ""),
         return_url=body.return_url,
-        description=body.description,
-        udf1=body.udf1,
-        udf2=body.udf2,
+        description=desc,
+        udf1=udf1,
+        udf2=udf2_val,
     )
 
     if not result.get("success"):
@@ -85,6 +158,25 @@ async def create_order(request: Request, body: CreateOrderRequest = Body(...)):
             status_code=502,
             detail=result.get("error", "Failed to create order"),
         )
+
+    order_id = result.get("order_id")
+    if order_id:
+        try:
+            await payment_entitlement_service.save_checkout_context(
+                order_id=str(order_id),
+                user_id=uid,
+                plan_id=str(plan["id"]),
+            )
+        except Exception as e:
+            logger.error(
+                "payment_checkout_context insert failed",
+                order_id=order_id,
+                error=str(e),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Could not record checkout. Please try again.",
+            ) from e
 
     return CreateOrderResponse(**result)
 

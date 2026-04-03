@@ -17,7 +17,6 @@ from fastapi import APIRouter, HTTPException
 import structlog
 
 from app.services.otp_service import send_otp, verify_otp
-from app.services.user_session_service import update_session_auth
 from app.services.session_store import get_session
 
 logger = structlog.get_logger()
@@ -131,14 +130,6 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             message="Incorrect OTP — please try again",
         )
 
-    # OTP matched → persist auth to Supabase
-    # Extract phone from the send-otp step (stored in session or passed again)
-    await update_session_auth(
-        session_id=req.session_id,
-        otp_verified=True,
-        auth_provider="otp",
-    )
-
     logger.info("OTP verified for session", session_id=req.session_id)
 
     return VerifyOTPResponse(
@@ -155,15 +146,6 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
     session = get_session(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-
-    await update_session_auth(
-        session_id=req.session_id,
-        google_id=req.google_id,
-        google_email=req.email,
-        google_name=req.name,
-        google_avatar_url=req.avatar_url,
-        auth_provider="google",
-    )
 
     logger.info("Google auth saved for session", session_id=req.session_id, email=req.email)
 

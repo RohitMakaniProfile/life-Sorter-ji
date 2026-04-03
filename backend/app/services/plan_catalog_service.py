@@ -1,0 +1,76 @@
+"""
+Read-only access to the `plans` catalog (DB is source of truth; seed via SQL + plans_seed.json).
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any, Optional
+from uuid import UUID
+
+import structlog
+
+from app.db import get_pool
+
+logger = structlog.get_logger()
+
+
+def _row_to_plan(row: Any) -> dict[str, Any]:
+    d = dict(row)
+    fid = d.get("id")
+    if fid is not None:
+        d["id"] = str(fid)
+    pr = d.get("price_inr")
+    if isinstance(pr, Decimal):
+        d["price_inr"] = float(pr)
+    feats = d.get("features")
+    if isinstance(feats, str):
+        import json
+
+        try:
+            d["features"] = json.loads(feats)
+        except json.JSONDecodeError:
+            d["features"] = {}
+    return d
+
+
+async def list_active_plans() -> list[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, slug, name, description, price_inr, credits_allocation, features, display_order, active
+            FROM plans
+            WHERE active = TRUE
+            ORDER BY display_order ASC, name ASC
+            """
+        )
+    return [_row_to_plan(r) for r in rows]
+
+
+async def fetch_plan_by_slug(slug: str) -> Optional[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, slug, name, description, price_inr, credits_allocation, features, display_order, active
+            FROM plans
+            WHERE slug = $1 AND active = TRUE
+            """,
+            slug.strip(),
+        )
+    return _row_to_plan(row) if row else None
+
+
+async def fetch_plan_by_id(plan_id: UUID | str) -> Optional[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, slug, name, description, price_inr, credits_allocation, features, display_order, active
+            FROM plans
+            WHERE id = $1
+            """,
+            plan_id if isinstance(plan_id, UUID) else UUID(str(plan_id)),
+        )
+    return _row_to_plan(row) if row else None

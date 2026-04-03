@@ -9,6 +9,7 @@ import AgentsPage from './pages/ai/AgentsPage';
 import AgentContextsPage from './pages/ai/AgentContextsPage';
 import InternalGoogleLoginPage from './pages/ai/InternalGoogleLoginPage';
 import Layout from './components/ai/Layout';
+import PaymentPage from './pages/PaymentPage';
 import { getConversations } from './api';
 
 function ChatWithId() {
@@ -58,6 +59,8 @@ function App() {
               <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
             </Route>
             <Route path="/" element={<OnboardingApp />} />
+            <Route path="payment" element={<PaymentPage />} />
+            <Route path="deep-analysis" element={<Navigate to="/payment" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

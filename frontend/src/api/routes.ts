@@ -33,6 +33,18 @@ export const API_ROUTES = {
     byId: (id: string) => `/api/agents/${encodeURIComponent(id)}`,
   },
 
+  payments: {
+    createOrder: '/api/v1/payments/create-order',
+    complete: '/api/v1/payments/complete',
+    entitlements: '/api/v1/payments/entitlements',
+    status: (orderId: string) =>
+      `/api/v1/payments/status/${encodeURIComponent(orderId)}`,
+  },
+
+  plans: {
+    list: '/api/v1/plans',
+  },
+
   taskStream: {
     start: (taskType: string) => `/api/v1/task-stream/start/${encodeURIComponent(taskType)}`,
     eventsByStreamId: (streamId: string) => `/api/v1/task-stream/events/${encodeURIComponent(streamId)}`,

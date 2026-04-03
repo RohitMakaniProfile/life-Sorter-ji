@@ -4,12 +4,12 @@
 -- Canonical schema for local Postgres / Cloud SQL.
 -- Run order: this single file creates everything from scratch.
 -- Safe to re-run: all statements use IF NOT EXISTS / OR REPLACE.
--- NOTE: `001_create_user_sessions.sql` is a legacy Supabase-only migration.
---       Do not run both files against the same database.
+-- This file is the only schema artifact in backend/migrations/.
 --
 -- Tables:
 --   Phase 1 (current app runtime):
---     user_sessions, onboarding, payments, "Persona: founder/owner"
+--     onboarding, payments, plans, payment_checkout_context, user_plan_grants,
+--     crawl_*, playbook_runs, "Persona: founder/owner"
 --
 --   Phase 2 (Research Agent — asyncpg):
 --     agents, agent_config_versions, conversations, messages, skill_calls, plan_runs, token_usage
@@ -32,102 +32,8 @@ $$ LANGUAGE plpgsql;
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════
--- PHASE 1 — Session / Flow tables
+-- PHASE 1 — Onboarding, payments, crawl, playbook
 -- ═══════════════════════════════════════════════════════════════════════════════
-
--- ─────────────────────────────────────────────────────────────────────────────
--- user_sessions
--- Stores the complete guided-flow state for every anonymous / authenticated
--- visitor: auth data, Q1-Q3 answers, RCA history, and final recommendations.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS user_sessions (
-    -- Primary key
-    id                      UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-
-    -- App session identifier (matches backend SessionContext.session_id)
-    session_id              TEXT UNIQUE NOT NULL,
-
-    -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    -- ── Auth & Identity ─────────────────────────────────────────────────────
-    google_id               TEXT,
-    google_email            TEXT,
-    google_name             TEXT,
-    google_avatar_url       TEXT,
-    mobile_number           TEXT,
-    otp_verified            BOOLEAN DEFAULT FALSE,
-    auth_provider           TEXT,           -- 'google' | 'otp' | 'both'
-    auth_completed_at       TIMESTAMPTZ,
-
-    -- ── Flow Stage ──────────────────────────────────────────────────────────
-    stage                   TEXT DEFAULT 'outcome',
-    flow_completed          BOOLEAN DEFAULT FALSE,
-
-    -- ── Static Questions (Q1-Q3) ────────────────────────────────────────────
-    outcome                 TEXT,           -- Q1: growth bucket key
-    outcome_label           TEXT,           -- Q1: display label
-    domain                  TEXT,           -- Q2: sub-category
-    task                    TEXT,           -- Q3: specific task
-
-    -- ── Full Q&A History ────────────────────────────────────────────────────
-    -- Array of {question, answer, question_type, timestamp}
-    questions_answers       JSONB NOT NULL DEFAULT '[]'::JSONB,
-
-    -- ── Website & Crawl ─────────────────────────────────────────────────────
-    website_url             TEXT,
-    gbp_url                 TEXT,
-    crawl_summary           JSONB NOT NULL DEFAULT '{}'::JSONB,
-    audience_insights       JSONB NOT NULL DEFAULT '{}'::JSONB,
-
-    -- ── Business Profile (Scale Questions) ──────────────────────────────────
-    business_profile        JSONB NOT NULL DEFAULT '{}'::JSONB,
-
-    -- ── RCA Diagnostic ──────────────────────────────────────────────────────
-    -- Array of {role, content} conversation turns
-    rca_history             JSONB NOT NULL DEFAULT '[]'::JSONB,
-    rca_summary             TEXT,
-    rca_complete            BOOLEAN DEFAULT FALSE,
-
-    -- ── Recommendations ─────────────────────────────────────────────────────
-    early_recommendations   JSONB NOT NULL DEFAULT '[]'::JSONB,
-    final_recommendations   JSONB NOT NULL DEFAULT '[]'::JSONB,
-
-    -- ── Persona & Context ───────────────────────────────────────────────────
-    persona_doc_name        TEXT,
-    -- Array of {service, model, purpose, latency_ms, timestamp}
-    llm_call_log            JSONB NOT NULL DEFAULT '[]'::JSONB,
-
-    -- ── Client Metadata ─────────────────────────────────────────────────────
-    ip_address              TEXT,
-    user_agent              TEXT,
-    referrer                TEXT,
-    utm_source              TEXT,
-    utm_medium              TEXT,
-    utm_campaign            TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_google_email
-    ON user_sessions (google_email);
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_mobile_number
-    ON user_sessions (mobile_number);
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_created_at
-    ON user_sessions (created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_stage
-    ON user_sessions (stage);
-
-DROP TRIGGER IF EXISTS trg_user_sessions_updated_at ON user_sessions;
-CREATE TRIGGER trg_user_sessions_updated_at
-    BEFORE UPDATE ON user_sessions
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE user_sessions IS
-    'Complete flow data for every user session: auth, Q&A, RCA diagnostic, recommendations, and tracking metadata.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- onboarding
@@ -153,7 +59,7 @@ CREATE TABLE IF NOT EXISTS onboarding (
     -- Evolving RCA question/answer history (Phase 1 diagnostic transcript)
     rca_qa          JSONB NOT NULL DEFAULT '[]'::jsonb,
 
-    -- Phase 1 scale/business-profile answers (mirrors user_sessions.business_profile)
+    -- Phase 1 scale / business-profile answers
     scale_answers   JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     -- Gap questions (if playbook needs more context)
@@ -187,8 +93,19 @@ CREATE TABLE IF NOT EXISTS onboarding (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_onboarding_session_id
-    ON onboarding (session_id);
+-- One row per session (idempotent; dedupe duplicates before first apply if upgrading legacy data)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'onboarding_session_id_unique'
+      AND conrelid = 'public.onboarding'::regclass
+  ) THEN
+    ALTER TABLE onboarding
+      ADD CONSTRAINT onboarding_session_id_unique UNIQUE (session_id);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_onboarding_user_id
     ON onboarding (user_id)
@@ -202,6 +119,74 @@ CREATE TRIGGER trg_onboarding_updated_at
 
 COMMENT ON TABLE onboarding IS
     'Onboarding flow selections and URLs per session; user_id nullable until identity is linked.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- plans (catalog) + session entitlements + checkout binding (order → plan)
+-- credits_allocation NULL = unlimited uses for that grant; finite = decremented later.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS plans (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug                    TEXT NOT NULL,
+    name                    TEXT NOT NULL,
+    description             TEXT NOT NULL DEFAULT '',
+    price_inr               NUMERIC(10,2) NOT NULL,
+    credits_allocation      INTEGER NULL,
+    features                JSONB NOT NULL DEFAULT '{}'::jsonb,
+    display_order           INTEGER NOT NULL DEFAULT 0,
+    active                  BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT plans_slug_unique UNIQUE (slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_active_order
+    ON plans (active, display_order);
+
+DROP TRIGGER IF EXISTS trg_plans_updated_at ON plans;
+CREATE TRIGGER trg_plans_updated_at
+    BEFORE UPDATE ON plans
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE plans IS
+    'Sellable plan catalog (prices, credit pools, feature flags). Seed from app/data/plans_seed.json + SQL below.';
+
+-- payment_checkout_context + user_plan_grants: created after `users` (FK to users.id). See below.
+
+-- Seed plans (fixed UUIDs for stable FK references; ON CONFLICT upserts)
+INSERT INTO plans (id, slug, name, description, price_inr, credits_allocation, features, display_order, active)
+VALUES
+    (
+        '11111111-1111-4111-8111-111111111101'::uuid,
+        'deep_analysis_l1',
+        'Deep Analysis — Report',
+        'Create deep analysis reports with the research AI agent (compute-heavy). Required before using the deep analysis chat.',
+        499.00,
+        NULL,
+        '{"deep_analysis_report": true, "execute_report_actions": false}'::jsonb,
+        1,
+        TRUE
+    ),
+    (
+        '11111111-1111-4111-8111-111111111102'::uuid,
+        'report_actions_l2',
+        'Report Actions — Execution',
+        'Run and execute action items generated on an existing deep analysis report (future workflow). Upgrade after you have a report.',
+        799.00,
+        NULL,
+        '{"deep_analysis_report": false, "execute_report_actions": true}'::jsonb,
+        2,
+        TRUE
+    )
+ON CONFLICT (slug) DO UPDATE SET
+    name = EXCLUDED.name,
+    description = EXCLUDED.description,
+    price_inr = EXCLUDED.price_inr,
+    credits_allocation = EXCLUDED.credits_allocation,
+    features = EXCLUDED.features,
+    display_order = EXCLUDED.display_order,
+    active = EXCLUDED.active,
+    updated_at = NOW();
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- crawl_cache / crawl_runs
@@ -299,7 +284,8 @@ CREATE TRIGGER trg_playbook_runs_updated_at
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS payments (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id              TEXT REFERENCES user_sessions(session_id),
+    -- Opaque Phase-1 onboarding session_id (no FK; canonical row lives in onboarding)
+    session_id              TEXT,
 
     order_id                TEXT UNIQUE NOT NULL,
     juspay_order_id         TEXT,
@@ -377,23 +363,14 @@ COMMENT ON TABLE "Persona: founder/owner" IS
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- NOTE:
--- The current product is session-centric. `user_sessions` already stores the
--- authenticated identity snapshot (Google/OTP fields) used by the app today.
--- A separate `users` table was added later as part of a future accounts/billing
--- design, but that model is not used by the current codebase and duplicates the
--- concept of "user" for now.
+-- Phase 1 is keyed by `onboarding.session_id` (and the same string on payments,
+-- crawl_runs, playbook_runs, etc.). Auth identity is handled in application tables
+-- (e.g. users / OTP sessions) as implemented by the app, not via a monolithic
+-- session snapshot table in this schema.
 --
--- To keep the local Postgres schema aligned with the running app, the unused
--- accounts/billing tables are intentionally omitted from this canonical setup:
---   users, plans, subscriptions, usage_quotas, user_consents, audit_logs
+-- Heavier account-centric billing tables (e.g. subscriptions, usage_quotas) are
+-- omitted until the app needs them; add via dedicated migrations.
 --
--- If/when the app is refactored to a true account-centric model, those tables
--- should be introduced in a dedicated migration with matching application code.
---
--- ─────────────────────────────────────────────────────────────────────────────
--- agent_config_versions
--- Versioned snapshots of agent configs/prompts for rollback/audit.
--- ─────────────────────────────────────────────────────────────────────────────
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- PHASE 2 — Research Agent tables
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -622,6 +599,7 @@ CREATE TABLE IF NOT EXISTS plan_runs (
     conversation_id TEXT        NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
     user_message_id TEXT        NOT NULL,
     plan_message_id TEXT        NOT NULL,
+    execution_message_id TEXT,
     status          TEXT        NOT NULL DEFAULT 'draft'
                                 CHECK (status IN ('draft', 'approved', 'running', 'executing', 'done', 'error', 'cancelled')),
     plan_markdown   TEXT        NOT NULL DEFAULT '',
@@ -758,6 +736,39 @@ CREATE TRIGGER trg_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- ── Payment checkout + entitlements (JWT user id; not onboarding session_id) ──
+CREATE TABLE IF NOT EXISTS payment_checkout_context (
+    order_id                TEXT PRIMARY KEY,
+    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id                 UUID NOT NULL REFERENCES plans(id),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_checkout_context_user
+    ON payment_checkout_context (user_id);
+
+COMMENT ON TABLE payment_checkout_context IS
+    'Binds JusPay order_id to users.id + plan at checkout; consumed when payment completes.';
+
+CREATE TABLE IF NOT EXISTS user_plan_grants (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id                 UUID NOT NULL REFERENCES plans(id),
+    order_id                TEXT NOT NULL,
+    credits_remaining       INTEGER NULL,
+    granted_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT user_plan_grants_order_id_unique UNIQUE (order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_plan_grants_user
+    ON user_plan_grants (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_plan_grants_plan
+    ON user_plan_grants (plan_id);
+
+COMMENT ON TABLE user_plan_grants IS
+    'Plan purchases per authenticated user; credits_remaining NULL = unlimited.';
 
 CREATE TABLE IF NOT EXISTS system_config (
     key         TEXT PRIMARY KEY,

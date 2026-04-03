@@ -95,7 +95,7 @@ def _build_rca_history(rca_qa: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def _outcome_label(outcome: str) -> str:
-    # Keep this mapping local so onboarding RCA does not depend on user_sessions.
+    # Keep this mapping local so onboarding RCA stays self-contained.
     labels = {
         "lead-generation": "Lead Generation",
         "sales-retention": "Sales & Retention",
