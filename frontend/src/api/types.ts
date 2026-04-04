@@ -15,12 +15,15 @@ export interface ChatMessage {
   content: string;
   formId?: string;
   options?: string[];
+  allowCustomAnswer?: boolean;
   createdAt?: string;
   outputFile?: string;
   messageId?: string;
   skillsCount?: number;
   kind?: 'plan' | 'final';
   planId?: string;
+  journeyStep?: string;
+  journeySelections?: Record<string, string>;
 }
 
 export interface CreatePlanResponse {
@@ -104,6 +107,8 @@ export interface StreamResult {
   errorAtStage?: PipelineStage;
   backgroundExecution?: boolean;
   assistantMessageId?: string;
+  mode?: string;
+  journeyStep?: string;
 }
 
 export interface SendMessageStreamOptions {

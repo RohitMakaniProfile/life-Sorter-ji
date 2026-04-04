@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import ChatUI from '../../components/ai/chat/ChatUI';
 import type { RichMessage } from '../../components/ai/chat/ChatUI';
-import { getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream } from '../../api';
+import { getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../../context/UiAgentsContext';
 
@@ -179,6 +179,8 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         setMessages(mapped);
         if (data.conversationId) setConversationId(data.conversationId);
         if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
+        // Sync active agent to match the conversation's stored agentId.
+        if (data.agentId) setActiveAgentId(data.agentId as AgentId);
 
         // Refresh-resume: if latest plan is still executing, show running state and keep polling.
         const latestPlan = [...mapped]
@@ -418,6 +420,74 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         }
       }
 
+      // Journey free-text: stream returned mode=journey, refresh messages from DB.
+      if (plan.mode === 'journey') {
+        const cid = plan.conversationId || conversationId;
+        if (cid) {
+          const data = await getMessages(cid);
+          const loadedAgentId = (data.agentId ?? agent) as AgentId;
+          const loaded = (data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any));
+          setMessages(loaded);
+
+          // If last message is playbook step, subscribe to task stream.
+          const lastLoaded = loaded[loaded.length - 1];
+          if (lastLoaded?.role === 'assistant' && (lastLoaded as any).journeyStep === 'playbook') {
+            const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            if (streamId) {
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: '', agentId: loadedAgentId } as any,
+              ]);
+              try {
+                await subscribeToTaskStream(streamId, {
+                  onToken: (token) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                  onDone: (_donData) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = { ...last, kind: 'final' } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                  onError: (msg) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = { ...last, content: last.content || `⚠️ ${msg}` } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                });
+              } catch (streamErr) {
+                const msg = streamErr instanceof Error ? streamErr.message : 'Playbook stream error';
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: last.content || `⚠️ ${msg}` } as any;
+                  }
+                  return updated;
+                });
+              }
+            }
+          }
+        }
+        return;
+      }
+
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
@@ -560,6 +630,92 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
 
       const ack = await sendMessage({ message: option, conversationId, agentId: activeAgentId });
       if (ack.conversationId) setConversationId(ack.conversationId);
+
+      if (ack.mode === 'journey') {
+        const cid = ack.conversationId || conversationId;
+        if (cid) {
+          const data = await getMessages(cid);
+          const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+          const loaded = (data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any));
+          setMessages(loaded);
+
+          // If the last assistant message is the playbook step, subscribe to the task stream.
+          const lastLoaded = loaded[loaded.length - 1];
+          if (
+            lastLoaded?.role === 'assistant' &&
+            (lastLoaded as any).journeyStep === 'playbook'
+          ) {
+            const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            if (streamId) {
+              setLoading(true);
+              // Append a streaming assistant message.
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: '', agentId: loadedAgentId } as any,
+              ]);
+              try {
+                await subscribeToTaskStream(streamId, {
+                  onToken: (token) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = {
+                          ...last,
+                          content: (last.content ?? '') + token,
+                        } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                  onDone: (_data) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = {
+                          ...last,
+                          kind: 'final',
+                        } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                  onError: (msg) => {
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      const last = updated[updated.length - 1];
+                      if (last?.role === 'assistant') {
+                        updated[updated.length - 1] = {
+                          ...last,
+                          content: last.content || `⚠️ Playbook generation failed: ${msg}`,
+                        } as any;
+                      }
+                      return updated;
+                    });
+                  },
+                });
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : 'Playbook stream error';
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    updated[updated.length - 1] = {
+                      ...last,
+                      content: last.content || `⚠️ ${msg}`,
+                    } as any;
+                  }
+                  return updated;
+                });
+              } finally {
+                setLoading(false);
+              }
+            }
+          }
+        }
+        return;
+      }
 
       if (ack.status === 'cancelled') {
         setMessages((prev) => [...prev, { role: 'assistant', content: 'Plan cancelled.' } as any]);

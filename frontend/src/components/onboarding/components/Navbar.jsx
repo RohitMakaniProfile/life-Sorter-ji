@@ -1,7 +1,23 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { createConversation } from '../../../api';
 
 export default function Navbar() {
   const navigate = useNavigate();
+  const [creatingChat, setCreatingChat] = useState(false);
+
+  const handleNewChat = async () => {
+    if (creatingChat) return;
+    setCreatingChat(true);
+    try {
+      const { conversationId } = await createConversation({ agentId: 'business_problem_identifier' });
+      navigate(`/chat/${conversationId}`);
+    } catch {
+      navigate('/new');
+    } finally {
+      setCreatingChat(false);
+    }
+  };
 
   return (
     <nav className="relative z-10 flex items-center justify-between border-b border-[rgb(45,45,45)] bg-[rgb(15,15,15)] px-6 py-1.5">
@@ -20,14 +36,15 @@ export default function Navbar() {
         </button>
         <button
           type="button"
-          onClick={() => navigate('/new')}
-          className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
+          onClick={handleNewChat}
+          disabled={creatingChat}
+          className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
-          New Chat
+          {creatingChat ? '…' : 'New Chat'}
         </button>
         <button
           type="button"

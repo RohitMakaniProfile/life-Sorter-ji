@@ -522,6 +522,22 @@ function AssistantMessage({
             </div>
           )}
 
+          {/* Option buttons (e.g. outcome choices for business_problem_identifier) */}
+          {!isReport && m.role === 'assistant' && Array.isArray(m.options) && m.options.length > 0 && onOptionSelect && (
+            <div className="px-5 pb-4 pt-3 flex flex-wrap gap-2">
+              {m.options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => void onOptionSelect(opt)}
+                  className="px-4 py-2 rounded-xl border border-violet-500/50 bg-violet-500/10 text-violet-200 text-sm font-medium hover:bg-violet-500/20 hover:border-violet-400 transition-colors"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Non-report assistant messages: show retry action for failed background runs */}
           {!isReport && m.role === 'assistant' && (
             <div className="px-5 pb-3.5 flex justify-end">
@@ -592,10 +608,17 @@ export default function ChatUI({
     return last?.role === 'assistant' ? (last.pipeline ?? null) : null;
   })();
 
+  const lastMsg = messages[messages.length - 1];
+  const inputBlockedByOptions =
+    lastMsg?.role === 'assistant' &&
+    Array.isArray(lastMsg.options) &&
+    lastMsg.options.length > 0 &&
+    lastMsg.allowCustomAnswer !== true;
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const raw = inputRef.current?.value?.trim();
-    if (!raw || disabled || loading) return;
+    if (!raw || disabled || loading || inputBlockedByOptions) return;
     inputRef.current!.value = '';
     inputRef.current!.style.height = 'auto';
     await onSend(raw);
@@ -764,8 +787,8 @@ export default function ChatUI({
           <textarea
             ref={inputRef}
             rows={1}
-            placeholder={resolvedPlaceholder}
-            disabled={disabled || loading}
+            placeholder={inputBlockedByOptions ? 'Please select an option above…' : resolvedPlaceholder}
+            disabled={disabled || loading || inputBlockedByOptions}
             onInput={(e) => {
               const t = e.target as HTMLTextAreaElement;
               t.style.height = 'auto';
@@ -781,12 +804,12 @@ export default function ChatUI({
           />
           <button
             type="submit"
-            disabled={disabled || loading}
+            disabled={disabled || loading || inputBlockedByOptions}
             className="flex-shrink-0 p-3.5 rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
-              backgroundColor: disabled || loading ? '#e2e8f0' : '#7c3aed',
+              backgroundColor: disabled || loading || inputBlockedByOptions ? '#e2e8f0' : '#7c3aed',
               border: 'none',
-              cursor: disabled || loading ? 'not-allowed' : 'pointer',
+              cursor: disabled || loading || inputBlockedByOptions ? 'not-allowed' : 'pointer',
               color: 'white',
             }}
           >

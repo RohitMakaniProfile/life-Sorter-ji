@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.doable_claw_agent import router as agent_router
-from app.doable_claw_agent.stores import append_message, get_conversation, get_plan_run, update_plan_run
+from app.doable_claw_agent.stores import append_message, create_new_conversation, get_conversation, get_or_create_conversation, get_plan_run, update_plan_run
+from app.services import journey_service
 from app.repositories import chat_repository
 from app.services import central_chat_service
 
@@ -74,6 +75,33 @@ async def send_message(req: Request) -> dict[str, Any]:
         conversation_id = str(body.get("conversationId") or "").strip()
         if not already_logged:
             await append_message(conversation_id, "user", selected)
+
+        # ── Journey step handling for business_problem_identifier ──────────
+        journey_step = str(last_assistant.get("journeyStep") or "").strip()
+        if journey_step:
+            journey_selections = last_assistant.get("journeySelections") or {}
+            next_msg = await journey_service.next_step(journey_step, selected, journey_selections)
+            if next_msg is not None:
+                await append_message(
+                    conversation_id,
+                    "assistant",
+                    next_msg["content"],
+                    options=next_msg["options"],
+                    allowCustomAnswer=next_msg["allowCustomAnswer"],
+                    journeyStep=next_msg["journeyStep"],
+                    journeySelections=next_msg.get("journeySelections", {}),
+                    kind="final",
+                )
+                conv = await get_conversation(conversation_id) or {}
+                return {
+                    "mode": "journey",
+                    "conversationId": conversation_id,
+                    "optionSelected": selected,
+                    "journeyStep": next_msg["journeyStep"],
+                    "messages": conv.get("messages") or [],
+                }
+        # ──────────────────────────────────────────────────────────────────
+
         plan_id = str(last_assistant.get("planId") or "").strip() or None
         lower = _normalize_option(selected)
         if lower == "cancel":
@@ -115,7 +143,83 @@ async def send_message(req: Request) -> dict[str, Any]:
             "requiresStream": False,
         }
 
-    if str(body.get("agentId") or "").strip():
+    # ── Resolve effective agentId from conversation (body agentId may be wrong) ──
+    agent_id_raw = str(body.get("agentId") or "").strip()
+    conversation_id_ft = str(body.get("conversationId") or "").strip()
+    effective_agent_id = agent_id_raw
+    _conv_for_journey: dict[str, Any] | None = None
+
+    if conversation_id_ft:
+        _conv_for_journey = await get_conversation(conversation_id_ft)
+        if _conv_for_journey:
+            conv_agent_id = str(_conv_for_journey.get("agentId") or "").strip()
+            # Always prefer the conversation's stored agentId over the body
+            if conv_agent_id:
+                effective_agent_id = conv_agent_id
+
+    # ── Intercept free-text for business_problem_identifier journey steps ──
+    if effective_agent_id == "business_problem_identifier" and conversation_id_ft:
+        conv = _conv_for_journey
+        if conv:
+            msgs = conv.get("messages") or []
+            last_asst = next((m for m in reversed(msgs) if m.get("role") == "assistant"), None)
+            if last_asst:
+                step = str(last_asst.get("journeyStep") or "").strip()
+                user_text = str(body.get("message") or "").strip()
+                prev_selections = last_asst.get("journeySelections") or {}
+
+                # URL free-text (enter website URL or type anything non-Skip)
+                if step == journey_service.JOURNEY_STEP_URL and user_text:
+                    await append_message(conversation_id_ft, "user", user_text)
+                    next_msg = journey_service.start_scale_questions(url=user_text, acc=prev_selections)
+                    await append_message(
+                        conversation_id_ft,
+                        "assistant",
+                        next_msg["content"],
+                        options=next_msg["options"],
+                        allowCustomAnswer=next_msg["allowCustomAnswer"],
+                        journeyStep=next_msg["journeyStep"],
+                        journeySelections=next_msg.get("journeySelections", {}),
+                        kind=next_msg.get("kind", "final"),
+                    )
+                    conv = await get_conversation(conversation_id_ft) or {}
+                    return {
+                        "mode": "journey",
+                        "conversationId": conversation_id_ft,
+                        "journeyStep": next_msg["journeyStep"],
+                        "messages": conv.get("messages") or [],
+                    }
+
+                # Diagnostic / Precision / Gap free-text answers
+                _FREE_TEXT_STEPS = {
+                    journey_service.JOURNEY_STEP_DIAGNOSTIC,
+                    journey_service.JOURNEY_STEP_PRECISION,
+                    journey_service.JOURNEY_STEP_GAP,
+                }
+                if step in _FREE_TEXT_STEPS and user_text and last_asst.get("allowCustomAnswer"):
+                    await append_message(conversation_id_ft, "user", user_text)
+                    next_msg = await journey_service.next_step(step, user_text, prev_selections)
+                    if next_msg is not None:
+                        await append_message(
+                            conversation_id_ft,
+                            "assistant",
+                            next_msg["content"],
+                            options=next_msg["options"],
+                            allowCustomAnswer=next_msg["allowCustomAnswer"],
+                            journeyStep=next_msg["journeyStep"],
+                            journeySelections=next_msg.get("journeySelections", {}),
+                            kind="final",
+                        )
+                        conv = await get_conversation(conversation_id_ft) or {}
+                        return {
+                            "mode": "journey",
+                            "conversationId": conversation_id_ft,
+                            "journeyStep": next_msg["journeyStep"],
+                            "messages": conv.get("messages") or [],
+                        }
+    # ────────────────────────────────────────────────────────────────────────
+
+    if effective_agent_id:
         return await agent_router.agent_message(req)
     try:
         return await central_chat_service.run_message(body)
@@ -274,7 +378,61 @@ async def send_message_stream(req: Request) -> StreamingResponse:
 
             return StreamingResponse(cancel_generator(), media_type="text/event-stream")
 
-    if str(body.get("agentId") or "").strip():
+    # ── Intercept free-text for business_problem_identifier journey steps (stream) ──
+    agent_id_stream = str(body.get("agentId") or "").strip()
+    conversation_id_s = str(body.get("conversationId") or "").strip()
+    # Resolve agentId from conversation table (body may be wrong).
+    eff_agent_id_stream = agent_id_stream
+    _conv_s_cached: dict[str, Any] | None = None
+    if conversation_id_s:
+        _conv_s_cached = await get_conversation(conversation_id_s)
+        if _conv_s_cached:
+            _sid_agent = str(_conv_s_cached.get("agentId") or "").strip()
+            if _sid_agent:
+                eff_agent_id_stream = _sid_agent
+    if eff_agent_id_stream == "business_problem_identifier":
+        if conversation_id_s:
+            conv_s = _conv_s_cached
+            if conv_s:
+                msgs_s = conv_s.get("messages") or []
+                last_asst_s = next((m for m in reversed(msgs_s) if m.get("role") == "assistant"), None)
+                if last_asst_s:
+                    step_s = str(last_asst_s.get("journeyStep") or "").strip()
+                    user_text_s = str(body.get("message") or "").strip()
+                    prev_sel_s = last_asst_s.get("journeySelections") or {}
+
+                    _FREE_TEXT_STEPS_S = {
+                        journey_service.JOURNEY_STEP_URL,
+                        journey_service.JOURNEY_STEP_DIAGNOSTIC,
+                        journey_service.JOURNEY_STEP_PRECISION,
+                        journey_service.JOURNEY_STEP_GAP,
+                    }
+                    if step_s in _FREE_TEXT_STEPS_S and user_text_s and last_asst_s.get("allowCustomAnswer"):
+                        await append_message(conversation_id_s, "user", user_text_s)
+                        if step_s == journey_service.JOURNEY_STEP_URL:
+                            next_msg_s = journey_service.start_scale_questions(url=user_text_s, acc=prev_sel_s)
+                        else:
+                            next_msg_s = await journey_service.next_step(step_s, user_text_s, prev_sel_s)
+
+                        if next_msg_s is not None:
+                            await append_message(
+                                conversation_id_s,
+                                "assistant",
+                                next_msg_s["content"],
+                                options=next_msg_s["options"],
+                                allowCustomAnswer=next_msg_s["allowCustomAnswer"],
+                                journeyStep=next_msg_s["journeyStep"],
+                                journeySelections=next_msg_s.get("journeySelections", {}),
+                                kind="final",
+                            )
+                            next_step_val = next_msg_s["journeyStep"]
+
+                            async def _journey_stream_gen():
+                                yield _sse({"done": True, "conversationId": conversation_id_s, "mode": "journey", "journeyStep": next_step_val})
+
+                            return StreamingResponse(_journey_stream_gen(), media_type="text/event-stream")
+
+    if eff_agent_id_stream:
         return await agent_router.agent_chat_plan_stream(req)
 
     async def generator():
@@ -301,6 +459,51 @@ async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, An
         "planId": plan_id.strip(),
         "status": row.get("status"),
         "runningTaskRefFound": agent_router.is_plan_background_task_running(plan_id.strip()),
+    }
+
+
+AGENT_INITIAL_MESSAGES: dict[str, dict[str, Any]] = {
+    "business_problem_identifier": {
+        "content": "What outcome are you looking to achieve?",
+        "options": journey_service.get_outcome_options(),
+        "kind": "final",
+        "allowCustomAnswer": False,
+        "journeyStep": journey_service.JOURNEY_STEP_OUTCOME,
+    },
+}
+
+
+@router.post("/conversations")
+async def create_conversation(req: Request) -> dict[str, Any]:
+    body = await req.json()
+    agent_id = str(body.get("agentId") or "").strip() or None
+    session_id = str(body.get("sessionId") or "").strip() or None
+    user_id = str(body.get("userId") or "").strip() or None
+
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agentId is required")
+
+    conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id)
+    conversation_id = conv["id"]
+
+    initial = AGENT_INITIAL_MESSAGES.get(agent_id)
+    if initial and not conv.get("messages"):
+        await append_message(
+            conversation_id,
+            "assistant",
+            initial["content"],
+            options=initial.get("options"),
+            kind=initial.get("kind"),
+            allowCustomAnswer=initial.get("allowCustomAnswer", True),
+            journeyStep=initial.get("journeyStep"),
+            journeySelections=initial.get("journeySelections", {}),
+        )
+        conv = await get_conversation(conversation_id) or conv
+
+    return {
+        "conversationId": conversation_id,
+        "agentId": agent_id,
+        "messages": conv.get("messages") or [],
     }
 
 

@@ -152,6 +152,8 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
           progress?: ProgressEvent;
           backgroundExecution?: boolean;
           assistantMessageId?: string;
+          mode?: string;
+          journeyStep?: string;
         };
 
         if (data.error && !data.stage) throw new Error(data.error);
@@ -182,6 +184,8 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
             planMarkdown: data.planMarkdown,
             backgroundExecution: data.backgroundExecution,
             assistantMessageId: data.assistantMessageId,
+            mode: data.mode as string | undefined,
+            journeyStep: data.journeyStep as string | undefined,
           };
         }
       } catch (e) {
@@ -352,8 +356,67 @@ export async function deleteAgent(id: AgentId): Promise<void> {
   if (!response.ok) throw new Error(await extractApiError(response));
 }
 
+export async function createConversation(opts: {
+  agentId: AgentId;
+}): Promise<{ conversationId: string; agentId: AgentId; messages: ChatMessage[] }> {
+  return apiJsonPost<{ conversationId: string; agentId: AgentId; messages: ChatMessage[] }>(
+    API_ROUTES.aiChat.newConversation,
+    withAuthActor({ agentId: opts.agentId }),
+  );
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   const response = await apiFetch(API_ROUTES.aiChat.conversationById(id), { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractApiError(response));
+}
+
+export interface TaskStreamCallbacks {
+  onToken?: (token: string) => void;
+  onStage?: (stage: string, label: string) => void;
+  onDone?: (data: Record<string, unknown>) => void;
+  onError?: (message: string) => void;
+}
+
+export async function subscribeToTaskStream(
+  streamId: string,
+  callbacks: TaskStreamCallbacks,
+): Promise<void> {
+  const url = `${getApiBase()}${API_ROUTES.taskStream.eventsByStreamId(streamId)}`;
+  const response = await apiRequest(url, { credentials: 'include' });
+  if (!response.ok) throw new Error(await extractApiError(response));
+  if (!response.body) throw new Error('No response body');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        const type = data.type as string | undefined;
+        if (type === 'token' && typeof data.token === 'string') {
+          callbacks.onToken?.(data.token);
+        } else if (type === 'stage') {
+          callbacks.onStage?.(String(data.stage ?? ''), String(data.label ?? ''));
+        } else if (type === 'done') {
+          callbacks.onDone?.(data);
+          return;
+        } else if (type === 'error') {
+          callbacks.onError?.(String(data.message ?? 'Stream error'));
+          return;
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+  }
 }
 

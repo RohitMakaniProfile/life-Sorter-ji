@@ -1,0 +1,190 @@
+{
+  "outcomes": [
+    { "id": "lead-generation",   "text": "Lead Generation",   "subtext": "Marketing, SEO & Social" },
+    { "id": "sales-retention",   "text": "Sales & Retention",  "subtext": "Calling, Support & Expansion" },
+    { "id": "business-strategy", "text": "Business Strategy",  "subtext": "Intelligence, Market & Org" },
+    { "id": "save-time",         "text": "Save Time",          "subtext": "Automation Workflow, Ops, Finance, Admin" }
+  ],
+
+  "outcome_domains": {
+    "lead-generation": [
+      "Content & Social Media",
+      "SEO & Organic Visibility",
+      "Paid Media & Ads",
+      "B2B Lead Generation"
+    ],
+    "sales-retention": [
+      "Sales Execution & Enablement",
+      "Lead Management & Conversion",
+      "Customer Success & Reputation",
+      "Same User More Sale"
+    ],
+    "business-strategy": [
+      "Business Intelligence & Analytics",
+      "Market Strategy & Innovation",
+      "Financial Health & Risk",
+      "Org Efficiency & Hiring",
+      "Owner/ Founder Improvements"
+    ],
+    "save-time": [
+      "Marketing & Sales Automation",
+      "Finance Legal & Admin",
+      "Customer Support Ops",
+      "Recruiting & HR Ops",
+      "Personal & Team Productivity"
+    ]
+  },
+
+  "domain_tasks": {
+    "Content & Social Media": [
+      "Generate social media posts captions & hooks",
+      "Create AI product photography & video ads",
+      "Build a personal brand on LinkedIn/Twitter",
+      "Repurpose content for maximum reach",
+      "Spot trending topics & viral content ideas"
+    ],
+    "SEO & Organic Visibility": [
+      "Get more leads from Google & website (SEO)",
+      "Google Business Profile visibility",
+      "Improve Google Business Profile leads",
+      "Write SEO Keyword blogs and landing pages",
+      "Write product titles that rank SEO",
+      "Ecommerce Listing SEO + upsell bundles"
+    ],
+    "Paid Media & Ads": [
+      "Generate high-converting ad copy & visuals",
+      "Auto-optimize campaigns to boost ROAS",
+      "Find winning audiences & keywords",
+      "Audit ad spend & spot wasted budget",
+      "Spy on competitor ads & offers"
+    ],
+    "B2B Lead Generation": [
+      "Find decision-maker emails & LinkedIn profiles",
+      "Generate hyper-personalized cold outreach sequences",
+      "Identify target companies by tech stack & intent",
+      "Score & prioritize leads by ICP match",
+      "Automate LinkedIn connection & engagement"
+    ],
+    "Sales Execution & Enablement": [
+      "Drive sales on WhatsApp & Instagram",
+      "Auto-generate proposals & custom quotes",
+      "Review contracts & accelerate deal signing",
+      "Instant answers from sales docs & past deals",
+      "Generate objection handling & negotiation scripts"
+    ],
+    "Lead Management & Conversion": [
+      "Automate lead qualification & scoring (AI SDR)",
+      "Instant 24/7 lead response & booking",
+      "Run automated nurture & recovery sequences",
+      "Analyze lost deals to uncover objections",
+      "Reactivate cold or dead leads"
+    ],
+    "Customer Success & Reputation": [
+      "Automate review collection & smart responses",
+      "Analyze support calls & tickets for root causes",
+      "Predict churn risk & alert success teams",
+      "Track support SLAs & agent performance",
+      "Detect angry customers for priority routing"
+    ],
+    "Same User More Sale": [
+      "Predict \"Next Best Product\" to recommend",
+      "Automate personalized upsell & cross-sell messages",
+      "Trigger re-order & renewal reminders",
+      "Create bundles to increase Average Order Value (AOV)",
+      "Launch win-back campaigns for inactive customers"
+    ],
+    "Business Intelligence & Analytics": [
+      "Compare performance vs. competitors & benchmarks",
+      "Build a real-time sales & revenue command center",
+      "Track marketing ROI across ads & organic channels",
+      "Extract actionable insights from calls",
+      "Monitor operational SLAs & delivery bottlenecks"
+    ],
+    "Market Strategy & Innovation": [
+      "Identify trending products & market opportunities",
+      "Track competitor pricing & promotional strategies",
+      "Forecast revenue & inventory requirements",
+      "Market & industry trend summaries",
+      "Validate new business ideas before launch"
+    ],
+    "Financial Health & Risk": [
+      "Predict cash runway & financial health (30-90 days)",
+      "Spot profit leaks & unnecessary spend",
+      "Audit contracts for risk & revenue leakage",
+      "Monitor vendor compliance & cost benchmarks",
+      "Automate budget variance alerts & reporting",
+      "Supplier risk and exposure tracking"
+    ],
+    "Org Efficiency & Hiring": [
+      "Automate candidate screening & interview insights",
+      "Turn SOPs & policies into an instant Q&A bot",
+      "Auto-organize files & chat with business docs",
+      "Track team goals & operational bottlenecks",
+      "Streamline employee onboarding & HR support"
+    ],
+    "Owner/ Founder Improvements": [
+      "Prioritize high-impact weekly goals & OKRs",
+      "Craft pitches & presentations",
+      "Build founder authority & personal brand",
+      "Summarize market research & Learning Plan",
+      "Design team culture & alignment roadmaps"
+    ],
+    "Marketing & Sales Automation": [
+      "Automate lead capture into Sheets/CRM",
+      "Auto-capture leads from forms/ads",
+      "Draft proposals quotes and emails faster",
+      "Mail + DM + influencer outreach automation",
+      "Auto-reply + follow-up sequences",
+      "Summarize calls/chats into CRM notes",
+      "Repurpose long videos into shorts",
+      "Schedule posts + reuse content ideas",
+      "Bulk update product listings/catalog",
+      "Generate A+ store content at scale",
+      "Auto-create weekly content calendar"
+    ],
+    "Finance Legal & Admin": [
+      "Automate procurement requests/approvals",
+      "Automate procurement approvals",
+      "Automate HR or Finance",
+      "Extract invoice/order data from PDFs",
+      "Extract invoices/receipts from PDFs into Sheets",
+      "Classify docs (invoice/contract/report)",
+      "Bookkeeping assistance + auto categorization",
+      "Expense tracking + spend control automation",
+      "Auto-generate client/vendor payment reminders",
+      "Draft finance emails reports and summaries faster",
+      "Extract key terms from contracts (payment renewal notice period)",
+      "Automate contract approvals renewals and deadline reminders",
+      "Compliance checklist summaries and policy Q&A"
+    ],
+    "Customer Support Ops": [
+      "24/7 support assistant + escalation",
+      "Automate order updates and tracking",
+      "Track orders + customer notifications",
+      "Support ticket routing automation",
+      "Auto-tag route and prioritize tickets",
+      "Draft replies in brand voice",
+      "WhatsApp/Instagram instant replies",
+      "Build a support knowledge base"
+    ],
+    "Recruiting & HR Ops": [
+      "Find candidates faster (multi-source)",
+      "Resume screening + shortlisting",
+      "Automate interview scheduling",
+      "Automate candidate follow-ups",
+      "High-volume hiring coordination",
+      "Onboarding checklists + HR support",
+      "Draft job descriptions and outreach"
+    ],
+    "Personal & Team Productivity": [
+      "Summarize meetings + send action items",
+      "Extract data from PDFs/images",
+      "Automate repetitive admin workflows",
+      "Excel and App script Automation",
+      "Auto-tag and organize documents",
+      "Organize notes automatically",
+      "Draft emails reports and proposals",
+      "Summarize PDFs and long documents"
+    ]
+  }
+}

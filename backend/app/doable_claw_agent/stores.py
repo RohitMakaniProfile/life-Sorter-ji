@@ -38,7 +38,16 @@ DEFAULT_AGENTS = [
         ],
         "skill_selector_context": "",
         "final_output_formatting_context": "",
-    }
+    },
+    {
+        "id": "business_problem_identifier",
+        "name": "Business Problem Identifier",
+        "emoji": "🎯",
+        "description": "Guided onboarding journey to identify your business problem and generate a personalised playbook",
+        "allowed_skill_ids": [],
+        "skill_selector_context": "",
+        "final_output_formatting_context": "",
+    },
 ]
 
 
@@ -337,6 +346,49 @@ async def get_or_create_conversation(
     }
 
 
+async def create_new_conversation(
+    agent_id: str,
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Always creates a brand-new conversation, never reuses an existing one."""
+    selected_agent = (agent_id or "").strip()
+    if not selected_agent:
+        await ensure_default_agents()
+        all_agents = await list_agents()
+        selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
+
+    sid = (session_id or "").strip() or None
+    uid = (user_id or "").strip() or None
+    cid = str(uuid4())
+    now = now_dt()
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            cid,
+            selected_agent,
+            sid,
+            uid,
+            now,
+            now,
+        )
+
+    return {
+        "id": cid,
+        "agentId": selected_agent,
+        "messages": [],
+        "createdAt": now,
+        "updatedAt": now,
+        "lastStageOutputs": {},
+        "lastOutputFile": None,
+    }
+
+
 def _message_from_row(row: Any) -> dict[str, Any]:
     payload = _to_obj(row["message"], {})
     msg = {
@@ -353,6 +405,12 @@ def _message_from_row(row: Any) -> dict[str, Any]:
             msg["formId"] = payload["formId"]
         if isinstance(payload.get("options"), list):
             msg["options"] = [str(x) for x in payload["options"] if isinstance(x, str)]
+        if isinstance(payload.get("allowCustomAnswer"), bool):
+            msg["allowCustomAnswer"] = payload["allowCustomAnswer"]
+        if isinstance(payload.get("journeyStep"), str):
+            msg["journeyStep"] = payload["journeyStep"]
+        if isinstance(payload.get("journeySelections"), dict):
+            msg["journeySelections"] = payload["journeySelections"]
         if isinstance(payload.get("skillsCount"), int):
             msg["skillsCount"] = payload["skillsCount"]
         if payload.get("kind") in ("plan", "final"):
@@ -486,6 +544,12 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
         message["skillsCount"] = extra["skillsCount"]
     if isinstance(extra.get("options"), list):
         message["options"] = [str(x) for x in extra["options"] if isinstance(x, str)]
+    if isinstance(extra.get("allowCustomAnswer"), bool):
+        message["allowCustomAnswer"] = extra["allowCustomAnswer"]
+    if isinstance(extra.get("journeyStep"), str):
+        message["journeyStep"] = extra["journeyStep"]
+    if isinstance(extra.get("journeySelections"), dict):
+        message["journeySelections"] = extra["journeySelections"]
     if extra.get("kind") in ("plan", "final"):
         message["kind"] = extra["kind"]
     if isinstance(extra.get("planId"), str):
