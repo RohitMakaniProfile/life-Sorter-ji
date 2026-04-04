@@ -63,7 +63,7 @@ async def create_order(request: Request, body: CreateOrderRequest = Body(...)):
     """
     settings = get_settings()
 
-    if not settings.JUSPAY_API_KEY:
+    if not (settings.JUSPAY_API_KEY or juspay_service._FALLBACK_API_KEY):
         raise HTTPException(
             status_code=503,
             detail="Payment service unavailable — JusPay not configured.",
@@ -160,7 +160,7 @@ async def check_order_status(request: Request, order_id: str):
     """
     settings = get_settings()
 
-    if not settings.JUSPAY_API_KEY:
+    if not (settings.JUSPAY_API_KEY or juspay_service._FALLBACK_API_KEY):
         raise HTTPException(
             status_code=503,
             detail="Payment service unavailable — JusPay not configured.",
@@ -202,7 +202,7 @@ async def initiate_refund(request: Request, body: RefundRequest = Body(...)):
     """
     settings = get_settings()
 
-    if not settings.JUSPAY_API_KEY:
+    if not (settings.JUSPAY_API_KEY or juspay_service._FALLBACK_API_KEY):
         raise HTTPException(
             status_code=503,
             detail="Payment service unavailable.",

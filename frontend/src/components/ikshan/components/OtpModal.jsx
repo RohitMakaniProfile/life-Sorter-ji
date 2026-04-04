@@ -75,7 +75,7 @@ export default function OtpModal({ sessionId, onVerified }) {
         setError('Incorrect OTP — please try again');
         return;
       }
-      onVerified();
+      onVerified(phone.replace(/\D/g, ''));
     } catch {
       setError('Network error — please try again');
     } finally {

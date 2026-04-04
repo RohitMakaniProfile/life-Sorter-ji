@@ -10,6 +10,7 @@ import DeeperDiveStage from './stages/DeeperDiveStage';
 import DiagnosticStage from './stages/DiagnosticStage';
 import PlaybookViewer from '../PlaybookViewer';
 import OtpModal from './components/OtpModal';
+import PaymentModal from './components/PaymentModal';
 import { outcomeOptions, OUTCOME_DOMAINS, DOMAIN_TASKS } from './constants';
 import { getToolsForSelection } from './toolService';
 import * as api from './api';
@@ -112,6 +113,11 @@ export default function IkshanApp() {
   // OTP gate
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
+  const [verifiedPhone, setVerifiedPhone] = useState('');
+
+  // Payment gate
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentVerified, setPaymentVerified] = useState(false);
 
   // ─── Horizontal wheel scroll ──────────────────────────
   useEffect(() => {
@@ -254,6 +260,8 @@ export default function IkshanApp() {
       if (urlValue.trim()) {
         let finalUrl = urlValue.trim();
         if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`;
+        // Persist for payment callback (page reloads after JusPay redirect)
+        sessionStorage.setItem('ikshan_website_url', finalUrl);
         const res = await api.submitUrl(sid, finalUrl);
         if (res?.crawl_started) { setCrawlStatus('in_progress'); startCrawlPolling(); }
       }
@@ -364,7 +372,7 @@ export default function IkshanApp() {
   };
 
   /** Phase 2 uses JWT for identity; Phase 1 agent session is not required. URL comes from URL stage. */
-  const handleDeepAnalysis = () => {
+  const goToPhase2 = () => {
     const url = getWebsiteUrl();
     const userLine = url ? `${url}\n\nDo deep analysis.` : '';
     navigate(phase2Path('new'), {
@@ -374,6 +382,50 @@ export default function IkshanApp() {
       },
     });
   };
+
+  const handleDeepAnalysis = () => {
+    if (paymentVerified) {
+      goToPhase2();
+    } else {
+      setShowPaymentModal(true);
+    }
+  };
+
+  // Check payment return from JusPay callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('payment_status');
+    const orderId = params.get('order_id');
+    if (!status || !orderId) return;
+
+    // Clean URL params
+    window.history.replaceState({}, '', window.location.pathname);
+
+    const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+    if (status === 'charged') {
+      fetch(`${apiBase}/api/v1/payments/verify-stage2`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.verified) {
+            setPaymentVerified(true);
+            // Auto-navigate to Phase 2 immediately after payment
+            const url = sessionStorage.getItem('ikshan_website_url') || '';
+            const userLine = url ? `${url}\n\nDo deep analysis.` : '';
+            navigate(phase2Path('new'), {
+              state: {
+                agentId: RESEARCH_ORCHESTRATOR_AGENT_ID,
+                ...(userLine ? { initialMessage: userLine } : {}),
+              },
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   const handleBackToStep1 = () => {
     setSelectedTask(null);
@@ -428,8 +480,9 @@ export default function IkshanApp() {
     } catch (err) { setError('Failed to start playbook.'); setPlaybookStreaming(false); }
   };
 
-  const handleOtpVerified = () => {
+  const handleOtpVerified = (phone) => {
     setOtpVerified(true);
+    setVerifiedPhone(phone || '');
     setShowOtpModal(false);
     const sid = pendingStreamSidRef.current;
     if (sid) streamPlaybook(sid);
@@ -556,16 +609,36 @@ export default function IkshanApp() {
 
               {/* Deep Analysis CTA */}
               {playbookDone && (
-                <button
-                  onClick={handleDeepAnalysis}
-                  style={{ marginTop: 8, marginBottom: 24, padding: '12px 32px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}
-                >
-                  Do Deep Analysis →
-                </button>
+                <div style={{ marginTop: 8, marginBottom: 24 }}>
+                  {paymentVerified ? (
+                    <button
+                      onClick={goToPhase2}
+                      style={{ width: '100%', padding: '14px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg,#16a34a,#15803d)', color: '#fff', fontWeight: 800, fontSize: 15, cursor: 'pointer' }}
+                    >
+                      ✓ Payment Done — Start Deep Analysis →
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowPaymentModal(true)}
+                      style={{ width: '100%', padding: '14px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontWeight: 800, fontSize: 15, cursor: 'pointer', boxShadow: '0 4px 20px rgba(99,102,241,0.3)' }}
+                    >
+                      🔓 Unlock Deep Analysis — ₹499 →
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
         </div>
+
+        {/* Payment Modal overlay */}
+        {showPaymentModal && (
+          <PaymentModal
+            sessionId={sessionIdRef.current || ''}
+            customerPhone={verifiedPhone}
+            onClose={() => setShowPaymentModal(false)}
+          />
+        )}
       </StageLayout>
     );
   }
@@ -584,9 +657,16 @@ export default function IkshanApp() {
             onClick={handleDeepAnalysis}
             style={{ marginTop: '12px', padding: '12px 32px', borderRadius: '10px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', border: 'none', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}
           >
-            Do Deep Analysis
+            {paymentVerified ? 'Start Deep Analysis →' : '🔓 Unlock Deep Analysis — ₹499'}
           </button>
         </div>
+        {showPaymentModal && (
+          <PaymentModal
+            sessionId={sessionIdRef.current || ''}
+            customerPhone={verifiedPhone}
+            onClose={() => setShowPaymentModal(false)}
+          />
+        )}
       </StageLayout>
     );
   }

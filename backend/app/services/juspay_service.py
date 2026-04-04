@@ -22,24 +22,34 @@ from app.config import get_settings
 
 logger = structlog.get_logger()
 
+# ── Hardcoded fallback credentials (used when .env is not configured) ──
+_FALLBACK_MERCHANT_ID = "IXG531"
+_FALLBACK_API_KEY     = "BE78D79C995436F9E0E8CB09A77ABB"
+_FALLBACK_BASE_URL    = "https://smartgateway.hdfc.bank.in"
+
+
+def _get_api_key() -> str:
+    return get_settings().JUSPAY_API_KEY or _FALLBACK_API_KEY
+
+
+def _get_merchant_id() -> str:
+    return get_settings().JUSPAY_MERCHANT_ID or _FALLBACK_MERCHANT_ID
+
+
+def _get_base_url() -> str:
+    return get_settings().juspay_base_url or _FALLBACK_BASE_URL
+
 
 def _auth_header() -> str:
-    """
-    Build Basic Auth header for JusPay API.
-    Format: Base64(API_KEY:)  (empty password)
-    """
-    settings = get_settings()
-    credentials = f"{settings.JUSPAY_API_KEY}:"
+    credentials = f"{_get_api_key()}:"
     encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
     return f"Basic {encoded}"
 
 
 def _default_headers() -> dict:
-    """Common headers for all JusPay API calls."""
-    settings = get_settings()
     return {
         "Authorization": _auth_header(),
-        "x-merchantid": settings.JUSPAY_MERCHANT_ID,
+        "x-merchantid": _get_merchant_id(),
         "Content-Type": "application/x-www-form-urlencoded",
     }
 
@@ -104,7 +114,7 @@ async def create_order(
         headers["x-routing-id"] = customer_id
 
         response = await client.post(
-            f"{settings.juspay_base_url}/orders",
+            f"{_get_base_url()}/orders",
             headers=headers,
             data=payload,
         )
@@ -163,7 +173,7 @@ async def get_order_status(order_id: str) -> dict:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
-            f"{settings.juspay_base_url}/orders/{order_id}",
+            f"{_get_base_url()}/orders/{order_id}",
             headers=headers,
         )
 
@@ -294,7 +304,7 @@ async def process_refund(
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            f"{settings.juspay_base_url}/orders/{order_id}/refunds",
+            f"{_get_base_url()}/orders/{order_id}/refunds",
             headers=_default_headers(),
             json=payload,
         )

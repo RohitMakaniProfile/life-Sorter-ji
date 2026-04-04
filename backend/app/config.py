@@ -86,11 +86,11 @@ class Settings(BaseSettings):
     SERP_API_KEY: str = ""
 
     # ── JusPay ─────────────────────────────────────────────────
-    JUSPAY_MERCHANT_ID: str = ""
-    JUSPAY_API_KEY: str = ""
-    JUSPAY_RESPONSE_KEY: str = ""
-    JUSPAY_PAYMENT_PAGE_CLIENT_ID: str = ""
-    JUSPAY_BASE_URL: str = ""  # Override base URL (e.g., HDFC SmartGateway)
+    JUSPAY_MERCHANT_ID: str = "IXG531"
+    JUSPAY_API_KEY: str = "BE78D79C995436F9E0E8CB09A77ABB"
+    JUSPAY_RESPONSE_KEY: str = "FB83FD6F2C446A0B830CAE1F5105FD"
+    JUSPAY_PAYMENT_PAGE_CLIENT_ID: str = "hdfcmaster"
+    JUSPAY_BASE_URL: str = "https://smartgateway.hdfc.bank.in"
     JUSPAY_ENVIRONMENT: JuspayEnvironment = JuspayEnvironment.SANDBOX
 
     # ── Frontend ───────────────────────────────────────────────
