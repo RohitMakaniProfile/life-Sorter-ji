@@ -54,6 +54,10 @@ export default function Layout() {
             <span className="text-lg text-slate-200 group-hover:text-white">🕒</span>
             <span className="text-sm text-slate-200 group-hover:text-white">History</span>
           </NavLink>
+          <NavLink to="/account" className={navLinkClass}>
+            <span className="text-lg text-slate-200 group-hover:text-white">👤</span>
+            <span className="text-sm text-slate-200 group-hover:text-white">Account</span>
+          </NavLink>
           {isSuperAdmin && (
             <NavLink to="/admin/agents" className={navLinkClass}>
               <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>

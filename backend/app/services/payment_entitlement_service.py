@@ -19,6 +19,101 @@ logger = structlog.get_logger()
 
 CAPABILITY_KEYS = ("deep_analysis_report", "execute_report_actions")
 
+# ── Agent → required capability mapping ──────────────────────────────────────
+# Agents listed here require the user to have an active plan grant whose
+# `features` JSONB includes the specified capability key set to true.
+# Agents NOT listed here are free / unrestricted.
+AGENT_REQUIRED_CAPABILITY: dict[str, str] = {
+    "research-orchestrator": "deep_analysis_report",
+}
+
+
+async def check_agent_access(*, user_id: str, agent_id: str) -> dict[str, Any]:
+    """
+    Check whether a user may use a given agent.
+
+    Returns {"allowed": True} or {"allowed": False, "reason": "...", "required_plan_slug": "..."}.
+    """
+    required_cap = AGENT_REQUIRED_CAPABILITY.get(agent_id)
+    if not required_cap:
+        return {"allowed": True}
+
+    if not user_id or not user_id.strip():
+        return {
+            "allowed": False,
+            "reason": "Authentication required to use this agent.",
+            "required_capability": required_cap,
+        }
+
+    uid = _as_uuid(user_id)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT g.id, p.slug AS plan_slug, p.name AS plan_name, g.credits_remaining, p.features
+            FROM user_plan_grants g
+            JOIN plans p ON p.id = g.plan_id AND p.active = TRUE
+            WHERE g.user_id = $1
+            ORDER BY g.granted_at DESC
+            """,
+            uid,
+        )
+
+    if not rows:
+        # No grants at all — find which plan they need
+        plan_info = await _find_plan_for_capability(required_cap)
+        return {
+            "allowed": False,
+            "reason": "A paid plan is required to use this agent.",
+            "required_capability": required_cap,
+            **plan_info,
+        }
+
+
+    for r in rows:
+        features = _normalize_features(r.get("features"))
+        if _feature_truthy(features, required_cap):
+            cr = r.get("credits_remaining")
+            # credits_remaining NULL = unlimited; > 0 = still has credits
+            if cr is None or cr > 0:
+                return {"allowed": True, "plan_slug": r["plan_slug"], "plan_name": r["plan_name"]}
+
+    # Has grants but none with the right capability
+    plan_info = await _find_plan_for_capability(required_cap)
+    return {
+        "allowed": False,
+        "reason": "Your current plan does not include access to this agent.",
+        "required_capability": required_cap,
+        **plan_info,
+    }
+
+
+async def _find_plan_for_capability(capability: str) -> dict[str, Any]:
+    """Find the cheapest active plan that grants the given capability."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT slug, name, price_inr, features
+            FROM plans
+            WHERE active = TRUE
+            ORDER BY price_inr ASC
+            """
+        )
+    for r in rows:
+        row_dict = dict(r)
+        feats = _normalize_features(row_dict.get("features", {}))
+        if _feature_truthy(feats, capability):
+            price = row_dict.get("price_inr")
+            if isinstance(price, Decimal):
+                price = float(price)
+            return {
+                "required_plan_slug": row_dict["slug"],
+                "required_plan_name": row_dict["name"],
+                "required_plan_price": price,
+            }
+    return {}
+
 
 def _feature_truthy(features: Any, key: str) -> bool:
     if not isinstance(features, dict):

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createConversation } from '../../../api';
+import ProductsSidebar from './ProductsSidebar';
 
 export default function Navbar() {
   const navigate = useNavigate();
   const [creatingChat, setCreatingChat] = useState(false);
+  const [productsOpen, setProductsOpen] = useState(false);
 
   const handleNewChat = async () => {
     if (creatingChat) return;
@@ -20,20 +22,23 @@ export default function Navbar() {
   };
 
   return (
-    <nav className="relative z-10 flex items-center justify-between border-b border-[rgb(45,45,45)] bg-[rgb(15,15,15)] px-6 py-1.5">
-      <div className="flex gap-2">
-        <button
-          type="button"
-          className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
-            <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
-            <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
-            <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
-          </svg>
-          Our Products
-        </button>
+    <>
+      <ProductsSidebar isOpen={productsOpen} onClose={() => setProductsOpen(false)} />
+      <nav className="relative z-10 flex items-center justify-between border-b border-[rgb(45,45,45)] bg-[rgb(15,15,15)] px-6 py-1.5">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setProductsOpen(true)}
+            className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+            Our Products
+          </button>
         <button
           type="button"
           onClick={handleNewChat}
@@ -58,6 +63,7 @@ export default function Navbar() {
         </button>
         <button
           type="button"
+          onClick={() => navigate('/how-it-works')}
           className="flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -69,8 +75,9 @@ export default function Navbar() {
         </button>
       </div>
       <div>
-        <span className="text-sm font-bold tracking-[0.2em] text-white/80">ONBOARDING</span>
+        <span className="text-sm font-bold tracking-[0.2em] text-white/80">DOABLE CLAW</span>
       </div>
     </nav>
+    </>
   );
 }

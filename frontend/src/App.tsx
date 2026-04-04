@@ -9,6 +9,8 @@ import AgentsPage from './pages/ai/AgentsPage';
 import AgentContextsPage from './pages/ai/AgentContextsPage';
 import Layout from './components/ai/Layout';
 import PaymentPage from './pages/PaymentPage';
+import AccountPage from './pages/AccountPage';
+import HowItWorksPage from './pages/HowItWorksPage';
 import { getConversations } from './api';
 import AdminLoginPage from './pages/AdminLoginPage';
 import RequireSuperAdmin from './components/RequireSuperAdmin';
@@ -56,10 +58,17 @@ function App() {
             {/* Backwards-compatible routes (can be removed later). */}
             <Route path="login-internal" element={<Navigate to="/admin/login?mode=internal" replace />} />
             <Route path="login-admin" element={<Navigate to="/admin/login?mode=admin" replace />} />
+
+            {/* Standalone pages (no sidebar layout) */}
+            <Route path="/payment" element={<PaymentPage />} />
+            <Route path="/how-it-works" element={<HowItWorksPage />} />
+            <Route path="/deep-analysis" element={<Navigate to="/payment" replace />} />
+
             <Route element={<Layout />}>
               <Route path="chat" element={<DefaultChat />} />
               <Route path="chat/:conversationId" element={<ChatWithId />} />
               <Route path="new" element={<ChatPage key="new" />} />
+              <Route path="account" element={<AccountPage />} />
               <Route path="conversations" element={<ConversationsPage />} />
               <Route path="agents" element={<RequireSuperAdmin />}>
                 <Route index element={<AgentsPage />} />
@@ -75,8 +84,6 @@ function App() {
               </Route>
             </Route>
             <Route path="/" element={<OnboardingApp />} />
-            <Route path="payment" element={<PaymentPage />} />
-            <Route path="deep-analysis" element={<Navigate to="/payment" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

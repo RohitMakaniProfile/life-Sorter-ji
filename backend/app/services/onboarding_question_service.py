@@ -341,9 +341,9 @@ async def generate_next_rca_question_for_onboarding(
             }
 
         if pending_idx is not None and answer is None:
-            rca_qa[pending_idx] = {"question": dyn_question.question, "answer": None}
+            rca_qa[pending_idx] = {"question": dyn_question.question, "options": dyn_question.options or [], "answer": None}
         else:
-            rca_qa.append({"question": dyn_question.question, "answer": None})
+            rca_qa.append({"question": dyn_question.question, "options": dyn_question.options or [], "answer": None})
 
         await _persist_rca_qa(conn, onboarding_id=onboarding_id, rca_qa=rca_qa)
         if questions_answers is not None:

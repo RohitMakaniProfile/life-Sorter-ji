@@ -26,7 +26,6 @@ import { PAYMENT_CONTINUE_WEBSITE_URL_KEY, canUseDeepAnalysisReport } from '../.
 import { getUserIdFromJwt } from '../../api/authSession';
 import FlowNode from './components/FlowNode';
 import STATIC_SCALE_QUESTIONS from './data/scale_questions.json';
-const upsertOnboarding = (body) => apiPost(API_ROUTES.onboarding.upsert, body ?? {});
 const rcaNextQuestion = (body) => apiPost(API_ROUTES.onboarding.rcaNextQuestion, body ?? {});
 
 const ONBOARDING_PATCH_KEYS = ['outcome', 'domain', 'task', 'website_url', 'gbp_url', 'scale_answers'];
@@ -93,7 +92,7 @@ export default function OnboardingApp() {
       cancelled = true;
     };
   }, [navigate]);
-  const { sessionIdRef, ensureSession } = useOnboardingSession();
+  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState, clearSession } = useOnboardingSession();
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
@@ -165,6 +164,7 @@ export default function OnboardingApp() {
   const urlStageTaskNodeRef = useRef(null);
   const [taskNodeTransition, setTaskNodeTransition] = useState(null);
   const taskToolsCacheRef = useRef(new Map());
+  const sessionRestoredRef = useRef(false);
 
   const clearPostTask = () => {
     setShowUrlForm(false);
@@ -174,6 +174,199 @@ export default function OnboardingApp() {
     setShowComplete(false);
     setEarlyTools([]);
   };
+
+  /**
+   * Session restoration on mount: fetch saved state and restore UI to the appropriate stage.
+   * Only runs once on mount.
+   * If stage is "complete", clears session and starts fresh.
+   */
+  useEffect(() => {
+    // Prevent running multiple times
+    if (sessionRestoredRef.current) return;
+    sessionRestoredRef.current = true;
+
+    const restoreSession = async () => {
+      try {
+        const state = await getSessionState();
+        console.log('[Onboarding Restore] State received:', state);
+        if (!state) {
+          console.log('[Onboarding Restore] No state to restore');
+          return;
+        }
+
+        // If onboarding is complete, clear the session and start fresh
+        if (state.stage === 'complete') {
+          clearSession();
+          return;
+        }
+
+        // Restore outcome
+        if (state.outcome) {
+          const outcome = outcomeOptions.find((o) => o.id === state.outcome);
+          if (outcome) setSelectedOutcome(outcome);
+        }
+
+        // Restore domain and task
+        if (state.domain) setSelectedDomain(state.domain);
+        if (state.task) setSelectedTask(state.task);
+
+        // Restore URL values
+        if (state.website_url) setUrlValue(state.website_url);
+        if (state.gbp_url) setGbpValue(state.gbp_url);
+
+        // Restore scale answers
+        if (state.scale_answers && typeof state.scale_answers === 'object') {
+          // Convert id-based answers to index-based for UI
+          const indexedAnswers = {};
+          for (let i = 0; i < STATIC_SCALE_QUESTIONS.length; i++) {
+            const q = STATIC_SCALE_QUESTIONS[i];
+            if (state.scale_answers[q.id] !== undefined) {
+              indexedAnswers[i] = state.scale_answers[q.id];
+            }
+          }
+          setScaleAnswers(indexedAnswers);
+        }
+
+        // Restore to the appropriate stage based on backend state
+        switch (state.stage) {
+          case 'url':
+            // Task selected, show URL form directly
+            console.log('[Onboarding Restore] Restoring to URL stage', { outcome: state.outcome, domain: state.domain, task: state.task });
+            setShowUrlForm(true);
+            // Load tools for the task (async, don't block UI)
+            if (state.outcome && state.domain && state.task) {
+              apiPost(API_ROUTES.onboarding.toolsByQ1Q2Q3, {
+                outcome: state.outcome,
+                domain: state.domain,
+                task: state.task,
+              })
+                .then((res) => {
+                  if (res?.tools) {
+                    setEarlyTools(mapToolsToEarlyTools(res.tools));
+                  }
+                })
+                .catch(() => {
+                  // ignore tool fetch errors
+                });
+            }
+            break;
+
+          case 'questions':
+            // URL submitted, show scale questions
+            // But first check if scale_answers already exist - if so, we should move to diagnostic
+            if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
+              console.log('[Onboarding Restore] Scale answers exist, should be diagnostic stage');
+              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              // Ensure sessionIdRef is set for subsequent API calls
+              if (state.session_id) {
+                sessionIdRef.current = state.session_id;
+              }
+              try {
+                const res = await rcaNextQuestion({ session_id: state.session_id });
+                console.log('[Onboarding Restore] rcaNextQuestion response:', res);
+                if (res?.status === 'question' && res?.question) {
+                  setCurrentQuestion(res.question);
+                  setQuestionIndex(0);
+                  setShowDiagnostic(true);
+                } else if (res?.status === 'complete') {
+                  setShowPlaybook(true);
+                } else {
+                  setShowDeeperDive(true);
+                }
+              } catch (err) {
+                console.warn('[Onboarding Restore] Failed to fetch RCA question:', err);
+                setShowDeeperDive(true);
+              }
+            } else {
+              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              setShowDeeperDive(true);
+            }
+            break;
+
+          case 'diagnostic':
+            // Scale questions done, show diagnostic
+            setScaleQuestions(STATIC_SCALE_QUESTIONS);
+            // Ensure sessionIdRef is set for subsequent API calls
+            if (state.session_id) {
+              sessionIdRef.current = state.session_id;
+            }
+            if (state.current_rca_question) {
+              setCurrentQuestion(state.current_rca_question);
+              // Count answered questions
+              const answeredCount = state.rca_qa?.filter((qa) => qa.answer)?.length || 0;
+              setQuestionIndex(answeredCount);
+              setShowDiagnostic(true);
+            } else {
+              // No current question stored - need to fetch the next RCA question
+              // This happens when all questions in rca_qa have been answered but RCA isn't complete yet
+              console.log('[Onboarding Restore] No current_rca_question, fetching next question for session:', state.session_id);
+              try {
+                const res = await rcaNextQuestion({ session_id: state.session_id });
+                console.log('[Onboarding Restore] rcaNextQuestion response:', res);
+                if (res?.status === 'question' && res?.question) {
+                  setCurrentQuestion(res.question);
+                  const answeredCount = state.rca_qa?.filter((qa) => qa.answer)?.length || 0;
+                  setQuestionIndex(answeredCount);
+                  setShowDiagnostic(true);
+                } else if (res?.status === 'complete') {
+                  // RCA complete, move to playbook
+                  console.log('[Onboarding Restore] RCA already complete, showing playbook');
+                  setShowPlaybook(true);
+                } else {
+                  // Unexpected response, fallback to showing deeper dive
+                  console.warn('[Onboarding Restore] Unexpected RCA response, falling back to scale questions');
+                  setShowDeeperDive(true);
+                }
+              } catch (err) {
+                console.warn('[Onboarding Restore] Failed to fetch RCA question:', err);
+                // Fallback: show deeper dive to let user retry
+                setShowDeeperDive(true);
+              }
+            }
+            break;
+
+          case 'precision':
+            // Show precision questions
+            if (state.precision_questions?.length) {
+              setPrecisionQuestions(state.precision_questions);
+              const answeredCount = state.precision_answers?.length || 0;
+              setPrecisionIndex(answeredCount);
+              if (answeredCount < state.precision_questions.length) {
+                setCurrentQuestion(state.precision_questions[answeredCount]);
+              }
+              setShowPrecision(true);
+              setShowDiagnostic(true);
+            }
+            break;
+
+          case 'playbook':
+            // Playbook stage - check if gap questions needed
+            if (state.playbook_status === 'awaiting_gap_answers' && state.gap_questions?.length) {
+              setGapQuestions(state.gap_questions);
+              setShowGapQuestions(true);
+            }
+            setShowPlaybook(true);
+            // Resume playbook stream if it was in progress
+            if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
+              prepareStreaming();
+              const sid = sessionIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            }
+            break;
+
+          default:
+            // Start stage - nothing to restore
+            break;
+        }
+      } catch (err) {
+        console.warn('Session restoration failed:', err);
+      }
+    };
+
+    restoreSession();
+  }, []); // Empty dependency array - only run once on mount
 
   /** After layout/paint so wide journey content (domains/tasks) is measurable for scroll width. */
   const scheduleScrollToEnd = useCallback(() => {
@@ -253,13 +446,13 @@ export default function OnboardingApp() {
       if (Object.keys(patch).length === 0) return;
 
       try {
-        const sid = await ensureSession();
-        await upsertOnboarding({ session_id: sid, ...patch });
+        await ensureSession(); // Make sure we have a session
+        await updateOnboarding(patch);
       } catch (err) {
         console.warn('Onboarding update:', err?.message || err);
       }
     },
-    [ensureSession, scheduleScrollToEnd],
+    [ensureSession, updateOnboarding, scheduleScrollToEnd],
   );
 
   // When switching into UrlStage via a task click, animate the selected task node
@@ -645,6 +838,10 @@ export default function OnboardingApp() {
             answerHandler(opt);
           }}
           loading={loading}
+          onBack={() => {
+            setShowDiagnostic(false);
+            setShowDeeperDive(true);
+          }}
         />
       </StageLayout>
     );
@@ -665,6 +862,10 @@ export default function OnboardingApp() {
           scalePage={scalePage}
           onPageChange={setScalePage}
           onSubmit={handleScaleSubmit}
+          onBack={() => {
+            setShowDeeperDive(false);
+            setShowUrlForm(true);
+          }}
           loading={loading}
         />
       </StageLayout>

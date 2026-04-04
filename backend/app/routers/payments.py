@@ -83,22 +83,38 @@ async def complete_plan_checkout(request: Request, body: PaymentCompleteRequest 
 
 
 @router.post("/payments/callback")
+@router.get("/payments/callback")
 async def payment_callback(request: Request):
     """
-    Handle JusPay/HDFC POST redirect after payment.
-    JusPay POSTs to return_url — we convert it to a GET redirect to the frontend.
-    Passes the actual payment status (not hardcoded success).
+    Handle JusPay/HDFC redirect after payment.
+
+    The payment gateway POSTs (or sometimes GETs) to this return_url.
+    We extract order_id and redirect the user's browser to the frontend
+    /payment page with a GET so the SPA can handle it.
     """
     settings = get_settings()
-    form_data = await request.form()
-    order_id = form_data.get("order_id") or request.query_params.get("order_id", "")
-    status = form_data.get("status") or request.query_params.get("status", "")
+
+    # Extract order_id from either form body (POST) or query params (GET).
+    order_id = ""
+    status = ""
+    if request.method == "POST":
+        try:
+            form_data = await request.form()
+            order_id = form_data.get("order_id") or ""
+            status = form_data.get("status") or ""
+        except Exception:
+            pass
+    if not order_id:
+        order_id = request.query_params.get("order_id", "")
+    if not status:
+        status = request.query_params.get("status", "")
 
     logger.info("Payment callback received", order_id=order_id, status=status)
 
-    # Pass actual status from JusPay — do NOT hardcode "success"
-    safe_status = status.lower() if status else "unknown"
-    frontend_url = f"{settings.FRONTEND_URL}?payment_status={safe_status}&order_id={order_id}"
+    # Redirect to the frontend /payment page with order_id so the SPA
+    # can pick it up and call /payments/complete for verification.
+    frontend_base = settings.FRONTEND_URL.rstrip("/")
+    frontend_url = f"{frontend_base}/payment?order_id={order_id}"
     return RedirectResponse(url=frontend_url, status_code=303)
 
 

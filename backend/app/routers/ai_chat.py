@@ -9,11 +9,44 @@ from fastapi.responses import StreamingResponse
 
 from app.doable_claw_agent import router as agent_router
 from app.doable_claw_agent.stores import append_message, create_new_conversation, get_conversation, get_or_create_conversation, get_plan_run, update_plan_run
+from app.middleware.auth_context import get_request_user
 from app.services import journey_service
 from app.repositories import chat_repository
 from app.services import central_chat_service
+from app.services import payment_entitlement_service
 
 router = APIRouter(prefix="/ai-chat", tags=["AI Chat"])
+
+
+async def _enforce_agent_access(request: Request, agent_id: str) -> None:
+    """
+    Raise 403 if the agent requires a paid plan and the user doesn't have one.
+    Only blocks restricted agents (e.g. research-orchestrator); free agents pass through.
+    """
+    if not agent_id:
+        return
+    required_cap = payment_entitlement_service.AGENT_REQUIRED_CAPABILITY.get(agent_id)
+    if not required_cap:
+        return  # Agent is free
+
+    user = get_request_user(request)
+    uid = str(user.get("id") or "").strip() if user else ""
+    access = await payment_entitlement_service.check_agent_access(
+        user_id=uid, agent_id=agent_id,
+    )
+    if not access.get("allowed"):
+        detail = {
+            "error": access.get("reason", "Paid plan required"),
+            "code": "AGENT_ACCESS_DENIED",
+            "agent_id": agent_id,
+        }
+        if access.get("required_plan_slug"):
+            detail["required_plan_slug"] = access["required_plan_slug"]
+        if access.get("required_plan_name"):
+            detail["required_plan_name"] = access["required_plan_name"]
+        if access.get("required_plan_price"):
+            detail["required_plan_price"] = access["required_plan_price"]
+        raise HTTPException(status_code=403, detail=detail)
 
 
 def _json_default(value: Any) -> Any:
@@ -69,6 +102,14 @@ async def _match_pending_option(body: dict[str, Any]) -> tuple[dict[str, Any], s
 @router.post("/message")
 async def send_message(req: Request) -> dict[str, Any]:
     body = await req.json()
+
+    # ── Plan access check for new conversations with restricted agents ──
+    conversation_id_check = str(body.get("conversationId") or "").strip()
+    agent_id_check = str(body.get("agentId") or "").strip()
+    if not conversation_id_check and agent_id_check:
+        # No existing conversation → creating new one; enforce plan check
+        await _enforce_agent_access(req, agent_id_check)
+
     matched = await _match_pending_option(body)
     if matched:
         last_assistant, selected, already_logged = matched
@@ -235,6 +276,16 @@ async def send_message_background(req: Request) -> dict[str, Any]:
     """
     body = await req.json()
 
+    # ── Plan access check: resolve agent from conversation or body ──
+    bg_conv_id = str(body.get("conversationId") or "").strip()
+    bg_agent_id = str(body.get("agentId") or "").strip()
+    if bg_conv_id and not bg_agent_id:
+        bg_conv = await get_conversation(bg_conv_id)
+        if bg_conv:
+            bg_agent_id = str(bg_conv.get("agentId") or "").strip()
+    if bg_agent_id:
+        await _enforce_agent_access(req, bg_agent_id)
+
     # Prefer direct approve/cancel by planId when provided.
     msg = _normalize_option(str(body.get("message") or ""))
     plan_id_direct = str(body.get("planId") or "").strip()
@@ -346,6 +397,14 @@ async def send_message_background(req: Request) -> dict[str, Any]:
 @router.post("/stream")
 async def send_message_stream(req: Request) -> StreamingResponse:
     body = await req.json()
+
+    # ── Plan access check for new conversations with restricted agents ──
+    conversation_id_check_s = str(body.get("conversationId") or "").strip()
+    agent_id_check_s = str(body.get("agentId") or "").strip()
+    if not conversation_id_check_s and agent_id_check_s:
+        # No existing conversation → creating new one; enforce plan check
+        await _enforce_agent_access(req, agent_id_check_s)
+
     matched = await _match_pending_option(body)
     if matched:
         last_assistant, selected, already_logged = matched
@@ -483,6 +542,9 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     if not agent_id:
         raise HTTPException(status_code=400, detail="agentId is required")
 
+    # ── Plan access check ──
+    await _enforce_agent_access(req, agent_id)
+
     conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id)
     conversation_id = conv["id"]
 
@@ -549,4 +611,18 @@ async def get_token_usage(messageId: str | None = None) -> dict[str, Any]:
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str) -> dict[str, bool]:
     return await chat_repository.delete_conversation_by_id(conversation_id)
+
+
+@router.get("/agent-access")
+async def check_agent_access(req: Request, agentId: str = Query(...)) -> dict[str, Any]:
+    """
+    Check if the authenticated user has access to the given agent.
+    Returns {"allowed": true} or {"allowed": false, "reason": "...", ...plan details}.
+    """
+    user = get_request_user(req)
+    uid = str(user.get("id") or "").strip() if user else ""
+    return await payment_entitlement_service.check_agent_access(
+        user_id=uid, agent_id=agentId.strip(),
+    )
+
 

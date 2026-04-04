@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import ChatUI from '../../components/ai/chat/ChatUI';
-import type { RichMessage } from '../../components/ai/chat/ChatUI';
-import { getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream } from '../../api';
+import type { RichMessage, CrossAgentAction } from '../../components/ai/chat/ChatUI';
+import AgentSelector from '../../components/ai/AgentSelector';
+import { checkAgentAccess, getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../../context/UiAgentsContext';
 
@@ -22,6 +23,18 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
   const location = useLocation();
 
   const { activeAgentId, setActiveAgentId } = useUiAgents();
+
+  // For new chats, track whether the user has explicitly picked an agent.
+  // When the page is loaded with a conversationId or with location.state
+  // carrying an agentId (Phase 1 hand-off), we skip the selector.
+  const [agentSelected, setAgentSelected] = useState<boolean>(() => {
+    if (propConvId) return true; // existing conversation
+    const st = (typeof window !== 'undefined' ? window.history.state?.usr : null) as
+      | { agentId?: string }
+      | null
+      | undefined;
+    return Boolean(st?.agentId);
+  });
 
   const [conversationStageOutputs, setConversationStageOutputs] = useState<Record<string, string>>({});
 
@@ -138,6 +151,9 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     // `/new` should always be a blank slate. Do NOT auto-load the latest
     // conversation when no conversationId is provided.
     if (!propConvId) {
+      // Check if location.state carries an agentId (Phase 1 hand-off).
+      const st = location.state as { agentId?: string } | null | undefined;
+      setAgentSelected(Boolean(st?.agentId));
       setInitLoading(false);
       return;
     }
@@ -433,6 +449,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
           const lastLoaded = loaded[loaded.length - 1];
           if (lastLoaded?.role === 'assistant' && (lastLoaded as any).journeyStep === 'playbook') {
             const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            const websiteUrl = (lastLoaded as any).journeySelections?.websiteUrl as string | undefined;
             if (streamId) {
               setMessages((prev) => [
                 ...prev,
@@ -450,12 +467,32 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                       return updated;
                     });
                   },
-                  onDone: (_donData) => {
+                  onDone: (doneData) => {
                     setMessages((prev) => {
                       const updated = [...prev];
                       const last = updated[updated.length - 1];
                       if (last?.role === 'assistant') {
-                        updated[updated.length - 1] = { ...last, kind: 'final' } as any;
+                        const playbookData = {
+                          playbook: String(doneData.playbook ?? last.content ?? ''),
+                          websiteAudit: String(doneData.website_audit ?? ''),
+                          contextBrief: String(doneData.context_brief ?? ''),
+                          icpCard: String(doneData.icp_card ?? ''),
+                        };
+                        const crossAgentActions: CrossAgentAction[] = [];
+                        if (websiteUrl) {
+                          crossAgentActions.push({
+                            label: 'Do Deep Analysis',
+                            icon: '🔬',
+                            agentId: 'research-orchestrator',
+                            initialMessage: `Do deep analysis of ${websiteUrl}`,
+                          });
+                        }
+                        updated[updated.length - 1] = {
+                          ...last,
+                          kind: 'final',
+                          playbookData,
+                          ...(crossAgentActions.length ? { crossAgentActions } : {}),
+                        } as any;
                       }
                       return updated;
                     });
@@ -531,6 +568,35 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
   const runStreamRef = useRef(runStream);
   runStreamRef.current = runStream;
 
+  /**
+   * Cross-agent action: check plan access, then navigate to a new conversation
+   * with the specified agent and an initial message.
+   */
+  const handleCrossAgentAction = async (action: CrossAgentAction) => {
+    try {
+      const access = await checkAgentAccess(action.agentId);
+      if (!access.allowed) {
+        // Redirect to payment page with context
+        navigate('/payment', {
+          state: {
+            reason: access.reason || 'A paid plan is required to use this feature.',
+            requiredPlanSlug: access.required_plan_slug,
+            requiredPlanName: access.required_plan_name,
+            requiredPlanPrice: access.required_plan_price,
+            returnTo: '/new',
+            returnState: { agentId: action.agentId, initialMessage: action.initialMessage },
+          },
+        });
+        return;
+      }
+    } catch {
+      // If access check fails (network etc.), let the backend enforce on the stream call
+    }
+    navigate('/new', {
+      state: { agentId: action.agentId, initialMessage: action.initialMessage },
+    });
+  };
+
   const phase1AutoSendKeysRef = useRef<Set<string>>(new Set());
 
   /**
@@ -546,6 +612,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     if ((!msg && !hasAgent) || phase1AutoSendKeysRef.current.has(location.key)) return;
     phase1AutoSendKeysRef.current.add(location.key);
     if (st?.agentId) setActiveAgentId(st.agentId);
+    setAgentSelected(true);
     navigate(location.pathname, { replace: true, state: {} });
     if (msg) void runStreamRef.current(msg, undefined, undefined, st?.agentId);
   }, [initLoading, location.key, location.pathname, location.state, navigate, setActiveAgentId]);
@@ -646,6 +713,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             (lastLoaded as any).journeyStep === 'playbook'
           ) {
             const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            const websiteUrl2 = (lastLoaded as any).journeySelections?.websiteUrl as string | undefined;
             if (streamId) {
               setLoading(true);
               // Append a streaming assistant message.
@@ -668,14 +736,31 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                       return updated;
                     });
                   },
-                  onDone: (_data) => {
+                  onDone: (doneData) => {
                     setMessages((prev) => {
                       const updated = [...prev];
                       const last = updated[updated.length - 1];
                       if (last?.role === 'assistant') {
+                        const playbookData = {
+                          playbook: String(doneData.playbook ?? last.content ?? ''),
+                          websiteAudit: String(doneData.website_audit ?? ''),
+                          contextBrief: String(doneData.context_brief ?? ''),
+                          icpCard: String(doneData.icp_card ?? ''),
+                        };
+                        const crossAgentActions: CrossAgentAction[] = [];
+                        if (websiteUrl2) {
+                          crossAgentActions.push({
+                            label: 'Do Deep Analysis',
+                            icon: '🔬',
+                            agentId: 'research-orchestrator',
+                            initialMessage: `Do deep analysis of ${websiteUrl2}`,
+                          });
+                        }
                         updated[updated.length - 1] = {
                           ...last,
                           kind: 'final',
+                          playbookData,
+                          ...(crossAgentActions.length ? { crossAgentActions } : {}),
                         } as any;
                       }
                       return updated;
@@ -862,11 +947,24 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     );
   }
 
+  // New chat without an agent selected → show agent selection screen
+  if (!propConvId && !agentSelected && messages.length === 0) {
+    return (
+      <AgentSelector
+        onSelect={(agentId) => {
+          setActiveAgentId(agentId);
+          setAgentSelected(true);
+        }}
+      />
+    );
+  }
+
   return (
     <ChatUI
       messages={messages}
       onSend={handleSend}
       onOptionSelect={handleOptionSelect}
+      onCrossAgentAction={handleCrossAgentAction}
       loading={loading}
       agentId={activeAgentId}
       subtitle={model ? `${activeAgentId} · ${model}` : undefined}

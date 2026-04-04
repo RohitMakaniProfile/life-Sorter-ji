@@ -339,6 +339,24 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
     email = user_row.get("email")
     name = user_row.get("name") or "Verified User"
 
+    # Link the onboarding row to the user if we have both user_id and onboarding_session_id
+    if user_id and onboarding_session_id:
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE onboarding
+                    SET user_id = $1::uuid,
+                        updated_at = NOW()
+                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
+                    """,
+                    user_id,
+                    onboarding_session_id,
+                )
+        except Exception as exc:
+            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, session_id=onboarding_session_id)
+
     token = create_access_token(
         subject=user_id,
         claims={
@@ -434,6 +452,24 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
     # Independent auth path: create/update users row with onboarding_session_id reference.
     row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=req.session_id)
     user_id = str(row.get("id") or email)
+
+    # Link the onboarding row to the user if we have both user_id and session_id
+    if user_id and req.session_id:
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE onboarding
+                    SET user_id = $1::uuid,
+                        updated_at = NOW()
+                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
+                    """,
+                    user_id,
+                    req.session_id,
+                )
+        except Exception as exc:
+            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, session_id=req.session_id)
 
     token = create_access_token(
         subject=user_id,

@@ -1,6 +1,6 @@
-import { useId } from 'react';
 import FlowNode from '../components/FlowNode';
 import ToolCard from '../components/ToolCard';
+import Arrow from '../components/Arrow';
 
 const TOOLS_PER_PAGE = 3;
 
@@ -23,7 +23,6 @@ export default function UrlStage({
   onToolPageChange,
   onBack,
 }) {
-  const markerId = `ob-url-arrow-${useId().replace(/:/g, '')}`;
   const totalPages = Math.ceil(earlyTools.length / TOOLS_PER_PAGE);
   const pageTools = earlyTools.slice(toolPage * TOOLS_PER_PAGE, (toolPage + 1) * TOOLS_PER_PAGE);
 
@@ -46,26 +45,12 @@ export default function UrlStage({
           <FlowNode label={selectedTask || selectedDomain} variant="light" active />
         </div>
 
-        <svg
-          className="h-5 w-[100px] shrink-0 md:pointer-events-none md:absolute md:left-[240px] md:top-1/2 md:-translate-y-1/2"
-          viewBox="0 0 120 20"
-          aria-hidden
-        >
-          <defs>
-            <marker id={markerId} markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
-              <path d="M0,0 L6,2.5 L0,5" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
-            </marker>
-          </defs>
-          <line
-            x1="4"
-            y1="10"
-            x2="110"
-            y2="10"
-            stroke="rgba(255,255,255,0.3)"
-            strokeWidth="1.5"
-            markerEnd={`url(#${markerId})`}
-          />
-        </svg>
+        {/* Curved solid arrow between task node and URL box */}
+        <Arrow
+          dashed={false}
+          className="hidden md:flex h-[60px] absolute"
+          style={{ left: '220px', width: '120px', top: '50%', marginTop: '-45px' }}
+        />
 
         <div className="w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0">
           <div className="flex flex-col gap-2.5 rounded-[14px] border border-[#b3b3b3] bg-[#161616] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.3)]">

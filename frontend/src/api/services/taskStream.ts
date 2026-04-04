@@ -33,6 +33,14 @@ function safeLocalStorageSet(key: string, value: string): void {
   }
 }
 
+function safeLocalStorageRemove(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
 function actorKey(taskType: string, sessionId?: string | null, userId?: string | null): string {
   const s = (sessionId ?? '').trim();
   const u = (userId ?? '').trim();
@@ -49,7 +57,11 @@ function cursorStorageKey(streamId: string): string {
   return `${STORAGE_PREFIX}:cursor:${streamId}`;
 }
 
-async function listenTaskStreamUrl(url: string, callbacks: TaskStreamCallbacks, streamIdKey?: string): Promise<void> {
+async function listenTaskStreamUrl(
+  url: string,
+  callbacks: TaskStreamCallbacks,
+  opts?: { streamIdKey?: string; onCleanup?: () => void },
+): Promise<void> {
   const response = await apiRequest(url, {
     method: 'GET',
     credentials: 'include',
@@ -57,6 +69,10 @@ async function listenTaskStreamUrl(url: string, callbacks: TaskStreamCallbacks, 
 
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
+    // Clean up stored stream ID on 404 (stream not found / expired)
+    if (response.status === 404) {
+      opts?.onCleanup?.();
+    }
     throw new Error(`Task stream request failed: ${response.status}${detail ? ` — ${detail}` : ''}`);
   }
 
@@ -82,11 +98,19 @@ async function listenTaskStreamUrl(url: string, callbacks: TaskStreamCallbacks, 
 
         if (parsed.cursor && parsed.stream_id) {
           safeLocalStorageSet(cursorStorageKey(parsed.stream_id), parsed.cursor);
-          if (streamIdKey) safeLocalStorageSet(streamIdKey, parsed.stream_id);
+          if (opts?.streamIdKey) safeLocalStorageSet(opts.streamIdKey, parsed.stream_id);
         }
 
-        if (parsed.type === 'done') callbacks.onDone?.(parsed);
-        if (parsed.type === 'error') callbacks.onError?.(parsed);
+        if (parsed.type === 'done') {
+          // Clean up stored stream ID when task completes successfully
+          opts?.onCleanup?.();
+          callbacks.onDone?.(parsed);
+        }
+        if (parsed.type === 'error') {
+          // Clean up stored stream ID when task errors out
+          opts?.onCleanup?.();
+          callbacks.onError?.(parsed);
+        }
       } catch {
         // ignore malformed line
       }
@@ -107,15 +131,25 @@ export async function startTaskStreamAndListen(
   const sessionId = opts.sessionId ?? null;
   const userId = opts.userId ?? null;
   const payload = opts.payload ?? {};
+  const streamIdKey = streamIdStorageKey(taskType, sessionId, userId);
+
+  // Helper to clean up stored stream ID and cursor
+  const cleanup = () => {
+    const storedId = safeLocalStorageGet(streamIdKey);
+    safeLocalStorageRemove(streamIdKey);
+    if (storedId) {
+      safeLocalStorageRemove(cursorStorageKey(storedId));
+    }
+  };
 
   // 1) If we already have a stream_id for this actor/taskType, resume directly.
-  const storedStreamId = safeLocalStorageGet(streamIdStorageKey(taskType, sessionId, userId));
+  const storedStreamId = safeLocalStorageGet(streamIdKey);
   if (storedStreamId) {
     const cursor = safeLocalStorageGet(cursorStorageKey(storedStreamId));
     const url = `${API_ROUTES.taskStream.eventsByStreamId(storedStreamId)}${
       cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
     }`;
-    await listenTaskStreamUrl(url, opts.callbacks);
+    await listenTaskStreamUrl(url, opts.callbacks, { streamIdKey, onCleanup: cleanup });
     return;
   }
 
@@ -137,17 +171,26 @@ export async function startTaskStreamAndListen(
   }
   const startJson = (await startRes.json()) as { stream_id: string };
   const streamId = startJson.stream_id;
-  safeLocalStorageSet(streamIdStorageKey(taskType, sessionId, userId), streamId);
+  safeLocalStorageSet(streamIdKey, streamId);
 
   const cursor = safeLocalStorageGet(cursorStorageKey(streamId));
   const url = `${API_ROUTES.taskStream.eventsByStreamId(streamId)}${
     cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
   }`;
-  await listenTaskStreamUrl(url, opts.callbacks);
+  await listenTaskStreamUrl(url, opts.callbacks, { streamIdKey, onCleanup: cleanup });
 }
 
 export function getStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): string | null {
   return safeLocalStorageGet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null));
+}
+
+export function clearStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): void {
+  const key = streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null);
+  const streamId = safeLocalStorageGet(key);
+  safeLocalStorageRemove(key);
+  if (streamId) {
+    safeLocalStorageRemove(cursorStorageKey(streamId));
+  }
 }
 
 function sleep(ms: number): Promise<void> {

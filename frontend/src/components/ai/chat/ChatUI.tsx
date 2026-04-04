@@ -8,6 +8,8 @@ import { downloadMarkdownAsFile } from '../../../utils/downloadMarkdown';
 import { getInsightFeedback, setInsightFeedback } from '../../../api';
 import { getIsSuperAdmin } from '../../../api/authSession';
 import SidePanel from './SidePanel';
+import PlaybookViewer from '../../PlaybookViewer';
+import type { PlaybookData } from '../../PlaybookViewer';
 
 type SharedPipelineState = {
   currentStage: PipelineStage;
@@ -17,6 +19,14 @@ type SharedPipelineState = {
   outputFile?: string;
   error?: string;
 };
+
+/** Generic action that opens a new conversation with a different agent. */
+export interface CrossAgentAction {
+  label: string;
+  icon?: string;
+  agentId: string;
+  initialMessage: string;
+}
 
 export interface RichMessage {
   role: 'user' | 'assistant';
@@ -31,12 +41,22 @@ export interface RichMessage {
   kind?: 'plan' | 'final';
   planId?: string;
   todoState?: 'draft' | 'started';
+  /** Option buttons for journey steps (e.g. business_problem_identifier) */
+  options?: string[];
+  /** Whether the user can type a custom answer instead of picking an option */
+  allowCustomAnswer?: boolean;
+  /** Structured playbook data from the onboarding playbook generator */
+  playbookData?: PlaybookData;
+  /** Actions that spawn a new conversation with a specified agent */
+  crossAgentActions?: CrossAgentAction[];
 }
 
 export interface ChatUIProps {
   messages: RichMessage[];
   onSend: (msg: string) => Promise<void>;
   onOptionSelect?: (option: string) => Promise<void>;
+  /** Called when the user clicks a cross-agent action button (e.g. "Do Deep Analysis") */
+  onCrossAgentAction?: (action: CrossAgentAction) => void;
   loading?: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -249,6 +269,7 @@ function AssistantMessage({
   onOpenContext,
   onOpenLiveContext,
   onOptionSelect,
+  onCrossAgentAction,
 }: {
   message: RichMessage;
   loading: boolean;
@@ -256,6 +277,7 @@ function AssistantMessage({
   onOpenContext: (messageId: string) => void;
   onOpenLiveContext: () => void;
   onOptionSelect?: (option: string) => Promise<void>;
+  onCrossAgentAction?: (action: CrossAgentAction) => void;
 }) {
   // Plan approval UI
   if (m.role === 'assistant' && m.kind === 'plan' && m.planId) {
@@ -268,6 +290,58 @@ function AssistantMessage({
       />
     );
   }
+
+  // Playbook viewer UI (rich tabbed view for business_problem_identifier playbook results)
+  if (m.role === 'assistant' && m.playbookData) {
+    return (
+      <div className="w-full max-w-3xl mx-auto my-3">
+        <div className="rounded-2xl bg-[#f8f7ff] p-4">
+          <PlaybookViewer playbookData={m.playbookData} />
+        </div>
+        {/* Cross-agent action buttons (e.g. "Do Deep Analysis") */}
+        {m.crossAgentActions && m.crossAgentActions.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-4">
+            {m.crossAgentActions.map((action, idx) => (
+              <button
+                key={idx}
+                onClick={() => onCrossAgentAction?.(action)}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold
+                  bg-gradient-to-r from-violet-600 to-indigo-600 text-white
+                  hover:from-violet-700 hover:to-indigo-700
+                  shadow-md hover:shadow-lg active:scale-[0.97]
+                  transition-all duration-150"
+              >
+                {action.icon && <span className="text-base">{action.icon}</span>}
+                {action.label}
+                <span className="text-white/60">→</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Generic cross-agent action buttons for non-playbook messages
+  const crossAgentButtons = m.crossAgentActions && m.crossAgentActions.length > 0 && !m.playbookData ? (
+    <div className="flex flex-wrap gap-2 mt-3">
+      {m.crossAgentActions.map((action, idx) => (
+        <button
+          key={idx}
+          onClick={() => onCrossAgentAction?.(action)}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold
+            bg-gradient-to-r from-violet-600 to-indigo-600 text-white
+            hover:from-violet-700 hover:to-indigo-700
+            shadow-md hover:shadow-lg active:scale-[0.97]
+            transition-all duration-150"
+        >
+          {action.icon && <span className="text-base">{action.icon}</span>}
+          {action.label}
+          <span className="text-white/60">→</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   // Determine if this is a long report that needs the accordion.
   // We check content length only — agent selection must never affect this.
@@ -538,6 +612,13 @@ function AssistantMessage({
             </div>
           )}
 
+          {/* Cross-agent action buttons for non-playbook messages */}
+          {crossAgentButtons && (
+            <div className="px-5 pb-3">
+              {crossAgentButtons}
+            </div>
+          )}
+
           {/* Non-report assistant messages: show retry action for failed background runs */}
           {!isReport && m.role === 'assistant' && (
             <div className="px-5 pb-3.5 flex justify-end">
@@ -564,6 +645,7 @@ export default function ChatUI({
   messages,
   onSend,
   onOptionSelect,
+  onCrossAgentAction,
   loading = false,
   disabled = false,
   placeholder,
@@ -743,6 +825,7 @@ export default function ChatUI({
                   loading={loading}
                   isLast={i === messages.length - 1}
                   onOptionSelect={onOptionSelect}
+                  onCrossAgentAction={onCrossAgentAction}
                   onOpenLiveContext={() => {
                     if (!canUseContextPanel) return;
                     setContextMessageId(undefined);

@@ -50,6 +50,206 @@ class ToolsByQ1Q2Q3Response(BaseModel):
     count: int = 0
 
 
+class OnboardingStateResponse(BaseModel):
+    """Response for GET /onboarding/state - returns the current onboarding state for session resumption."""
+    session_id: str
+    stage: str = "start"  # start | url | questions | diagnostic | precision | playbook | complete
+    outcome: Optional[str] = None
+    domain: Optional[str] = None
+    task: Optional[str] = None
+    website_url: Optional[str] = None
+    gbp_url: Optional[str] = None
+    scale_answers: Optional[dict[str, Any]] = None
+    rca_qa: Optional[list[dict[str, Any]]] = None
+    current_rca_question: Optional[DynamicQuestion] = None
+    precision_questions: Optional[list[dict[str, Any]]] = None
+    precision_answers: Optional[list[dict[str, Any]]] = None
+    precision_status: Optional[str] = None
+    playbook_status: Optional[str] = None
+    gap_questions: Optional[list[dict[str, Any]]] = None
+    gap_answers: Optional[str] = None
+
+
+def _as_dict(v: Any) -> dict[str, Any]:
+    """Parse JSON string or pass through dict."""
+    if isinstance(v, str):
+        try:
+            vv = json.loads(v)
+            return vv if isinstance(vv, dict) else {}
+        except Exception:
+            return {}
+    return v if isinstance(v, dict) else {}
+
+
+def _as_list(v: Any) -> list[dict[str, Any]]:
+    """Parse JSON string or pass through list."""
+    if isinstance(v, str):
+        try:
+            vv = json.loads(v)
+            return vv if isinstance(vv, list) else []
+        except Exception:
+            return []
+    return v if isinstance(v, list) else []
+
+
+def _determine_onboarding_stage(row: dict[str, Any]) -> str:
+    """Determine the current onboarding stage based on row data."""
+    # Check if onboarding is complete
+    onboarding_completed_at = row.get("onboarding_completed_at")
+    if onboarding_completed_at:
+        return "complete"
+
+    # Check if playbook is complete or generating
+    playbook_status = str(row.get("playbook_status") or "")
+    if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers"):
+        return "playbook"
+
+    # Check if precision questions are in progress
+    precision_status = str(row.get("precision_status") or "")
+    if precision_status == "awaiting_answers":
+        return "precision"
+
+    # Parse rca_qa - handle both raw JSONB (dict/list) and JSON strings
+    rca_qa_raw = row.get("rca_qa")
+    rca_qa = _as_list(rca_qa_raw) if rca_qa_raw is not None else []
+
+    rca_summary = str(row.get("rca_summary") or "")
+    if rca_qa and len(rca_qa) > 0:
+        # If there's no rca_summary, RCA is still in progress
+        if not rca_summary:
+            return "diagnostic"
+        # If RCA is complete, next is precision or playbook
+        if precision_status:
+            return "precision" if precision_status == "awaiting_answers" else "playbook"
+        return "playbook"
+
+    # Parse scale_answers - handle both raw JSONB (dict) and JSON strings
+    scale_answers_raw = row.get("scale_answers")
+    scale_answers = _as_dict(scale_answers_raw) if scale_answers_raw is not None else {}
+    if scale_answers and len(scale_answers) > 0:
+        return "diagnostic"
+
+    # Check if URL is provided
+    website_url = str(row.get("website_url") or "").strip()
+    gbp_url = str(row.get("gbp_url") or "").strip()
+    if website_url or gbp_url:
+        return "questions"
+
+    # Check if task is selected
+    task = str(row.get("task") or "").strip()
+    if task:
+        return "url"
+
+    return "start"
+
+
+@router.get("/state")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_onboarding_state(
+    request: Request,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> OnboardingStateResponse:
+    """
+    Get the current onboarding state for a session.
+    Used for restoring the onboarding flow after page refresh.
+    Supports lookup by user_id (preferred) or session_id.
+    """
+    from app.db import get_pool
+
+    sid = (session_id or "").strip()
+    uid = (user_id or "").strip()
+
+    # Also try to get user_id from JWT if not provided
+    if not uid:
+        jwt_user = get_request_user(request)
+        if jwt_user:
+            uid = str(jwt_user.get("id") or "").strip()
+
+    if not sid and not uid:
+        raise HTTPException(status_code=400, detail="session_id or user_id is required")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = None
+
+        # Prefer user_id lookup if available
+        if uid:
+            row = await conn.fetchrow(
+                """
+                SELECT 
+                    session_id, outcome, domain, task, website_url, gbp_url,
+                    scale_answers, rca_qa, rca_summary, rca_handoff,
+                    precision_questions, precision_answers, precision_status,
+                    playbook_status, gap_questions, gap_answers, onboarding_completed_at
+                FROM onboarding
+                WHERE user_id::text = $1
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """,
+                uid,
+            )
+
+        # Fall back to session_id lookup
+        if not row and sid:
+            row = await conn.fetchrow(
+                """
+                SELECT 
+                    session_id, outcome, domain, task, website_url, gbp_url,
+                    scale_answers, rca_qa, rca_summary, rca_handoff,
+                    precision_questions, precision_answers, precision_status,
+                    playbook_status, gap_questions, gap_answers, onboarding_completed_at
+                FROM onboarding
+                WHERE session_id = $1
+                """,
+                sid,
+            )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Onboarding session not found")
+
+        row_dict = dict(row)
+        stage = _determine_onboarding_stage(row_dict)
+
+        # Parse JSONB fields
+        scale_answers = _as_dict(row_dict.get("scale_answers"))
+        rca_qa = _as_list(row_dict.get("rca_qa"))
+        precision_questions = _as_list(row_dict.get("precision_questions"))
+        precision_answers = _as_list(row_dict.get("precision_answers"))
+        gap_questions = _as_list(row_dict.get("gap_questions"))
+
+        # Get current RCA question if in diagnostic stage
+        current_rca_question = None
+        if stage == "diagnostic" and rca_qa:
+            # Find the last unanswered question
+            for qa in reversed(rca_qa):
+                if isinstance(qa, dict) and qa.get("question") and not qa.get("answer"):
+                    current_rca_question = DynamicQuestion(
+                        question=str(qa.get("question") or ""),
+                        options=qa.get("options") or [],
+                    )
+                    break
+
+        return OnboardingStateResponse(
+            session_id=str(row_dict.get("session_id") or ""),
+            stage=stage,
+            outcome=str(row_dict.get("outcome") or "") or None,
+            domain=str(row_dict.get("domain") or "") or None,
+            task=str(row_dict.get("task") or "") or None,
+            website_url=str(row_dict.get("website_url") or "") or None,
+            gbp_url=str(row_dict.get("gbp_url") or "") or None,
+            scale_answers=scale_answers if scale_answers else None,
+            rca_qa=rca_qa if rca_qa else None,
+            current_rca_question=current_rca_question,
+            precision_questions=precision_questions if precision_questions else None,
+            precision_answers=precision_answers if precision_answers else None,
+            precision_status=str(row_dict.get("precision_status") or "") or None,
+            playbook_status=str(row_dict.get("playbook_status") or "") or None,
+            gap_questions=gap_questions if gap_questions else None,
+            gap_answers=str(row_dict.get("gap_answers") or "") or None,
+        )
+
+
 @router.post("")
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def onboarding_upsert(
@@ -61,9 +261,14 @@ async def onboarding_upsert(
       (with any optional `user_id`, `outcome`, `domain`, `task`, `website_url`, `gbp_url` sent in the body),
       returns `session_id` and `id` for the client to store (e.g. localStorage).
     - **With `session_id`**: inserts or updates the latest `onboarding` row for that session with any provided fields.
+    - **If session is complete**: creates a new onboarding row instead of updating, with user_id from JWT if available.
     """
     eff = body if body is not None else OnboardingRequest()
     sid = (eff.session_id or "").strip()
+
+    # Get user_id from JWT if available
+    jwt_user = get_request_user(request)
+    jwt_user_id = str(jwt_user.get("id") or "").strip() if jwt_user else None
 
     try:
         create_or_patch_fields = eff.model_dump(exclude={"session_id"}, exclude_unset=True)
@@ -71,7 +276,7 @@ async def onboarding_upsert(
         if not sid:
             return await onboarding_service.create_session_with_onboarding(create_or_patch_fields)
 
-        return await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields)
+        return await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields, user_id=jwt_user_id)
     except RuntimeError as e:
         if "pool" in str(e).lower() or "not initialized" in str(e).lower():
             raise HTTPException(status_code=503, detail="Database unavailable") from e
@@ -265,25 +470,6 @@ def _parse_gap_questions(agent_output: str) -> list[dict[str, Any]]:
         _flush(current, body_lines)
     return parsed
 
-
-def _as_dict(v: Any) -> dict[str, Any]:
-    if isinstance(v, str):
-        try:
-            vv = json.loads(v)
-            return vv if isinstance(vv, dict) else {}
-        except Exception:
-            return {}
-    return v if isinstance(v, dict) else {}
-
-
-def _as_list(v: Any) -> list[dict[str, Any]]:
-    if isinstance(v, str):
-        try:
-            vv = json.loads(v)
-            return vv if isinstance(vv, list) else []
-        except Exception:
-            return []
-    return v if isinstance(v, list) else []
 
 
 async def _resolve_onboarding_session_id(

@@ -370,6 +370,21 @@ export async function deleteConversation(id: string): Promise<void> {
   if (!response.ok) throw new Error(await extractApiError(response));
 }
 
+/** Check if user has access to a given agent (paid plan check). */
+export interface AgentAccessResult {
+  allowed: boolean;
+  reason?: string;
+  required_plan_slug?: string;
+  required_plan_name?: string;
+  required_plan_price?: number;
+}
+
+export async function checkAgentAccess(agentId: string): Promise<AgentAccessResult> {
+  return apiJson<AgentAccessResult>(
+    `${API_ROUTES.aiChat.agentAccess}?agentId=${encodeURIComponent(agentId)}`,
+  );
+}
+
 export interface TaskStreamCallbacks {
   onToken?: (token: string) => void;
   onStage?: (stage: string, label: string) => void;

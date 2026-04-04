@@ -4,6 +4,10 @@ import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 
+// Storage keys for onboarding session (must match useOnboardingSession.js)
+const STORAGE_SESSION_KEY = 'life-sorter-onboarding-session-id';
+const STORAGE_ROW_ID_KEY = 'life-sorter-onboarding-row-id';
+
 export default function OtpModal({ sessionId, onVerified }) {
   const [step, setStep] = useState('phone');
   const [phone, setPhone] = useState('');
@@ -76,7 +80,11 @@ export default function OtpModal({ sessionId, onVerified }) {
       }
       if (data.token) {
         try {
+          // Store the auth token
           window.localStorage.setItem(IKSHAN_AUTH_TOKEN_KEY, data.token);
+          // Clear the onboarding session from localStorage since it's now linked to the user account
+          window.localStorage.removeItem(STORAGE_SESSION_KEY);
+          window.localStorage.removeItem(STORAGE_ROW_ID_KEY);
         } catch {
           // ignore storage errors
         }

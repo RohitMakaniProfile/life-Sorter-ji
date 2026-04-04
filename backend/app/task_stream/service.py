@@ -40,13 +40,15 @@ class TaskStreamService:
             raise HTTPException(status_code=400, detail="Provide session_id or user_id")
 
         # 1) Resume by mapping (session_id/user_id) if desired.
+        #    Only resume if the stream is still running; ignore done/error/cancelled streams.
         if resume_if_exists:
             existing = await self.store.resolve_stream_id(
                 task_type, session_id=session_id, user_id=user_id
             )
             if existing:
                 status = await self.store.get_status(existing)
-                return {"stream_id": existing, "status": status or "running"}
+                if status == "running":
+                    return {"stream_id": existing, "status": status}
 
         # 2) Acquire a lightweight lock so concurrent start requests don't double-spawn.
         actor_key = (session_id or "").strip() or (user_id or "").strip() or "anon"
@@ -62,7 +64,8 @@ class TaskStreamService:
                     )
                     if existing:
                         status = await self.store.get_status(existing)
-                        return {"stream_id": existing, "status": status or "running"}
+                        if status == "running":
+                            return {"stream_id": existing, "status": status}
                 raise HTTPException(status_code=409, detail="Task stream start contention")
 
             # 3) Create new stream and meta.

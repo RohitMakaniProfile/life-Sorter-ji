@@ -1,0 +1,17 @@
+<svg width="100%" height="60" viewBox="0 0 120 60" preserveAspectRatio="none" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Curved dashed arrow - horizontal, curves up, then horizontal -->
+  <path
+    d="M 0 45 L 45 45 Q 60 45 60 30 Q 60 15 75 15 L 105 15"
+    stroke="#ffffff"
+    stroke-width="2.5"
+    stroke-dasharray="8 5"
+    fill="none"
+    stroke-linecap="round"
+    vector-effect="non-scaling-stroke"
+  />
+  <!-- Filled triangle arrow head -->
+  <polygon
+    points="105,8 118,15 105,22"
+    fill="#ffffff"
+  />
+</svg>

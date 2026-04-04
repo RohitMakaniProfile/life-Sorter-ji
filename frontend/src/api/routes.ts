@@ -15,6 +15,12 @@ export const API_ROUTES = {
   },
   onboarding: {
     upsert: '/api/v1/onboarding',
+    state: (sessionId?: string | null, userId?: string | null) => {
+      const params = new URLSearchParams();
+      if (sessionId) params.append('session_id', sessionId);
+      if (userId) params.append('user_id', userId);
+      return `/api/v1/onboarding/state?${params.toString()}`;
+    },
     toolsByQ1Q2Q3: '/api/v1/onboarding/tools/by-q1-q2-q3',
     rcaNextQuestion: '/api/v1/onboarding/rca-next-question',
     precisionStart: '/api/v1/onboarding/precision/start',
@@ -35,6 +41,7 @@ export const API_ROUTES = {
     tokenUsage: '/api/v1/ai-chat/token-usage',
     insightFeedback: '/api/v1/ai-chat/insight-feedback',
     planStatus: '/api/v1/ai-chat/plan-status',
+    agentAccess: '/api/v1/ai-chat/agent-access',
   },
   agents: {
     base: '/api/agents',
@@ -43,6 +50,7 @@ export const API_ROUTES = {
 
   payments: {
     createOrder: '/api/v1/payments/create-order',
+    callback: '/api/v1/payments/callback',
     complete: '/api/v1/payments/complete',
     entitlements: '/api/v1/payments/entitlements',
     status: (orderId: string) =>

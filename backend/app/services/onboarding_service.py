@@ -125,9 +125,16 @@ async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = Non
     return out
 
 
-async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+async def upsert_onboarding_patch(
+    session_id: str,
+    updates: dict[str, Any],
+    user_id: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Insert onboarding row if missing else patch allowed columns.
+
+    If the existing session has `onboarding_completed_at` set (completed onboarding),
+    creates a new onboarding row instead of updating the completed one.
 
     Assumption: `onboarding.session_id` is unique (1 row per session).
     """
@@ -136,9 +143,69 @@ async def upsert_onboarding_patch(session_id: str, updates: dict[str, Any]) -> d
         raise ValueError("session_id is required for patch")
 
     allowed = _allowed_updates(updates)
+    uid = (user_id or "").strip() if user_id else None
 
     pool = get_pool()
     async with pool.acquire() as conn:
+        # Check if the existing session is complete
+        existing = await conn.fetchrow(
+            "SELECT onboarding_completed_at FROM onboarding WHERE session_id = $1",
+            sid,
+        )
+
+        # If the session exists and is complete, create a new session
+        if existing and existing.get("onboarding_completed_at"):
+            logger.info(
+                "onboarding session is complete, creating new session",
+                old_session_id=sid,
+                user_id=uid,
+            )
+            # Generate new session_id
+            new_sid = str(uuid.uuid4())
+
+            # Prepare initial fields including user_id if provided
+            initial_fields = dict(allowed)
+            if uid:
+                initial_fields["user_id"] = uid
+
+            if not initial_fields:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO onboarding (session_id)
+                    VALUES ($1)
+                    RETURNING id, session_id, user_id, outcome, domain, task,
+                              website_url, gbp_url, scale_answers, questions_answers, crawl_cache_key,
+                              onboarding_completed_at, created_at, updated_at
+                    """,
+                    new_sid,
+                )
+            else:
+                cols = ["session_id"] + list(initial_fields.keys())
+                vals: list[Any] = [new_sid] + list(initial_fields.values())
+                placeholders = ", ".join(f"${i + 1}" for i in range(len(vals)))
+                col_sql = ", ".join(cols)
+                row = await conn.fetchrow(
+                    f"""
+                    INSERT INTO onboarding ({col_sql})
+                    VALUES ({placeholders})
+                    RETURNING id, session_id, user_id, outcome, domain, task,
+                              website_url, gbp_url, scale_answers, questions_answers, crawl_cache_key,
+                              onboarding_completed_at, created_at, updated_at
+                    """,
+                    *vals,
+                )
+
+            out = _serialize_row(row)
+            out["session_id"] = new_sid
+            out["new_session"] = True  # Flag to indicate a new session was created
+            logger.info(
+                "new onboarding row created (previous was complete)",
+                session_id=new_sid,
+                onboarding_id=out.get("id"),
+            )
+            return out
+
+        # Normal upsert for non-complete sessions
         if not allowed:
             row = await conn.fetchrow(
                 """
