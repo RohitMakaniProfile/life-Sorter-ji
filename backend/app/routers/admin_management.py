@@ -79,11 +79,12 @@ async def observability_snapshot(request: Request):
     services.append(_service_status("redis", redis_ok, redis_detail))
 
     # Integration connectivity/config visibility (best-effort)
+    openai_key = (os.getenv("OPENAI_API_KEY", "") or "").strip()
     services.append(
         _service_status(
             "openai",
-            bool(settings.openai_api_key_active),
-            "Configured" if settings.openai_api_key_active else "Missing API key",
+            bool(openai_key),
+            "Configured" if openai_key else "Missing API key",
         )
     )
     services.append(
