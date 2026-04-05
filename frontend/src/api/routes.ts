@@ -15,6 +15,14 @@ export const API_ROUTES = {
       config: '/api/v1/admin/management/config',
       configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
       deleteUser: (userId: string) => `/api/v1/admin/management/users/${encodeURIComponent(userId)}`,
+      userSkillCalls: (userId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/users/${encodeURIComponent(userId)}/skill-calls${qs ? `?${qs}` : ''}`;
+      },
+      skillCallDetail: (id: string) => `/api/v1/admin/management/skill-calls/${encodeURIComponent(id)}`,
       users: (q?: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (q) params.set('q', q);

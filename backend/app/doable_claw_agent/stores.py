@@ -773,6 +773,55 @@ async def create_skill_call(
     return str(row["id"])
 
 
+async def reset_skill_call_for_retry(
+    skill_call_id: str,
+    run_id: str,
+    input_payload: dict[str, Any],
+    new_message_id: str,
+) -> str:
+    """
+    Reset an existing skill_call row for re-execution instead of creating a new one.
+    Clears state → 'running', wipes output/error/ended_at/duration_ms,
+    refreshes started_at, updates input/run_id, and re-links to new_message_id
+    so the frontend can find it by the retry execution message.
+    Returns the same skill_call_id.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE skill_calls
+            SET state       = 'running',
+                error       = NULL,
+                ended_at    = NULL,
+                duration_ms = NULL,
+                output      = '[]'::jsonb,
+                run_id      = $2,
+                message_id  = $3,
+                input       = $4::jsonb,
+                started_at  = NOW(),
+                updated_at  = NOW()
+            WHERE id = $1::bigint
+            """,
+            int(skill_call_id),
+            run_id,
+            new_message_id,
+            _json_dumps(input_payload or {}),
+        )
+    return skill_call_id
+
+
+async def relink_skill_call_message(skill_call_id: str, new_message_id: str) -> None:
+    """Re-point an existing skill_call row to a different message_id (e.g. retry execution message)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE skill_calls SET message_id = $2, updated_at = NOW() WHERE id = $1::bigint",
+            int(skill_call_id),
+            new_message_id,
+        )
+
+
 async def fetch_skill_call_output(skill_call_id: str) -> list[dict[str, Any]]:
     """Return skill_calls.output JSON array for one row (for scrape resume / checkpoint)."""
     pool = get_pool()
@@ -1030,9 +1079,54 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         )
 
 
+_SKILL_CALL_TIMEOUT_MINUTES = 5
+_TIMEOUT_ERROR_MSG = f"Timed out: no updates received for over {_SKILL_CALL_TIMEOUT_MINUTES} minutes"
+
+_AUTO_TIMEOUT_SQL = """
+    UPDATE skill_calls
+    SET state       = 'error',
+        error       = '{msg}',
+        ended_at    = NOW(),
+        duration_ms = (EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000)::integer,
+        updated_at  = NOW()
+    WHERE state = 'running'
+      AND updated_at < NOW() - INTERVAL '{mins} minutes'
+""".format(msg=_TIMEOUT_ERROR_MSG, mins=_SKILL_CALL_TIMEOUT_MINUTES)
+
+
+async def auto_timeout_stale_skill_calls(
+    conn,
+    *,
+    message_id: str | None = None,
+    user_id: str | None = None,
+    skill_call_id: int | None = None,
+) -> None:
+    """
+    Transitions any 'running' skill call that hasn't been updated in the last
+    SKILL_CALL_TIMEOUT_MINUTES minutes to state='error'.
+    Scope: one of message_id, user_id, or skill_call_id must be supplied.
+    """
+    if skill_call_id is not None:
+        await conn.execute(
+            _AUTO_TIMEOUT_SQL + " AND id = $1",
+            skill_call_id,
+        )
+    elif message_id:
+        await conn.execute(
+            _AUTO_TIMEOUT_SQL + " AND message_id = $1",
+            message_id,
+        )
+    elif user_id:
+        await conn.execute(
+            _AUTO_TIMEOUT_SQL + " AND conversation_id IN (SELECT id FROM conversations WHERE user_id = $1)",
+            user_id,
+        )
+
+
 async def get_skill_calls_by_message_id_full(message_id: str) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as conn:
+        await auto_timeout_stale_skill_calls(conn, message_id=message_id)
         rows = await conn.fetch(
             "SELECT * FROM skill_calls WHERE message_id = $1 ORDER BY created_at ASC",
             message_id,
@@ -1145,6 +1239,7 @@ async def get_plan_run(plan_id: str) -> dict[str, Any] | None:
         "userMessageId": row["user_message_id"],
         "planMessageId": row["plan_message_id"],
         "executionMessageId": row.get("execution_message_id") if hasattr(row, "get") else None,
+        "errorMessage": row.get("error_message") if hasattr(row, "get") else None,
         "status": row["status"],
         "planMarkdown": row["plan_markdown"],
         "planJson": _to_obj(row["plan_json"], {"steps": []}),
@@ -1186,6 +1281,9 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     if "planJson" in patch:
         fields.append(f"plan_json = ${len(values) + 1}::jsonb")
         values.append(_json_dumps(patch["planJson"]))
+    if "errorMessage" in patch:
+        fields.append(f"error_message = ${len(values) + 1}")
+        values.append(patch["errorMessage"])
 
     fields.append(f"updated_at = ${len(values) + 1}")
     values.append(now_dt())
@@ -1197,6 +1295,11 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
         if "executionMessageId" in patch:
             try:
                 await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS execution_message_id TEXT")
+            except Exception:
+                pass
+        if "errorMessage" in patch:
+            try:
+                await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS error_message TEXT")
             except Exception:
                 pass
         await conn.execute(q, *values)

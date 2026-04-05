@@ -514,11 +514,14 @@ async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, An
     row = await get_plan_run(plan_id.strip())
     if not row:
         raise HTTPException(status_code=404, detail="plan not found")
-    return {
+    result: dict[str, Any] = {
         "planId": plan_id.strip(),
         "status": row.get("status"),
         "runningTaskRefFound": agent_router.is_plan_background_task_running(plan_id.strip()),
     }
+    if row.get("errorMessage"):
+        result["errorMessage"] = row.get("errorMessage")
+    return result
 
 
 AGENT_INITIAL_MESSAGES: dict[str, dict[str, Any]] = {

@@ -726,10 +726,33 @@ def _discover_urls_phase(context, base_url: str, base_domain: str, max_depth: in
                 except PWTimeout:
                     pass
             time.sleep(1.0)  # allow client-side routing / dynamic links
+
+            # Use Playwright DOM query instead of regex on raw HTML — captures JS-rendered links
+            # (React/Next.js/Vue SPAs inject <a> tags after JS executes; regex on page.content()
+            #  may miss them if they aren't serialised into the static HTML snapshot)
+            try:
+                raw_hrefs: list[str] = page.eval_on_selector_all(
+                    "a[href]",
+                    "els => els.map(e => e.href)"
+                )
+            except Exception:
+                raw_hrefs = []
+            # Fallback: also parse raw HTML (catches SSR-only pages where eval may fail)
             html = page.content()
-            internal, _ = parse_links(html, url_norm, base_domain)
+            html_internal, _ = parse_links(html, url_norm, base_domain)
+            # Merge both sources, normalise, filter to same domain
+            all_internal: list[str] = list(html_internal)
+            for href in raw_hrefs:
+                href = href.split("#")[0].split("?")[0].rstrip("/") or href
+                lp = urllib.parse.urlparse(href)
+                if lp.scheme not in ("http", "https"):
+                    continue
+                if lp.netloc.lower().endswith(base_domain) or lp.netloc.lower() == base_domain:
+                    if href not in all_internal:
+                        all_internal.append(href)
+
             if depth < max_depth:
-                for link in internal:
+                for link in all_internal:
                     ln = (link.rstrip("/") or link)
                     if ln not in visited and not _is_blog_url(ln):
                         queue.append((ln, depth + 1))
@@ -1245,6 +1268,23 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                 cookie_names = [c["name"] for c in context.cookies()]
 
                 internal_links, external_links = parse_links(html, url_norm, base_domain)
+                # Augment with browser-resolved hrefs to catch SPA/JS-rendered navigation
+                try:
+                    raw_hrefs: list[str] = page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+                    for href in raw_hrefs:
+                        href = href.split("#")[0].split("?")[0].rstrip("/") or href
+                        lp = urllib.parse.urlparse(href)
+                        if lp.scheme not in ("http", "https"):
+                            continue
+                        if lp.netloc.lower().endswith(base_domain) or lp.netloc.lower() == base_domain:
+                            if href not in internal_links:
+                                internal_links.append(href)
+                        else:
+                            if href not in external_links:
+                                external_links.append(href)
+                except Exception:
+                    pass
+
                 body_text = extract_text_from_html(html)
                 elements = extract_content_elements_from_page(page, html)
                 content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()

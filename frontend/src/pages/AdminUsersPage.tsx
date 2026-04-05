@@ -1,8 +1,145 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { listAdminUsers, deleteAdminUser } from '../api';
-import type { AdminUser } from '../api/types';
+import { useNavigate } from 'react-router-dom';
+import { listAdminUsers, deleteAdminUser, listUserSkillCalls } from '../api';
+import type { AdminUser, AdminSkillCallSummary } from '../api/types';
 
 const PAGE_SIZE = 50;
+const CALLS_PAGE = 5;
+
+// ── Skill-call state badge ───────────────────────────────────────────────────
+
+function StateBadge({ state }: { state: string }) {
+  const cls =
+    state === 'done'
+      ? 'bg-emerald-500/20 text-emerald-300'
+      : state === 'error'
+      ? 'bg-red-500/20 text-red-300'
+      : 'bg-amber-500/20 text-amber-300';
+  return (
+    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
+      {state.toUpperCase()}
+    </span>
+  );
+}
+
+// ── User logs panel ──────────────────────────────────────────────────────────
+
+function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const navigate = useNavigate();
+  const [calls, setCalls] = useState<AdminSkillCallSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async (off: number) => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await listUserSkillCalls(user.id, CALLS_PAGE, off);
+      if (off === 0) {
+        setCalls(res.calls);
+      } else {
+        setCalls((prev) => [...prev, ...res.calls]);
+      }
+      setTotal(res.total);
+      setOffset(off + res.calls.length);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to load');
+    } finally {
+      setLoading(false);
+    }
+  }, [user.id]);
+
+  useEffect(() => {
+    setOffset(0);
+    setCalls([]);
+    load(0);
+  }, [load]);
+
+  const hasMore = calls.length < total;
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 flex-shrink-0">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-100 truncate">
+            {user.email || user.phone_number || 'User'}
+          </p>
+          <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">{user.id}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-slate-400 hover:text-slate-100 flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="px-4 py-2 border-b border-slate-800 flex-shrink-0">
+        <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold">
+          Skill Calls {total > 0 ? `(${total})` : ''}
+        </p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {err && (
+          <div className="m-4 px-3 py-2 rounded-lg bg-red-500/15 text-red-300 text-xs border border-red-500/30">
+            {err}
+          </div>
+        )}
+
+        {!loading && calls.length === 0 && !err && (
+          <div className="py-12 text-center text-slate-500 text-sm">No skill calls found.</div>
+        )}
+
+        <div className="divide-y divide-slate-800">
+          {calls.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => navigate(`/admin/skill-calls/${c.id}`)}
+              className="w-full text-left px-4 py-3 hover:bg-slate-800/60 transition-colors"
+            >
+              <div className="flex items-start justify-between gap-2 mb-1.5">
+                <span className="text-xs font-semibold text-slate-100 truncate flex-1">
+                  {c.skill_id}
+                </span>
+                <StateBadge state={c.state} />
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+                <span title="Message ID">msg: {c.message_id.slice(0, 12)}…</span>
+                {c.duration_ms != null && <span>{c.duration_ms} ms</span>}
+                {c.started_at && <span>{new Date(c.started_at).toLocaleString()}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="px-4 py-3">
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : hasMore ? (
+            <button
+              type="button"
+              onClick={() => load(offset)}
+              className="w-full py-2 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
+            >
+              Load next {CALLS_PAGE}
+            </button>
+          ) : calls.length > 0 ? (
+            <p className="text-center text-xs text-slate-600">All {total} calls loaded</p>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -14,7 +151,8 @@ export default function AdminUsersPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Delete modal state
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -47,7 +185,8 @@ export default function AdminUsersPage() {
     }, 350);
   };
 
-  const openDeleteModal = (user: AdminUser) => {
+  const openDeleteModal = (e: React.MouseEvent, user: AdminUser) => {
+    e.stopPropagation();
     setDeleteTarget(user);
     setDeleteConfirmText('');
     setDeleteErr(null);
@@ -66,6 +205,7 @@ export default function AdminUsersPage() {
     setDeleteErr(null);
     try {
       await deleteAdminUser(deleteTarget.id);
+      if (selectedUser?.id === deleteTarget.id) setSelectedUser(null);
       setDeleteTarget(null);
       setDeleteConfirmText('');
       await load(debouncedQuery, offset);
@@ -82,127 +222,144 @@ export default function AdminUsersPage() {
   const deleteConfirmReady = deleteConfirmText.trim() === 'DELETE';
 
   return (
-    <div className="h-full overflow-y-auto p-6 sm:p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-xl font-bold text-slate-100">Users</h1>
-            <p className="text-sm text-slate-500 mt-1">
-              All registered users &mdash; {total.toLocaleString()} total
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">
-                🔍
-              </span>
-              <input
-                value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search by email, phone, or name..."
-                className="pl-9 pr-4 py-2 rounded-xl border border-slate-700 bg-slate-900 text-sm text-slate-100 outline-none focus:border-violet-500 w-72"
-              />
+    <div className="flex h-full overflow-hidden">
+      {/* Main table */}
+      <div className="flex-1 overflow-y-auto p-6 sm:p-8 min-w-0">
+        <div className="max-w-6xl mx-auto">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h1 className="text-xl font-bold text-slate-100">Users</h1>
+              <p className="text-sm text-slate-500 mt-1">
+                All registered users &mdash; {total.toLocaleString()} total
+              </p>
             </div>
-            {loading && (
-              <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            )}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                  placeholder="Search by email, phone, or name..."
+                  className="pl-9 pr-4 py-2 rounded-xl border border-slate-700 bg-slate-900 text-sm text-slate-100 outline-none focus:border-violet-500 w-72"
+                />
+              </div>
+              {loading && (
+                <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              )}
+            </div>
           </div>
-        </div>
 
-        {err && (
-          <div className="mt-4 px-4 py-3 rounded-lg bg-red-500/15 text-red-300 text-sm border border-red-500/30">
-            {err}
-          </div>
-        )}
+          {err && (
+            <div className="mt-4 px-4 py-3 rounded-lg bg-red-500/15 text-red-300 text-sm border border-red-500/30">
+              {err}
+            </div>
+          )}
 
-        <div className="mt-6 overflow-x-auto rounded-xl border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-900">
-              <tr>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">User</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Phone</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Provider</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Joined</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Last Login</th>
-                <th className="text-right px-4 py-3 text-slate-400 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800 bg-slate-950">
-              {!loading && users.length === 0 ? (
+          <div className="mt-6 overflow-x-auto rounded-xl border border-slate-800">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-900">
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
-                    {debouncedQuery ? 'No users match your search.' : 'No users found.'}
-                  </td>
+                  <th className="text-left px-4 py-3 text-slate-400 font-medium">User</th>
+                  <th className="text-left px-4 py-3 text-slate-400 font-medium">Phone</th>
+                  <th className="text-left px-4 py-3 text-slate-400 font-medium">Provider</th>
+                  <th className="text-left px-4 py-3 text-slate-400 font-medium">Joined</th>
+                  <th className="text-left px-4 py-3 text-slate-400 font-medium">Last Login</th>
+                  <th className="text-right px-4 py-3 text-slate-400 font-medium">Actions</th>
                 </tr>
-              ) : (
-                users.map((u) => (
-                  <tr key={u.id} className="hover:bg-slate-900/60 transition-colors">
-                    <td className="px-4 py-3">
-                      <div>
-                        <p className="text-slate-100 font-medium">
-                          {u.email || u.phone_number || 'Unknown'}
-                        </p>
-                        {u.name && <p className="text-xs text-slate-400">{u.name}</p>}
-                        <p className="text-xs text-slate-600 font-mono mt-0.5">{u.id.slice(0, 8)}…</p>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-slate-300">
-                      {u.phone_number || <span className="text-slate-600">—</span>}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">
-                        {u.auth_provider || '—'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
-                      {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
-                      {u.last_login_at
-                        ? new Date(u.last_login_at).toLocaleString()
-                        : <span className="text-slate-600">Never</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openDeleteModal(u)}
-                        className="px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 text-xs font-medium hover:bg-red-500/25 transition-colors"
-                      >
-                        Delete
-                      </button>
+              </thead>
+              <tbody className="divide-y divide-slate-800 bg-slate-950">
+                {!loading && users.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
+                      {debouncedQuery ? 'No users match your search.' : 'No users found.'}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
-            <span>
-              Page {currentPage} of {totalPages} &middot; {total.toLocaleString()} users
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={offset === 0}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                disabled={offset + PAGE_SIZE >= total}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
-                className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Next
-              </button>
-            </div>
+                ) : (
+                  users.map((u) => (
+                    <tr
+                      key={u.id}
+                      onClick={() => setSelectedUser((prev) => prev?.id === u.id ? null : u)}
+                      className={`cursor-pointer transition-colors ${
+                        selectedUser?.id === u.id
+                          ? 'bg-violet-500/10 border-l-2 border-l-violet-500'
+                          : 'hover:bg-slate-900/60'
+                      }`}
+                    >
+                      <td className="px-4 py-3">
+                        <div>
+                          <p className="text-slate-100 font-medium">
+                            {u.email || u.phone_number || 'Unknown'}
+                          </p>
+                          {u.name && <p className="text-xs text-slate-400">{u.name}</p>}
+                          <p className="text-xs text-slate-600 font-mono mt-0.5">{u.id.slice(0, 8)}…</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-300">
+                        {u.phone_number || <span className="text-slate-600">—</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">
+                          {u.auth_provider || '—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
+                        {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
+                        {u.last_login_at
+                          ? new Date(u.last_login_at).toLocaleString()
+                          : <span className="text-slate-600">Never</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => openDeleteModal(e, u)}
+                          className="px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 text-xs font-medium hover:bg-red-500/25 transition-colors"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
+
+          {totalPages > 1 && (
+            <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
+              <span>Page {currentPage} of {totalPages} &middot; {total.toLocaleString()} users</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={offset === 0}
+                  onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                  className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={offset + PAGE_SIZE >= total}
+                  onClick={() => setOffset(offset + PAGE_SIZE)}
+                  className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Slide-in logs panel */}
+      <div
+        className={`flex-shrink-0 border-l border-slate-800 bg-slate-900 transition-all duration-300 overflow-hidden ${
+          selectedUser ? 'w-96' : 'w-0'
+        }`}
+      >
+        {selectedUser && (
+          <UserLogsPanel user={selectedUser} onClose={() => setSelectedUser(null)} />
         )}
       </div>
 
@@ -223,7 +380,7 @@ export default function AdminUsersPage() {
               <div>
                 <h2 className="text-base font-bold text-slate-100">Delete User — Irreversible</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  This will permanently delete the user and all their data: conversations, messages,
+                  Permanently deletes the user and all their data: conversations, messages,
                   onboarding, plan grants, and payment records.
                 </p>
               </div>

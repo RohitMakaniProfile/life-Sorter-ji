@@ -24,6 +24,8 @@ from app.doable_claw_agent.stores import (
     claim_plan_run_for_execution,
     create_plan_run,
     create_skill_call,
+    reset_skill_call_for_retry,
+    relink_skill_call_message,
     get_agent,
     get_or_create_conversation,
     get_plan_run,
@@ -924,7 +926,7 @@ async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, A
             )
         except Exception as exc:  # pragma: no cover
             _log("plan-bg-unhandled", error=str(exc), traceback=traceback.format_exc())
-            await update_plan_run(plan_id, {"status": "error"})
+            await update_plan_run(plan_id, {"status": "error", "errorMessage": str(exc)})
 
     t = asyncio.create_task(_bg())
     _register_checklist_task(plan_id, t)
@@ -1006,7 +1008,7 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
             )
         except Exception as exc:  # pragma: no cover
             _log("plan-bg-resume-unhandled", error=str(exc), traceback=traceback.format_exc())
-            await update_plan_run(plan_id, {"status": "error"})
+            await update_plan_run(plan_id, {"status": "error", "errorMessage": str(exc)})
 
     t = asyncio.create_task(_bg())
     _register_checklist_task(plan_id, t)
@@ -1051,29 +1053,40 @@ async def execute_plan_approval_work(
 
         previous_execution_message_id = str(plan.get("executionMessageId") or "").strip()
         reusable_by_skill: dict[str, dict[str, Any]] = {}
+        # skill_id → {call_id, run_id} for error/running calls that should be reset and reused
+        retryable_calls_by_skill: dict[str, dict[str, Any]] = {}
+
         if previous_execution_message_id and previous_execution_message_id != assistant_message_id:
             try:
                 previous_calls = await get_skill_calls_by_message_id_full(previous_execution_message_id)
                 for call in previous_calls:
-                    if str(call.get("state") or "") != "done":
-                        continue
                     sid_prev = str(call.get("skillId") or "").strip()
                     if not sid_prev:
                         continue
-                    output_rows = call.get("output") if isinstance(call.get("output"), list) else []
-                    last_result = None
-                    for row in reversed(output_rows):
-                        if isinstance(row, dict) and str(row.get("type") or "") == "result":
-                            last_result = row
-                            break
-                    if not isinstance(last_result, dict):
-                        continue
-                    reusable_by_skill[sid_prev] = {
-                        "text": str(last_result.get("text") or ""),
-                        "data": last_result.get("data"),
-                    }
+                    call_state = str(call.get("state") or "")
+                    if call_state == "done":
+                        output_rows = call.get("output") if isinstance(call.get("output"), list) else []
+                        last_result = None
+                        for row in reversed(output_rows):
+                            if isinstance(row, dict) and str(row.get("type") or "") == "result":
+                                last_result = row
+                                break
+                        if not isinstance(last_result, dict):
+                            continue
+                        reusable_by_skill[sid_prev] = {
+                            "text": str(last_result.get("text") or ""),
+                            "data": last_result.get("data"),
+                            "call_id": str(call.get("id") or ""),
+                        }
+                    elif call_state in ("error", "running"):
+                        # Collect for in-place reset — avoids spawning a new skill_call row
+                        retryable_calls_by_skill[sid_prev] = {
+                            "call_id": str(call.get("id") or ""),
+                            "run_id": str(call.get("runId") or ""),
+                        }
             except Exception:
                 reusable_by_skill = {}
+                retryable_calls_by_skill = {}
 
         for idx, step in enumerate(steps):
             if not isinstance(step, dict):
@@ -1117,6 +1130,13 @@ async def execute_plan_approval_work(
                                 },
                             }
                         )
+                # Re-link the done skill_call to the retry message so the context panel shows it
+                reused_call_id = reused.get("call_id")
+                if reused_call_id:
+                    try:
+                        await relink_skill_call_message(reused_call_id, assistant_message_id)
+                    except Exception:
+                        pass
                 await emit_progress(
                     {
                         "stage": "thinking",
@@ -1158,8 +1178,15 @@ async def execute_plan_approval_work(
 
             await emit({"stage": "running", "label": f"Running {skill_name}", "stageIndex": idx + 1, "agentId": resolved["agentId"]})
 
-            run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
-            call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
+            retryable = retryable_calls_by_skill.get(sid)
+            if retryable and retryable.get("call_id"):
+                # Reuse the existing skill_call row — reset it in place instead of creating a new one.
+                # Re-link to assistant_message_id so the frontend can query it by the retry message.
+                run_id = retryable["run_id"] or f"run-{sid}-{idx}-{uuid4().hex[:8]}"
+                call_id = await reset_skill_call_for_retry(retryable["call_id"], run_id, {"args": step_args}, assistant_message_id)
+            else:
+                run_id = f"run-{sid}-{idx}-{uuid4().hex[:8]}"
+                call_id = await create_skill_call(conv["id"], assistant_message_id, sid, run_id, {"args": step_args})
             page_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
             page_worker_task: asyncio.Task | None = None
             if _should_stream_page_nl(sid):
@@ -1415,5 +1442,5 @@ async def execute_plan_approval_work(
             }
         )
     except Exception as exc:
-        await update_plan_run(plan_id, {"status": "error"})
+        await update_plan_run(plan_id, {"status": "error", "errorMessage": str(exc)})
         await emit({"stage": "error", "label": "Error", "stageIndex": -1, "error": str(exc)})

@@ -217,8 +217,8 @@ export async function sendMessageStream(opts: SendMessageStreamOptions): Promise
   return readSseStream(response, callbacks);
 }
 
-export async function getPlanStatus(planId: string): Promise<{ planId: string; status: string; runningTaskRefFound?: boolean }> {
-  return apiJson<{ planId: string; status: string; runningTaskRefFound?: boolean }>(
+export async function getPlanStatus(planId: string): Promise<{ planId: string; status: string; runningTaskRefFound?: boolean; errorMessage?: string }> {
+  return apiJson<{ planId: string; status: string; runningTaskRefFound?: boolean; errorMessage?: string }>(
     `${API_ROUTES.aiChat.planStatus}?planId=${encodeURIComponent(planId)}`,
   );
 }

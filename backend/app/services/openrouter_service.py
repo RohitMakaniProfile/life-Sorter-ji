@@ -27,8 +27,16 @@ def _extract_text(content: Any) -> str:
 
 
 def _headers() -> dict[str, str]:
+    import os
+    import structlog
+    _log = structlog.get_logger()
     settings = get_settings()
     key = (settings.OPENROUTER_API_KEY or "").strip()
+    # Also check raw os.environ in case lru_cache froze a stale settings object
+    env_key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if not key and env_key:
+        key = env_key
+    _log.debug("openrouter_key_check", settings_key_prefix=key[:12] if key else "EMPTY", env_key_prefix=env_key[:12] if env_key else "EMPTY")
     if not key:
         raise ValueError("OPENROUTER_API_KEY is not configured")
     return {

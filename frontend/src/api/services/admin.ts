@@ -7,6 +7,8 @@ import type {
   AdminSubscriptionGrantAuditLog,
   AdminSubscriptionUserSearchResult,
   AdminUsersResponse,
+  AdminSkillCallSummary,
+  AdminSkillCallDetail,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -61,6 +63,20 @@ export async function deleteAdminUser(
     throw new Error((detail as any)?.detail || `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+export async function listUserSkillCalls(
+  userId: string,
+  limit?: number,
+  offset?: number,
+): Promise<{ calls: AdminSkillCallSummary[]; total: number; limit: number; offset: number }> {
+  return apiGet(API_ROUTES.admin.management.userSkillCalls(userId, limit, offset));
+}
+
+export async function getSkillCallDetail(
+  skillCallId: string,
+): Promise<{ call: AdminSkillCallDetail }> {
+  return apiGet(API_ROUTES.admin.management.skillCallDetail(skillCallId));
 }
 
 // Admin Subscription Grants API

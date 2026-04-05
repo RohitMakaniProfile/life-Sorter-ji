@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db import get_pool
 from app.middleware.auth_context import get_request_auth_claims, require_super_admin
 from app.task_stream.redis_client import get_redis
+from app.doable_claw_agent.stores import auto_timeout_stale_skill_calls
 
 
 router = APIRouter(prefix="/admin/management", tags=["Admin-Management"])
@@ -256,6 +257,98 @@ async def list_users(request: Request, q: str = "", limit: int = 50, offset: int
             }
         )
     return {"users": users, "total": int(total or 0), "limit": limit, "offset": offset}
+
+
+@router.get("/users/{user_id}/skill-calls", response_model=dict[str, Any])
+async def list_user_skill_calls(request: Request, user_id: str, limit: int = 5, offset: int = 0):
+    require_super_admin(request)
+    limit = min(max(1, limit), 50)
+    offset = max(0, offset)
+    uid = (user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await auto_timeout_stale_skill_calls(conn, user_id=uid)
+        rows = await conn.fetch(
+            """
+            SELECT sc.id, sc.conversation_id, sc.message_id, sc.skill_id,
+                   sc.input, sc.state, sc.started_at, sc.ended_at, sc.duration_ms
+            FROM skill_calls sc
+            JOIN conversations c ON c.id = sc.conversation_id
+            WHERE c.user_id = $1
+            ORDER BY sc.started_at DESC
+            LIMIT $2 OFFSET $3
+            """,
+            uid, limit, offset,
+        )
+        total = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM skill_calls sc
+            JOIN conversations c ON c.id = sc.conversation_id
+            WHERE c.user_id = $1
+            """,
+            uid,
+        )
+    calls = []
+    for r in rows:
+        started_at = r.get("started_at")
+        ended_at = r.get("ended_at")
+        calls.append({
+            "id": str(r.get("id") or ""),
+            "conversation_id": str(r.get("conversation_id") or ""),
+            "message_id": str(r.get("message_id") or ""),
+            "skill_id": str(r.get("skill_id") or ""),
+            "input": r.get("input") or {},
+            "state": str(r.get("state") or ""),
+            "started_at": started_at.isoformat() if started_at else "",
+            "ended_at": ended_at.isoformat() if ended_at else "",
+            "duration_ms": r.get("duration_ms"),
+        })
+    return {"calls": calls, "total": int(total or 0), "limit": limit, "offset": offset}
+
+
+@router.get("/skill-calls/{skill_call_id}", response_model=dict[str, Any])
+async def get_skill_call_detail(request: Request, skill_call_id: str):
+    require_super_admin(request)
+    scid = (skill_call_id or "").strip()
+    if not scid:
+        raise HTTPException(status_code=400, detail="skill_call_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await auto_timeout_stale_skill_calls(conn, skill_call_id=int(scid))
+        row = await conn.fetchrow(
+            """
+            SELECT id, conversation_id, message_id, skill_id, run_id,
+                   input, streamed_text, state, output, error,
+                   started_at, ended_at, duration_ms, created_at
+            FROM skill_calls WHERE id = $1 LIMIT 1
+            """,
+            int(scid),
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill call not found")
+    started_at = row.get("started_at")
+    ended_at = row.get("ended_at")
+    created_at = row.get("created_at")
+    return {
+        "call": {
+            "id": str(row.get("id") or ""),
+            "conversation_id": str(row.get("conversation_id") or ""),
+            "message_id": str(row.get("message_id") or ""),
+            "skill_id": str(row.get("skill_id") or ""),
+            "run_id": str(row.get("run_id") or ""),
+            "input": row.get("input") or {},
+            "streamed_text": str(row.get("streamed_text") or ""),
+            "state": str(row.get("state") or ""),
+            "output": row.get("output") or [],
+            "error": str(row.get("error") or ""),
+            "started_at": started_at.isoformat() if started_at else "",
+            "ended_at": ended_at.isoformat() if ended_at else "",
+            "duration_ms": row.get("duration_ms"),
+            "created_at": created_at.isoformat() if created_at else "",
+        }
+    }
 
 
 # Hard-coded identities permitted to delete users. Intentionally not configurable.

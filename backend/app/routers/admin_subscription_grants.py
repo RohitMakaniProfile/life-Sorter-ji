@@ -12,8 +12,6 @@ POST   /api/v1/admin/subscription-grants/grant        — grant subscription to 
 POST   /api/v1/admin/subscription-grants/revoke       — revoke subscription from user
 """
 
-from __future__ import annotations
-
 from typing import Any, Optional
 
 import structlog

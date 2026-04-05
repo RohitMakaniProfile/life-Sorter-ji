@@ -20,6 +20,7 @@ import AdminSystemConfigPage from './pages/AdminSystemConfigPage';
 import AdminObservabilityPage from './pages/AdminObservabilityPage';
 import AdminSubscriptionGrantsPage from './pages/AdminSubscriptionGrantsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import AdminSkillCallDetailPage from './pages/AdminSkillCallDetailPage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -80,6 +81,7 @@ function App() {
               <Route path="admin" element={<RequireSuperAdmin />}>
                 <Route index element={<Navigate to="/admin/observability" replace />} />
                 <Route path="users" element={<AdminUsersPage />} />
+                <Route path="skill-calls/:skillCallId" element={<AdminSkillCallDetailPage />} />
                 <Route path="observability" element={<AdminObservabilityPage />} />
                 <Route path="config" element={<AdminSystemConfigPage />} />
                 <Route path="subscription-grants" element={<AdminSubscriptionGrantsPage />} />

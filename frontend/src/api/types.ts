@@ -196,6 +196,26 @@ export interface AdminSubscriptionGrantAuditLog {
   created_at: string | null;
 }
 
+export interface AdminSkillCallSummary {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  skill_id: string;
+  input: Record<string, unknown>;
+  state: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number | null;
+}
+
+export interface AdminSkillCallDetail extends AdminSkillCallSummary {
+  run_id: string;
+  streamed_text: string;
+  output: unknown[];
+  error: string;
+  created_at: string;
+}
+
 export interface AdminUser {
   id: string;
   email: string;
