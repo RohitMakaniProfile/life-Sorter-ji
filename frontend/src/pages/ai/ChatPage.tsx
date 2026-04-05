@@ -791,7 +791,64 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         });
         const cid = ack.conversationId || conversationId;
         const pid = ack.planId;
+
+        // Use task stream if available (preferred path)
+        if (ack.taskStream?.streamId && pid && cid) {
+          const streamId = ack.taskStream.streamId;
+          console.log('[bg] Starting task stream for plan execution', { streamId, planId: pid });
+
+          // Add a placeholder assistant message for the streaming content
+          setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId, planId: pid } as any]);
+
+          try {
+            await subscribeToTaskStream(streamId, {
+              onToken: (token) => {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                  }
+                  return updated;
+                });
+              },
+              onStage: (stage, label) => {
+                console.log('[bg] Stage:', stage, label);
+                pushBackgroundStatus(label || `Stage: ${stage}`, stage as any, pid);
+              },
+              onProgress: (data) => {
+                console.log('[bg] Progress:', data);
+              },
+              onDone: async () => {
+                console.log('[bg] Task stream done');
+                // Reload messages from backend to get final state
+                const data = await getMessages(cid);
+                const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+                setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
+                if (data.conversationId) setConversationId(data.conversationId);
+                if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
+              },
+              onError: async (msg) => {
+                console.error('[bg] Task stream error:', msg);
+                pushBackgroundStatus(`Background task failed: ${msg}`, 'error', pid);
+                reopenPlanOptions(pid);
+                // Reload messages from backend
+                const data = await getMessages(cid);
+                const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+                setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
+              },
+            });
+          } catch (err) {
+            console.error('[bg] Task stream subscription failed:', err);
+            pushBackgroundStatus(`Background task failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error', pid);
+            reopenPlanOptions(pid);
+          }
+          return;
+        }
+
+        // Fallback to polling if no task stream (legacy path)
         if (pid && cid) {
+          console.log('[bg] Falling back to polling (no taskStream in response)');
           upsertExecutionPlaceholder({
             messageId: ack.assistantMessageId,
             agentId: activeAgentId,

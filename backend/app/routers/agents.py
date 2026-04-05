@@ -48,7 +48,10 @@ async def agents_patch(agent_id: str, req: Request) -> dict[str, Any]:
 @router.delete("/{agent_id}")
 async def agents_delete(agent_id: str, req: Request) -> JSONResponse:
     require_super_admin(req)
-    ok = await agents_service.remove_agent(agent_id)
+    try:
+        ok = await agents_service.remove_agent(agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")
     return JSONResponse(status_code=204, content=None)

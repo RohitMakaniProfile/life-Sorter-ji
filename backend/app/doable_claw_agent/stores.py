@@ -269,8 +269,29 @@ async def update_agent(agent_id: str, patch: dict[str, Any]) -> dict[str, Any] |
 
 
 async def delete_agent(agent_id: str) -> bool:
+    """
+    Delete an agent. Conversations referencing this agent will be reassigned
+    to the default agent (research-orchestrator) to avoid orphaned data.
+    
+    The default agent (research-orchestrator) cannot be deleted.
+    """
+    # Prevent deleting the default agent
+    if agent_id == DEFAULT_AGENT_ID:
+        raise ValueError(f"Cannot delete the default agent '{DEFAULT_AGENT_ID}'")
+    
     pool = get_pool()
     async with pool.acquire() as conn:
+        # First, reassign any conversations that reference this agent to the default agent
+        await conn.execute(
+            """
+            UPDATE conversations
+            SET agent_id = $2, updated_at = NOW()
+            WHERE agent_id = $1
+            """,
+            agent_id,
+            DEFAULT_AGENT_ID,
+        )
+        # Now delete the agent
         result = await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
     return result.endswith("1")
 
