@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -109,7 +111,23 @@ async def observability_snapshot(request: Request):
     )
     juspay_key = (os.getenv("JUSPAY_API_KEY", "") or "").strip()
     services.append(_service_status("juspay", bool(juspay_key), "Configured" if juspay_key else "Missing API key"))
-    services.append(_service_status("scraper_base_url", bool((os.getenv("SCRAPER_BASE_URL", "") or "").strip()), "Configured" if (os.getenv("SCRAPER_BASE_URL", "") or "").strip() else "Missing URL"))
+    scraper_base_url = (os.getenv("SCRAPER_BASE_URL", "") or "").strip()
+    if not scraper_base_url:
+        services.append(_service_status("scraper", False, "SCRAPER_BASE_URL not configured"))
+    else:
+        scraper_ok = False
+        scraper_detail = ""
+        try:
+            health_url = urljoin(scraper_base_url.rstrip("/") + "/", "health")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(health_url)
+            scraper_ok = resp.status_code < 400
+            scraper_detail = f"HTTP {resp.status_code}" if scraper_ok else f"HTTP {resp.status_code} — service unhealthy"
+        except httpx.TimeoutException:
+            scraper_detail = "Health check timed out (5s)"
+        except Exception as exc:
+            scraper_detail = f"Health check failed: {exc}"
+        services.append(_service_status("scraper", scraper_ok, scraper_detail))
 
     # Recent failures + counters from DB tables
     async with pool.acquire() as conn:
