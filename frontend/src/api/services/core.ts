@@ -92,26 +92,6 @@ export async function getTokenUsage(messageId: string): Promise<TokenUsage> {
   return apiJson<TokenUsage>(`${API_ROUTES.aiChat.tokenUsage}?messageId=${encodeURIComponent(messageId)}`);
 }
 
-export type InsightFeedbackRating = 1 | -1;
-export interface InsightFeedbackEntry {
-  insightIndex: number;
-  rating: InsightFeedbackRating;
-  updatedAt?: string;
-}
-
-export async function getInsightFeedback(messageId: string): Promise<{ feedback: InsightFeedbackEntry[] }> {
-  return apiJson<{ feedback: InsightFeedbackEntry[] }>(
-    `${API_ROUTES.aiChat.insightFeedback}?messageId=${encodeURIComponent(messageId)}`,
-  );
-}
-
-export async function setInsightFeedback(opts: {
-  messageId: string;
-  insightIndex: number;
-  rating: InsightFeedbackRating;
-}): Promise<{ feedback: InsightFeedbackEntry }> {
-  return apiJsonPost<{ feedback: InsightFeedbackEntry }>(API_ROUTES.aiChat.insightFeedback, opts);
-}
 
 async function readSseStream(response: Response, callbacks: StreamCallbacks): Promise<StreamResult> {
   if (!response.body) throw new Error('No response body');

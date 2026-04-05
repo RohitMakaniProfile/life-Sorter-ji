@@ -1,11 +1,10 @@
-import React, { useMemo, useRef, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import VideoCard from './VideoCard';
 import type { AgentId, PipelineStage } from '../../../api/types';
 import { downloadReportAsPdf } from '../../../utils/downloadPdf';
 import { downloadMarkdownAsFile } from '../../../utils/downloadMarkdown';
-import { getInsightFeedback, setInsightFeedback } from '../../../api';
 import { getIsSuperAdmin } from '../../../api/authSession';
 import SidePanel from './SidePanel';
 import PlaybookViewer from '../../PlaybookViewer';
@@ -130,21 +129,6 @@ const mdComponentsUser: React.ComponentProps<typeof ReactMarkdown>['components']
 
 const REPORT_THRESHOLD = 500; // chars — above this, show accordion
 const PREVIEW_LINES = 6;      // lines visible when collapsed
-
-function extractInsights(markdown: string): Array<{ index: number; title: string }> {
-  const out: Array<{ index: number; title: string }> = [];
-  const re = /^#{2,4}\s*Insight\s+(\d+)\s*:\s*(.+)\s*$/gim;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(markdown || ''))) {
-    const idx = Number(m[1]);
-    const title = String(m[2] || '').trim();
-    if (!Number.isFinite(idx) || idx <= 0) continue;
-    out.push({ index: idx, title: title || `Insight ${idx}` });
-  }
-  // de-dupe by index
-  const seen = new Set<number>();
-  return out.filter((x) => (seen.has(x.index) ? false : (seen.add(x.index), true)));
-}
 
 function PlanMessage({
   message,
@@ -360,32 +344,6 @@ function AssistantMessage({
     ? m.content.split('\n').slice(0, PREVIEW_LINES).join('\n')
     : m.content;
 
-  const [insightFeedback, setInsightFeedbackState] = useState<Record<number, 1 | -1>>({});
-  const [feedbackLoading, setFeedbackLoading] = useState(false);
-  const [feedbackError, setFeedbackError] = useState<string | null>(null);
-  const insights = useMemo(() => (isReport ? extractInsights(m.content) : []), [isReport, m.content]);
-
-  useEffect(() => {
-    if (!m.messageId) return;
-    if (!isReport) return;
-    if (!insights.length) return;
-    setFeedbackLoading(true);
-    setFeedbackError(null);
-    getInsightFeedback(m.messageId)
-      .then((r) => {
-        const map: Record<number, 1 | -1> = {};
-        for (const it of r.feedback || []) {
-          const idx = Number((it as any).insightIndex);
-          const rating = Number((it as any).rating);
-          if (Number.isFinite(idx) && (rating === 1 || rating === -1)) {
-            map[idx] = rating as 1 | -1;
-          }
-        }
-        setInsightFeedbackState(map);
-      })
-      .catch((e) => setFeedbackError(e instanceof Error ? e.message : 'Failed to load feedback'))
-      .finally(() => setFeedbackLoading(false));
-  }, [m.messageId, isReport, insights.length]);
 
   return (
     <div
@@ -511,88 +469,6 @@ function AssistantMessage({
                   </button>
                 </div>
               </div>
-
-              {/* Insight feedback */}
-              {m.messageId && insights.length > 0 && (
-                <div className="px-5 py-3 border-t border-slate-700">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="text-[11px] font-semibold text-slate-200">Insight feedback</div>
-                    <div className="text-[11px] text-slate-500">
-                      {feedbackLoading ? 'Loading…' : 'Thumbs up/down per insight'}
-                    </div>
-                  </div>
-                  {feedbackError && (
-                    <div className="mb-2 text-[11px] text-red-600">
-                      {feedbackError}
-                    </div>
-                  )}
-                  <div className="max-h-[180px] overflow-y-auto pr-1 space-y-1">
-                    {insights.map((it) => {
-                      const rating = insightFeedback[it.index];
-                      const upOn = rating === 1;
-                      const downOn = rating === -1;
-                      return (
-                        <div key={it.index} className="flex items-center gap-2 py-1">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] text-slate-200 truncate">
-                              <span className="font-mono text-slate-500 mr-2">#{it.index}</span>
-                              {it.title}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={feedbackLoading}
-                            onClick={async () => {
-                              if (!m.messageId) return;
-                              setFeedbackLoading(true);
-                              setFeedbackError(null);
-                              try {
-                                const next: 1 | -1 = 1;
-                                await setInsightFeedback({ messageId: m.messageId, insightIndex: it.index, rating: next });
-                                setInsightFeedbackState((prev) => ({ ...prev, [it.index]: next }));
-                              } catch (e) {
-                                setFeedbackError(e instanceof Error ? e.message : 'Failed to save feedback');
-                              } finally {
-                                setFeedbackLoading(false);
-                              }
-                            }}
-                            className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
-                              upOn ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300' : 'border-slate-600 text-slate-300 hover:bg-slate-800'
-                            }`}
-                            title="Thumbs up"
-                          >
-                            👍
-                          </button>
-                          <button
-                            type="button"
-                            disabled={feedbackLoading}
-                            onClick={async () => {
-                              if (!m.messageId) return;
-                              setFeedbackLoading(true);
-                              setFeedbackError(null);
-                              try {
-                                const next: 1 | -1 = -1;
-                                await setInsightFeedback({ messageId: m.messageId, insightIndex: it.index, rating: next });
-                                setInsightFeedbackState((prev) => ({ ...prev, [it.index]: next }));
-                              } catch (e) {
-                                setFeedbackError(e instanceof Error ? e.message : 'Failed to save feedback');
-                              } finally {
-                                setFeedbackLoading(false);
-                              }
-                            }}
-                            className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
-                              downOn ? 'bg-red-500/15 border-red-500/40 text-red-300' : 'border-slate-600 text-slate-300 hover:bg-slate-800'
-                            }`}
-                            title="Thumbs down"
-                          >
-                            👎
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -619,10 +495,16 @@ function AssistantMessage({
             </div>
           )}
 
-          {/* Non-report assistant messages: show retry action for failed background runs */}
-          {!isReport && m.role === 'assistant' && (
-            <div className="px-5 pb-3.5 flex justify-end">
-              {(m.content || '').toLowerCase().includes('background task failed') && m.planId && onOptionSelect ? (
+          {/* Non-report assistant messages: show retry action for failed/interrupted background runs */}
+          {!isReport && m.role === 'assistant' && (() => {
+            const lowerContent = (m.content || '').toLowerCase();
+            const showRetry = m.planId && onOptionSelect && (
+              lowerContent.includes('background task failed') ||
+              lowerContent.includes('process interrupted') ||
+              lowerContent.includes('you can retry this plan')
+            );
+            return showRetry ? (
+              <div className="px-5 pb-3.5 flex justify-end">
                 <button
                   type="button"
                   onClick={() => {
@@ -632,9 +514,9 @@ function AssistantMessage({
                 >
                   Retry
                 </button>
-              ) : null}
-            </div>
-          )}
+              </div>
+            ) : null;
+          })()}
         </>
       )}
     </div>

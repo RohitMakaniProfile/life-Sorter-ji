@@ -601,7 +601,7 @@ CREATE TABLE IF NOT EXISTS plan_runs (
     plan_message_id TEXT        NOT NULL,
     execution_message_id TEXT,
     status          TEXT        NOT NULL DEFAULT 'draft'
-                                CHECK (status IN ('draft', 'approved', 'running', 'executing', 'done', 'error', 'cancelled')),
+                                CHECK (status IN ('draft', 'approved', 'running', 'executing', 'done', 'error', 'cancelled', 'interrupted')),
     plan_markdown   TEXT        NOT NULL DEFAULT '',
     -- {steps: [{id, title, skillId, description, status}]}
     plan_json       JSONB       NOT NULL DEFAULT '{"steps":[]}'::JSONB,

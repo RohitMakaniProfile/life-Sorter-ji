@@ -890,6 +890,10 @@ async def prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], d
         raise HTTPException(status_code=409, detail="plan was cancelled (create a new plan)")
     if plan.get("status") in ("executing", "done"):
         raise HTTPException(status_code=409, detail=f"plan is already {plan.get('status')}")
+    
+    # Reset interrupted/error plans to approved so they can be retried
+    if plan.get("status") in ("interrupted", "error"):
+        await update_plan_run(plan_id, {"status": "approved", "errorMessage": ""})
 
     if isinstance(body.get("planMarkdown"), str) and body.get("planMarkdown").strip():
         await update_plan_run(plan_id, {"planMarkdown": body.get("planMarkdown")})
