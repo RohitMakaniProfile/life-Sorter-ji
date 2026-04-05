@@ -2,39 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
+
 from app.task_stream.registry import register_task_stream
 from app.utils.url_sanitize import sanitize_http_url
 from app.services.crawl_persistence import persist_successful_crawl
-from app.services.crawl_service import crawl_website, detect_url_type
+from app.services.crawl_service import (
+    crawl_website,
+    crawl_website_playwright,
+    crawl_gbp,
+    crawl_social_profile,
+    generate_gbp_summary,
+    generate_crawl_summary,
+    detect_url_type,
+)
 
-
-def _quick_summary(crawl_raw: dict[str, Any], website_url: str) -> dict[str, Any]:
-    homepage = crawl_raw.get("homepage") or {}
-    title = str(homepage.get("title") or "")
-    meta_desc = str(homepage.get("meta_desc") or "")
-    tech = crawl_raw.get("tech_signals") or []
-    ctas = crawl_raw.get("cta_patterns") or []
-    pages = crawl_raw.get("pages_crawled") or []
-
-    points: list[str] = []
-    if title:
-        points.append(f"Homepage title: {title}")
-    if meta_desc:
-        points.append(f"Meta description: {meta_desc[:160]}")
-    if tech:
-        points.append(f"Tech signals: {', '.join(tech[:8])}")
-    if ctas:
-        points.append(f"CTA patterns: {', '.join(ctas[:8])}")
-    if pages:
-        points.append(f"Pages crawled: {len(pages)}")
-    if not points:
-        points.append(f"Crawled: {website_url}")
-
-    return {
-        "crawl_status": "complete",
-        "points": points[:8],
-        "website_url": website_url,
-    }
+logger = structlog.get_logger()
 
 
 @register_task_stream("crawl")
@@ -63,10 +46,27 @@ async def crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]:
     async def _progress(**p: Any) -> None:
         await send("stage", stage=p.get("phase") or "running", label="Crawling", **p)
 
-    crawl_raw = await crawl_website(website_url, progress_cb=_progress)
+    if url_type == "gbp":
+        crawl_raw = await crawl_gbp(website_url)
+    elif url_type == "social_profile":
+        crawl_raw = await crawl_social_profile(website_url)
+    else:
+        try:
+            crawl_raw = await crawl_website_playwright(website_url, progress_cb=_progress)
+        except Exception as pw_err:
+            logger.warning(
+                "Playwright crawl failed, falling back to httpx",
+                url=website_url,
+                error=str(pw_err),
+            )
+            crawl_raw = await crawl_website(website_url, progress_cb=_progress)
+
     await send("stage", stage="summarizing", label="Building summary")
 
-    crawl_summary = _quick_summary(crawl_raw, website_url)
+    if url_type == "gbp":
+        crawl_summary = await generate_gbp_summary(crawl_raw, website_url)
+    else:
+        crawl_summary = await generate_crawl_summary(crawl_raw, website_url)
 
     sid = str(payload.get("session_id") or "").strip()
     uid = str(payload.get("user_id") or "").strip() or None
@@ -81,4 +81,3 @@ async def crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     return {"crawl_raw": crawl_raw, "crawl_summary": crawl_summary}
-

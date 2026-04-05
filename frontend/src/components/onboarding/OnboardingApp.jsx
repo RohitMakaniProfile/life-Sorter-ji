@@ -654,6 +654,8 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
+      // Wait for crawl to finish so RCA questions are generated with website data
+      await waitForCrawl();
       const res = await rcaNextQuestion({ session_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);
@@ -867,6 +869,7 @@ export default function OnboardingApp() {
             setShowUrlForm(true);
           }}
           loading={loading}
+          onBack={() => { setShowDeeperDive(false); setShowUrlForm(true); }}
         />
       </StageLayout>
     );
@@ -939,7 +942,7 @@ export default function OnboardingApp() {
         userId={null}
         taskTypes={['crawl', 'playbook/onboarding-generate']}
       />
-      <OnboardingHero />
+      <OnboardingHero step={selectedDomain ? 2 : selectedOutcome ? 1 : 0} />
 
       <OnboardingJourneyCanvas
         canvasRef={canvasRef}
@@ -953,6 +956,28 @@ export default function OnboardingApp() {
         programmaticHoveredOutcomeId={programmaticHoveredOutcomeId}
         onJourneyUserActivity={onJourneyDirectInteraction}
       />
+
+      {/* Step navigation */}
+      {(selectedOutcome || selectedDomain) && (
+        <div className="flex shrink-0 items-center justify-center gap-3 px-6 py-2">
+          <button
+            type="button"
+            className="cursor-pointer rounded-lg border border-white/12 bg-white/[0.04] px-4 py-1.5 text-[13px] font-semibold text-white/50 transition-colors hover:bg-white/[0.08] hover:text-white"
+            onClick={() => {
+              if (selectedDomain) {
+                handleOnboardingFieldUpdate({ domain: null, task: null }, { nextDomain: null, nextTask: null, clearPostTaskStages: true });
+              } else {
+                handleOnboardingFieldUpdate({ outcome: null, domain: null, task: null }, { nextOutcome: null, nextDomain: null, nextTask: null, clearPostTaskStages: true });
+              }
+            }}
+          >
+            &lsaquo; Step {selectedDomain ? '2' : '1'}
+          </button>
+          <span className="text-xs text-white/25">
+            {selectedDomain ? 'Domain selected' : 'Outcome selected'}
+          </span>
+        </div>
+      )}
 
       <OnboardingErrorToast error={error} onClear={clearError} />
     </div>

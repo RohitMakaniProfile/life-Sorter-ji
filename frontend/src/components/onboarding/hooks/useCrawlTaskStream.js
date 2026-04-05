@@ -35,6 +35,12 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
   const runIdRef = useRef(0);
   const autoResumeTriggeredRef = useRef(false);
+  /** Fresh flag for waitForCrawl — interval must read current state, not a stale closure. */
+  const crawlStreamingRef = useRef(false);
+
+  useEffect(() => {
+    crawlStreamingRef.current = crawlStreaming;
+  }, [crawlStreaming]);
 
   const startForSession = useCallback(
     async (sid, { websiteUrl } = {}) => {
@@ -112,22 +118,30 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     [ensureSession, setError],
   );
 
-  const waitForCrawl = useCallback(
-    () =>
-      new Promise((resolve) => {
-        if (!crawlStreaming) {
+  const waitForCrawl = useCallback(() => {
+    const POLL_MS = 250;
+    const MAX_WAIT_MS = 180000;
+    return new Promise((resolve) => {
+      if (!crawlStreamingRef.current) {
+        resolve();
+        return;
+      }
+      const started = Date.now();
+      const t = window.setInterval(() => {
+        if (!crawlStreamingRef.current) {
+          window.clearInterval(t);
           resolve();
           return;
         }
-        const t = window.setInterval(() => {
-          if (!crawlStreaming) {
-            window.clearInterval(t);
-            resolve();
-          }
-        }, 250);
-      }),
-    [crawlStreaming],
-  );
+        if (Date.now() - started >= MAX_WAIT_MS) {
+          window.clearInterval(t);
+          console.warn('[crawl] waitForCrawl gave up after', MAX_WAIT_MS, 'ms; continuing to playbook');
+          setError?.('Crawl is still running; opening playbook with data gathered so far.');
+          resolve();
+        }
+      }, POLL_MS);
+    });
+  }, [setError]);
 
   // Auto-resume after refresh if the user already triggered crawl.
   useEffect(() => {

@@ -458,6 +458,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     session_id          TEXT,
     user_id             TEXT,
     title               TEXT,
+    type                TEXT NOT NULL DEFAULT 'chat' CHECK (type IN ('chat', 'onboarding')),
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
     last_output_file    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -469,6 +470,21 @@ ALTER TABLE conversations
 
 ALTER TABLE conversations
     ADD COLUMN IF NOT EXISTS user_id TEXT;
+
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'chat';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'conversations_type_check'
+          AND conrelid = 'conversations'::regclass
+    ) THEN
+        ALTER TABLE conversations
+            ADD CONSTRAINT conversations_type_check CHECK (type IN ('chat', 'onboarding'));
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -504,6 +520,9 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user_id
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
     ON conversations (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_type
+    ON conversations (type);
 
 DROP TRIGGER IF EXISTS trg_conversations_updated_at ON conversations;
 CREATE TRIGGER trg_conversations_updated_at

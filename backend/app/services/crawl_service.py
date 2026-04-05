@@ -33,6 +33,26 @@ from app.services.crawl_persistence import persist_successful_crawl
 
 logger = structlog.get_logger()
 
+
+def _httpx_ssl_verify() -> bool | str | Any:
+    """TLS verify argument for httpx (`True`, CA bundle path, SSLContext, or `False`)."""
+    settings = get_settings()
+    if not settings.CRAWL_HTTP_VERIFY_SSL:
+        return False
+    try:
+        import truststore
+
+        return truststore.SSLContext()
+    except ImportError:
+        pass
+    try:
+        import certifi
+
+        return certifi.where()
+    except ImportError:
+        return True
+
+
 # Social media domains (for url_type detection)
 SOCIAL_DOMAINS = {
     "instagram.com", "facebook.com", "twitter.com", "x.com",
@@ -481,6 +501,7 @@ async def crawl_website(
         timeout=CRAWL_TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": CRAWL_USER_AGENT},
+        verify=_httpx_ssl_verify(),
     ) as client:
         # ── Step 1: Fetch homepage ─────────────────────────────
         _update_progress("fetching_homepage", current_page=website_url)
@@ -1065,7 +1086,7 @@ async def crawl_gbp(url: str) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, verify=_httpx_ssl_verify()) as client:
             # Step 1: Search for the place via Google Maps
             search_params = {
                 "engine": "google_maps",
@@ -1346,6 +1367,7 @@ async def crawl_social_profile(website_url: str) -> dict:
         timeout=CRAWL_TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": CRAWL_USER_AGENT},
+        verify=_httpx_ssl_verify(),
     ) as client:
         html = await _fetch_page(client, website_url)
         if html:

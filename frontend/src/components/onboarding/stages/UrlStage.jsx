@@ -1,6 +1,5 @@
 import FlowNode from '../components/FlowNode';
 import ToolCard from '../components/ToolCard';
-import Arrow from '../components/Arrow';
 
 const TOOLS_PER_PAGE = 3;
 
@@ -23,6 +22,10 @@ export default function UrlStage({
   onToolPageChange,
   onBack,
 }) {
+  const markerId = `ob-url-arrow-${useId().replace(/:/g, '')}`;
+  const dashInMarkerId = `ob-url-dash-in-${useId().replace(/:/g, '')}`;
+  /** Soft “dark white” on dark UI — clearer than faint 50% white, not harsh pure #fff */
+  const flowInDashColor = '#c4c4d4';
   const totalPages = Math.ceil(earlyTools.length / TOOLS_PER_PAGE);
   const pageTools = earlyTools.slice(toolPage * TOOLS_PER_PAGE, (toolPage + 1) * TOOLS_PER_PAGE);
 
@@ -40,19 +43,87 @@ export default function UrlStage({
         <span className="bg-gradient-to-br from-[#a882ff] to-[#7c4dff] bg-clip-text text-transparent">Playbook</span>
       </h1>
 
-      <div className="relative mb-4 flex w-full max-w-[1100px] flex-col items-center gap-4 md:flex-row md:flex-nowrap md:items-center md:justify-center md:gap-0">
-        <div ref={taskNodeContainerRef} className="shrink-0 md:absolute md:left-0 md:top-1/2 md:z-10 md:-translate-y-1/2">
+      <div className="relative -ml-6 mb-4 flex w-[calc(100%+1.5rem)] max-w-[calc(1100px+1.5rem)] items-stretch justify-start gap-0 self-start pr-6">
+        {/*
+          Dashed line: full flex-1 gutter width so start sits on the left (break -ml cancels stage px-6).
+          preserveAspectRatio none stretches path edge→edge; arrowhead stays at pill (path ends x=259).
+        */}
+        <div
+          className="relative flex min-h-0 w-[clamp(80px,15vw,180px)] shrink-0 items-center justify-start overflow-visible self-stretch"
+          aria-hidden
+        >
+          <svg
+            className="pointer-events-none h-[clamp(28px,7vw,56px)] w-full shrink-0 overflow-visible select-none"
+            viewBox="0 0 260 56"
+            preserveAspectRatio="none"
+            aria-hidden
+          >
+            <defs>
+              <marker
+                id={dashInMarkerId}
+                markerWidth="9"
+                markerHeight="9"
+                refX="8.2"
+                refY="4.5"
+                orient="auto"
+                markerUnits="userSpaceOnUse"
+              >
+                <path d="M0,0.8 L8.2,4.5 L0,8.2 Z" fill={flowInDashColor} stroke="none" />
+              </marker>
+            </defs>
+            <path
+              d="M 0,48 L 80,48 C 110,48 150,28 180,28 L 259,28"
+              fill="none"
+              stroke={flowInDashColor}
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeDasharray="8,5"
+              markerEnd={`url(#${dashInMarkerId})`}
+              opacity="0.92"
+            />
+          </svg>
+        </div>
+
+        {/* Task node — no horizontal gap so connectors meet corners */}
+        <div ref={taskNodeContainerRef} className="flex shrink-0 items-center self-center">
           <FlowNode label={selectedTask || selectedDomain} variant="light" active />
         </div>
 
-        {/* Curved solid arrow between task node and URL box */}
-        <Arrow
-          dashed={false}
-          className="hidden md:flex h-[60px] absolute"
-          style={{ left: '220px', width: '120px', top: '50%', marginTop: '-45px' }}
-        />
+        {/* Solid arrow: line from chip edge to form edge; filled tip flush like mockup */}
+        <svg
+          className="block h-5 shrink-0 self-center overflow-visible"
+          style={{ width: 'clamp(40px, 10vw, 88px)' }}
+          viewBox="0 0 88 20"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
+          <defs>
+            <marker
+              id={markerId}
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+              markerUnits="userSpaceOnUse"
+            >
+              <path d="M0,0.5 L7,4 L0,7.5 Z" fill="white" stroke="none" />
+            </marker>
+          </defs>
+          <line
+            x1="0"
+            y1="10"
+            x2="76"
+            y2="10"
+            stroke="white"
+            strokeWidth="2"
+            strokeLinecap="round"
+            markerEnd={`url(#${markerId})`}
+          />
+        </svg>
 
-        <div className="w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0">
+        <div className="flex w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0 items-center self-center">
           <div className="flex flex-col gap-2.5 rounded-[14px] border border-[#b3b3b3] bg-[#161616] p-4 shadow-[0_2px_8px_rgba(0,0,0,0.3)]">
             <div className="flex gap-4">
               <button
@@ -105,7 +176,7 @@ export default function UrlStage({
       </div>
 
       {earlyTools.length > 0 && (
-        <div className="mb-2 flex w-full max-w-[1100px] flex-col">
+        <div className="-ml-6 mb-2 flex w-[calc(100%+1.5rem)] max-w-[calc(1100px+1.5rem)] flex-col self-start pr-6">
           <h2 className="m-0 mb-2.5 shrink-0 text-center text-lg font-bold text-white">Best Tools For You</h2>
           <div className="relative flex items-stretch gap-0">
             <button

@@ -72,6 +72,7 @@ export interface ConversationSummary {
   id: string;
   agentId: AgentId;
   title: string;
+  type: 'chat' | 'onboarding';
   messageCount: number;
   createdAt: string;
   updatedAt: string;

@@ -166,8 +166,32 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
           agentId: data.agentId,
         });
         const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
-        const mapped = (data.messages ?? []).map((m) => {
+        const isOnboardingAgent = loadedAgentId === 'business_problem_identifier';
+        const allMessages = data.messages ?? [];
+        const lastMsgIndex = allMessages.length - 1;
+
+        const mapped = allMessages.map((m, idx) => {
             const base = { ...m, outputFile: m.outputFile, agentId: loadedAgentId };
+
+            // For onboarding conversations loaded from history: strip options from all
+            // messages except the very last one (which may still need interaction).
+            // This prevents old answered option buttons from cluttering the chat view.
+            if (isOnboardingAgent && m.role === 'assistant' && idx < lastMsgIndex) {
+              return { ...base, options: undefined };
+            }
+
+            // Strip Approve/Cancel from plan messages that have no planId — these are
+            // orphaned plans whose generation failed before a plan_run was created.
+            // Showing Approve on such messages causes /message/background to error.
+            if (
+              m.role === 'assistant' &&
+              !(m as any).planId &&
+              Array.isArray((m as any).options) &&
+              (m as any).options.some((o: string) => o?.toLowerCase() === 'approve')
+            ) {
+              return { ...base, options: undefined };
+            }
+
             // For business-research assistant messages that have content but no
             // pipeline state (pipeline state is in-memory only, never persisted),
             // synthesise a done pipeline so the Download PDF button shows on reload.

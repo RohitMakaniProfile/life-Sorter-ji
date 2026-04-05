@@ -349,6 +349,15 @@ async def send_message_background(req: Request) -> dict[str, Any]:
             **started,
         }
 
+    # If approve/cancel was requested but no planId was found in conversation, the plan
+    # message is orphaned (plan generation failed before a plan_run was created). Return
+    # a specific error so the frontend can show a meaningful message.
+    if msg in ("approve", "cancel") and conversation_id_direct:
+        raise HTTPException(
+            status_code=422,
+            detail="Plan is incomplete — no plan record found. Please start a new chat.",
+        )
+
     matched = await _match_pending_option(body)
     if not matched:
         raise HTTPException(status_code=400, detail="No pending option found for background execution")
@@ -545,7 +554,8 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     # ── Plan access check ──
     await _enforce_agent_access(req, agent_id)
 
-    conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id)
+    conv_type = "onboarding" if agent_id == "business_problem_identifier" else "chat"
+    conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id, conv_type=conv_type)
     conversation_id = conv["id"]
 
     initial = AGENT_INITIAL_MESSAGES.get(agent_id)

@@ -77,11 +77,16 @@ class Settings(BaseSettings):
 
     # ── OpenRouter (GLM-5 RCA) ──────────────────────────────────
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "z-ai/glm-5"
-    OPENROUTER_CLAUDE_MODEL: str = "anthropic/claude-sonnet-4-6"  # Used only for playbook Agent C comparison
+    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4-6"
+    OPENROUTER_CLAUDE_MODEL: str = "anthropic/claude-sonnet-4-6"
 
     # ── SERP API ───────────────────────────────────────────────
     SERP_API_KEY: str = ""
+
+    # ── HTTP crawl (httpx) ──────────────────────────────────────
+    # When True (default), use Mozilla CA bundle via certifi for TLS verification.
+    # Set to False only in local/dev if Python cannot validate certs (insecure).
+    CRAWL_HTTP_VERIFY_SSL: bool = True
 
     # ── JusPay ─────────────────────────────────────────────────
     JUSPAY_MERCHANT_ID: str = ""
@@ -103,7 +108,7 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRES_HOURS: int = 168
 
     # ── 2Factor.in OTP ─────────────────────────────────────────
-    TWO_FACTOR_API_KEY: str = "1a864d19-1e9e-11f1-bcb0-0200cd936042"
+    TWO_FACTOR_API_KEY: str = ""
 
     # ── Google Sheets ──────────────────────────────────────────
     GOOGLE_SHEETS_WEBHOOK_URL: str = ""

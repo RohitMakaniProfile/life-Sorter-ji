@@ -281,6 +281,7 @@ async def get_or_create_conversation(
     *,
     session_id: str | None = None,
     user_id: str | None = None,
+    conv_type: str = "chat",
 ) -> dict[str, Any]:
     existing = await get_conversation(conversation_id) if conversation_id else None
     if existing:
@@ -321,16 +322,18 @@ async def get_or_create_conversation(
 
     cid = str(uuid4())
     now = now_dt()
+    safe_type = conv_type if conv_type in ("chat", "onboarding") else "chat"
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, type, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             cid,
             selected_agent,
             sid,
             uid,
+            safe_type,
             now,
             now,
         )
@@ -338,6 +341,7 @@ async def get_or_create_conversation(
     return {
         "id": cid,
         "agentId": selected_agent,
+        "type": safe_type,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -351,6 +355,7 @@ async def create_new_conversation(
     *,
     session_id: str | None = None,
     user_id: str | None = None,
+    conv_type: str = "chat",
 ) -> dict[str, Any]:
     """Always creates a brand-new conversation, never reuses an existing one."""
     selected_agent = (agent_id or "").strip()
@@ -363,17 +368,19 @@ async def create_new_conversation(
     uid = (user_id or "").strip() or None
     cid = str(uuid4())
     now = now_dt()
+    safe_type = conv_type if conv_type in ("chat", "onboarding") else "chat"
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, type, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             cid,
             selected_agent,
             sid,
             uid,
+            safe_type,
             now,
             now,
         )
@@ -381,6 +388,7 @@ async def create_new_conversation(
     return {
         "id": cid,
         "agentId": selected_agent,
+        "type": safe_type,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -442,6 +450,7 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
         "sessionId": conv["session_id"],
         "userId": conv["user_id"],
         "title": conv["title"] or None,
+        "type": conv["type"] if "type" in conv.keys() else "chat",
         "messages": [_message_from_row(m) for m in messages],
         "lastStageOutputs": {str(k): str(v) for k, v in stage_outputs.items() if isinstance(v, str)},
         "lastOutputFile": conv["last_output_file"],
@@ -729,6 +738,7 @@ async def list_conversations(
                 "sessionId": r["session_id"],
                 "userId": r["user_id"],
                 "title": r["title"] or "New conversation",
+                "type": r["type"] if "type" in r.keys() else "chat",
                 "messageCount": count,
                 "createdAt": r["created_at"],
                 "updatedAt": r["updated_at"],
