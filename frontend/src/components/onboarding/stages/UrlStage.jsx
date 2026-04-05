@@ -40,16 +40,16 @@ export default function UrlStage({
         <span className="bg-gradient-to-br from-[#a882ff] to-[#7c4dff] bg-clip-text text-transparent">Playbook</span>
       </h1>
 
-      <div className="relative mb-4 flex w-full max-w-[1100px] flex-col items-center gap-4 md:flex-row md:flex-nowrap md:items-center md:justify-center md:gap-0">
-        <div ref={taskNodeContainerRef} className="shrink-0 md:absolute md:left-0 md:top-1/2 md:z-10 md:-translate-y-1/2">
+      <div className="mb-4 flex w-full max-w-[1100px] flex-col items-center gap-4 md:flex-row md:flex-nowrap md:items-center md:justify-center">
+        <div ref={taskNodeContainerRef} className="shrink-0">
           <FlowNode label={selectedTask || selectedDomain} variant="light" active />
         </div>
 
-        {/* Curved solid arrow between task node and URL box */}
+        {/* Curved solid arrow — stretches responsively between node and URL box */}
         <Arrow
           dashed={false}
-          className="hidden md:flex h-[60px] absolute"
-          style={{ left: '220px', width: '120px', top: '50%', marginTop: '-45px' }}
+          className="hidden md:flex shrink-0"
+          style={{ width: 'clamp(60px, 8vw, 130px)', height: '60px', marginTop: '-20px' }}
         />
 
         <div className="w-full min-w-[min(100%,340px)] max-w-[420px] shrink-0">
