@@ -350,33 +350,74 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
               console.log('[bg] attempting resume', {
                 planId: latestPlan.planId,
                 conversationId: data.conversationId,
-              });
-              void sendMessageBackground({
-                message: 'approve',
-                conversationId: data.conversationId,
                 agentId: loadedAgentId,
-                planId: latestPlan.planId,
-              }).catch(async () => {
-                console.log('[bg] resume failed, cancelling stale plan', { planId: latestPlan.planId });
-                await sendMessageBackground({
-                  message: 'cancel',
-                  conversationId: data.conversationId,
-                  agentId: loadedAgentId,
-                  planId: latestPlan.planId,
-                });
-                setMessages((prev) => {
-                  const u = [...prev];
-                  const idx = u.findIndex((m) => (m as any).planId === latestPlan.planId);
-                  if (idx >= 0) {
-                    u[idx] = { ...(u[idx] as any), options: ['Approve', 'Cancel'] };
-                    if (u[idx + 1]?.role === 'user') {
-                      const next = (u[idx + 1].content || '').trim().toLowerCase();
-                      if (next === 'approve' || next === 'cancel') u.splice(idx + 1, 1);
-                    }
-                  }
-                  return u;
-                });
               });
+              // Actually await the sendMessageBackground to ensure it runs
+              (async () => {
+                try {
+                  const resumeResult = await sendMessageBackground({
+                    message: 'approve',
+                    conversationId: data.conversationId,
+                    agentId: loadedAgentId,
+                    planId: latestPlan.planId,
+                  });
+                  console.log('[bg] resume sendMessageBackground result', resumeResult);
+
+                  // If taskStream is returned, subscribe to it
+                  if (resumeResult.backgroundExecution && resumeResult.taskStream?.streamId) {
+                    const streamId = resumeResult.taskStream.streamId;
+                    console.log('[bg] resume: subscribing to task stream', { streamId });
+                    await subscribeToTaskStream(streamId, {
+                      onToken: (token) => {
+                        setMessages((prev) => {
+                          const updated = [...prev];
+                          const last = updated[updated.length - 1];
+                          if (last?.role === 'assistant') {
+                            updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                          }
+                          return updated;
+                        });
+                      },
+                      onDone: async () => {
+                        console.log('[bg] resume task stream done');
+                        const refreshed = await getMessages(data.conversationId);
+                        const a = (refreshed.agentId ?? loadedAgentId) as AgentId;
+                        setMessages((refreshed.messages ?? []).map((m) => ({ ...m, agentId: a } as any)));
+                        if (refreshed.lastStageOutputs) setConversationStageOutputs(refreshed.lastStageOutputs);
+                      },
+                      onError: async (msg) => {
+                        console.error('[bg] resume task stream error:', msg);
+                        pushBackgroundStatus(`Background task failed: ${msg}`, 'error', latestPlan.planId);
+                        if (latestPlan.planId) reopenPlanOptions(latestPlan.planId);
+                      },
+                    });
+                  }
+                } catch (err) {
+                  console.error('[bg] resume failed', err);
+                  try {
+                    await sendMessageBackground({
+                      message: 'cancel',
+                      conversationId: data.conversationId,
+                      agentId: loadedAgentId,
+                      planId: latestPlan.planId,
+                    });
+                  } catch (cancelErr) {
+                    console.error('[bg] cancel after resume failed also failed', cancelErr);
+                  }
+                  setMessages((prev) => {
+                    const u = [...prev];
+                    const idx = u.findIndex((m) => (m as any).planId === latestPlan.planId);
+                    if (idx >= 0) {
+                      u[idx] = { ...(u[idx] as any), options: ['Approve', 'Cancel'] };
+                      if (u[idx + 1]?.role === 'user') {
+                        const next = (u[idx + 1].content || '').trim().toLowerCase();
+                        if (next === 'approve' || next === 'cancel') u.splice(idx + 1, 1);
+                      }
+                    }
+                    return u;
+                  });
+                }
+              })();
             }
 
             if (status === 'executing' && !hasExecutionAssistant) {
@@ -915,8 +956,85 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
       }
       console.log('ack', ack);
 
+      // New path: use task stream for background execution when taskStream metadata is present
+      if (ack.backgroundExecution && ack.taskStream?.streamId) {
+        const cid = ack.conversationId || conversationId;
+        const pid = ack.planId;
+        const streamId = ack.taskStream.streamId;
+        console.log('[bg] Starting task stream subscription', { streamId, planId: pid });
+
+        // Add a placeholder assistant message for the streaming content
+        setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
+
+        try {
+          await subscribeToTaskStream(streamId, {
+            onToken: (token) => {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                }
+                return updated;
+              });
+            },
+            onStage: (stage, label) => {
+              console.log('[bg] Stage:', stage, label);
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant') {
+                  updated[updated.length - 1] = {
+                    ...last,
+                    pipeline: {
+                      currentStage: stage as any,
+                      agentId: activeAgentId,
+                      stageOutputs: conversationStageOutputs,
+                      progressEvents: last.pipeline?.progressEvents ?? [],
+                      outputFile: undefined,
+                      error: undefined,
+                    },
+                  };
+                }
+                return updated;
+              });
+            },
+            onProgress: (data) => {
+              console.log('[bg] Progress:', data);
+            },
+            onDone: async () => {
+              console.log('[bg] Task stream done');
+              // Reload messages from backend to get final state
+              if (cid) {
+                const data = await getMessages(cid);
+                const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+                setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
+                if (data.conversationId) setConversationId(data.conversationId);
+                if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
+              }
+            },
+            onError: async (msg) => {
+              console.error('[bg] Task stream error:', msg);
+              pushBackgroundStatus(`Background task failed: ${msg}`, 'error', pid);
+              if (pid) reopenPlanOptions(pid);
+              // Reload messages from backend
+              if (cid) {
+                const data = await getMessages(cid);
+                const loadedAgentId = (data.agentId ?? activeAgentId) as AgentId;
+                setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
+              }
+            },
+          });
+        } catch (err) {
+          console.error('[bg] Task stream subscription failed:', err);
+          pushBackgroundStatus(`Background task failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error', pid);
+          if (pid) reopenPlanOptions(pid);
+        }
+        return;
+      }
+
+      // Legacy background path (kept for non-stream callers): still poll plan completion only.
       if (ack.backgroundExecution && ack.planId) {
-        // Legacy background path (kept for non-stream callers): still poll plan completion only.
         if (planPollIntervalRef.current) {
           clearInterval(planPollIntervalRef.current);
           planPollIntervalRef.current = null;
@@ -958,7 +1076,10 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         };
         planPollIntervalRef.current = setInterval(() => void pollOnce(), 2500);
         void pollOnce();
-      } else if (ack.requiresStream) {
+        return;
+      }
+
+      if (ack.requiresStream) {
         setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
         const result = await sendMessageStream({
           message: option,

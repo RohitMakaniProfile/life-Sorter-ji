@@ -180,6 +180,34 @@ export async function startTaskStreamAndListen(
   await listenTaskStreamUrl(url, opts.callbacks, { streamIdKey, onCleanup: cleanup });
 }
 
+/**
+ * Listen to a task stream directly by its stream ID.
+ * Use this when the backend returns a taskStream metadata object with a streamId.
+ */
+export async function listenToTaskStreamById(
+  streamId: string,
+  callbacks: TaskStreamCallbacks,
+  opts?: { taskType?: string; sessionId?: string | null; userId?: string | null },
+): Promise<void> {
+  const taskType = opts?.taskType ?? 'unknown';
+  const streamIdKey = streamIdStorageKey(taskType, opts?.sessionId ?? null, opts?.userId ?? null);
+
+  // Store the stream ID for potential resume
+  safeLocalStorageSet(streamIdKey, streamId);
+
+  const cleanup = () => {
+    safeLocalStorageRemove(streamIdKey);
+    safeLocalStorageRemove(cursorStorageKey(streamId));
+  };
+
+  const cursor = safeLocalStorageGet(cursorStorageKey(streamId));
+  const url = `${API_ROUTES.taskStream.eventsByStreamId(streamId)}${
+    cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  }`;
+
+  await listenTaskStreamUrl(url, callbacks, { streamIdKey, onCleanup: cleanup });
+}
+
 export function getStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): string | null {
   return safeLocalStorageGet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null));
 }
