@@ -53,6 +53,24 @@ export function getIsAdmin(): boolean {
   return Boolean(payload?.admin);
 }
 
+export function getEmailFromJwt(): string | null {
+  const payload = getJwtPayload();
+  const email = payload?.email;
+  return typeof email === 'string' && email.trim() ? email.trim() : null;
+}
+
+export function getPhoneNumberFromJwt(): string | null {
+  const payload = getJwtPayload();
+  const phone = payload?.phone_number;
+  return typeof phone === 'string' && phone.trim() ? phone.trim() : null;
+}
+
+export function getNameFromJwt(): string | null {
+  const payload = getJwtPayload();
+  const name = payload?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
+}
+
 function getOnboardingSessionIdFromJwt(): string | null {
   const token = getAppJwt();
   if (!token) return null;

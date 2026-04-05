@@ -67,6 +67,8 @@ class VerifyOTPRequest(BaseModel):
     # Set when Google was Step 1 of two-step verification
     google_email: str | None = None
     google_name: str | None = None
+    # When set, links phone to existing user instead of creating new
+    link_to_user_id: str | None = None
 
     @field_validator("otp_code")
     @classmethod
@@ -96,6 +98,8 @@ class GoogleAuthRequest(BaseModel):
 class GoogleExchangeRequest(BaseModel):
     idToken: str
     session_id: str | None = None
+    # When set, links email to existing user instead of creating new
+    link_to_user_id: str | None = None
 
 
 class GoogleAuthResponse(BaseModel):
@@ -259,6 +263,74 @@ async def _upsert_user_from_google(email: str, name: str, onboarding_session_id:
     return dict(row) if row else {}
 
 
+async def _link_phone_to_user(user_id: str, phone_number: str) -> dict:
+    """Link a verified phone number to an existing user (update user row)."""
+    pool = get_pool()
+    phone = (phone_number or "").strip()
+    uid = (user_id or "").strip()
+    if not uid or not phone:
+        return {}
+    async with pool.acquire() as conn:
+        # Check if phone is already used by another user
+        existing_phone_user = await conn.fetchrow(
+            "SELECT id::text AS id FROM users WHERE phone_number = $1 AND id::text != $2 LIMIT 1",
+            phone,
+            uid,
+        )
+        if existing_phone_user:
+            raise HTTPException(status_code=400, detail="This phone number is already linked to another account")
+
+        # Update the existing user with the phone number
+        row = await conn.fetchrow(
+            """
+            UPDATE users
+            SET phone_number = $1,
+                auth_provider = CASE WHEN auth_provider = 'google' THEN 'both' ELSE auth_provider END,
+                updated_at = NOW()
+            WHERE id = $2::uuid
+            RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+            """,
+            phone,
+            uid,
+        )
+    return dict(row) if row else {}
+
+
+async def _link_email_to_user(user_id: str, email: str, name: str | None = None) -> dict:
+    """Link a verified Google email to an existing user (update user row)."""
+    pool = get_pool()
+    em = (email or "").strip().lower()
+    uid = (user_id or "").strip()
+    if not uid or not em:
+        return {}
+    async with pool.acquire() as conn:
+        # Check if email is already used by another user
+        existing_email_user = await conn.fetchrow(
+            "SELECT id::text AS id FROM users WHERE email = $1 AND id::text != $2 LIMIT 1",
+            em,
+            uid,
+        )
+        if existing_email_user:
+            raise HTTPException(status_code=400, detail="This email is already linked to another account")
+
+        # Update the existing user with the email
+        row = await conn.fetchrow(
+            """
+            UPDATE users
+            SET email = $1,
+                name = COALESCE($2, name),
+                auth_provider = CASE WHEN auth_provider = 'otp' THEN 'both' ELSE auth_provider END,
+                updated_at = NOW()
+            WHERE id = $3::uuid
+            RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
+            """,
+            em,
+            name,
+            uid,
+        )
+    return dict(row) if row else {}
+
+
 # ── Endpoints ─────────────────────────────────────────────────
 
 @router.post("/send-otp", response_model=SendOTPResponse)
@@ -333,7 +405,16 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
 
     onboarding_session_id = (req.onboarding_session_id or req.session_id or rec.get("onboarding_session_id") or "").strip() or None
     phone_number = str(rec.get("phone_number") or "").strip()
-    user_row = await _upsert_user_from_otp(phone_number=phone_number, onboarding_session_id=onboarding_session_id)
+
+    # If link_to_user_id is provided, link phone to existing user instead of creating new
+    link_uid = (req.link_to_user_id or "").strip()
+    if link_uid:
+        user_row = await _link_phone_to_user(user_id=link_uid, phone_number=phone_number)
+        if not user_row:
+            return VerifyOTPResponse(success=False, verified=False, message="Failed to link phone to user")
+    else:
+        user_row = await _upsert_user_from_otp(phone_number=phone_number, onboarding_session_id=onboarding_session_id)
+
     user_id = str(user_row.get("id") or "")
     provider = str(user_row.get("auth_provider") or "otp")
     email = user_row.get("email")
@@ -365,7 +446,7 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             "name": name,
             "phone_number": phone_number,
             "onboarding_session_id": onboarding_session_id,
-            **(await resolve_admin_flags(email)),
+            **(await resolve_admin_flags(email, phone_number)),
         },
     )
     await delete_otp_from_redis(req.otp_session_id)
@@ -449,9 +530,18 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
     avatar_url = str(claims.get("picture") or claims.get("photo_url") or "").strip()
     google_sub = str(claims.get("sub") or claims.get("user_id") or "").strip()
 
-    # Independent auth path: create/update users row with onboarding_session_id reference.
-    row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=req.session_id)
+    # If link_to_user_id is provided, link email to existing user instead of creating new
+    link_uid = (req.link_to_user_id or "").strip()
+    if link_uid:
+        row = await _link_email_to_user(user_id=link_uid, email=email, name=name)
+        if not row:
+            raise HTTPException(status_code=400, detail="Failed to link email to user")
+    else:
+        # Independent auth path: create/update users row with onboarding_session_id reference.
+        row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=req.session_id)
+
     user_id = str(row.get("id") or email)
+    phone_number = row.get("phone_number") or ""
 
     # Link the onboarding row to the user if we have both user_id and session_id
     if user_id and req.session_id:
@@ -477,16 +567,17 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "provider": "google",
             "email": email,
             "name": name,
+            "phone_number": phone_number,
             "avatar_url": avatar_url,
             "google_sub": google_sub,
             "onboarding_session_id": req.session_id,
-            **(await resolve_admin_flags(email)),
+            **(await resolve_admin_flags(email, phone_number)),
         },
     )
 
-    logger.info("Google exchange successful", email=email, has_session=bool(req.session_id))
+    logger.info("Google exchange successful", email=email, has_session=bool(req.session_id), linked_to_user=bool(link_uid))
 
-    flags = await resolve_admin_flags(email)
+    flags = await resolve_admin_flags(email, phone_number)
     return GoogleAuthResponse(
         success=True,
         message=f"Signed in as {name or email}",
@@ -496,6 +587,7 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "provider": "google",
             "email": email,
             "name": name,
+            "phone_number": phone_number,
             "avatar_url": avatar_url,
             "onboarding_session_id": req.session_id,
         },
@@ -516,14 +608,29 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token subject")
 
-    email = payload.get("email")
+    # Fetch fresh user data from database
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            """
+            SELECT id::text AS id, email, phone_number, name, auth_provider, onboarding_session_id
+            FROM users
+            WHERE id::text = $1
+            LIMIT 1
+            """,
+            user_id,
+        )
+
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    email = user_row.get("email")
     if isinstance(email, str):
         email = email.strip().lower() or None
     else:
         email = None
 
-    if not await _user_exists(user_id, email):
-        raise HTTPException(status_code=404, detail="User not found")
+    phone_number = user_row.get("phone_number") or None
 
     exp = int(payload.get("exp", 0))
     now = int(time.time())
@@ -532,12 +639,13 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
         authenticated=True,
         user={
             "user_id": user_id,
-            "provider": payload.get("provider") or "unknown",
+            "provider": user_row.get("auth_provider") or payload.get("provider") or "unknown",
             "email": email,
-            "name": payload.get("name"),
+            "phone_number": phone_number,
+            "name": user_row.get("name") or payload.get("name"),
             "avatar_url": payload.get("avatar_url"),
             "session_id": payload.get("session_id"),
-            "onboarding_session_id": payload.get("onboarding_session_id"),
+            "onboarding_session_id": user_row.get("onboarding_session_id") or payload.get("onboarding_session_id"),
             "expires_in_seconds": expires_in_seconds,
             "token_ttl_hours": get_settings().JWT_ACCESS_TOKEN_EXPIRES_HOURS,
         },

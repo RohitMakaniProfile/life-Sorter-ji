@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.db import get_pool
-from app.middleware.auth_context import require_super_admin
+from app.middleware.auth_context import get_request_auth_claims, require_super_admin
 from app.task_stream.redis_client import get_redis
 
 
@@ -178,6 +179,148 @@ async def observability_snapshot(request: Request):
         "services": services,
         "counters": counters,
         "recentErrors": recent_errors,
+    }
+
+
+@router.get("/users", response_model=dict[str, Any])
+async def list_users(request: Request, q: str = "", limit: int = 50, offset: int = 0):
+    require_super_admin(request)
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    pool = get_pool()
+    search = (q or "").strip()
+    async with pool.acquire() as conn:
+        if search:
+            pattern = f"%{search}%"
+            rows = await conn.fetch(
+                """
+                SELECT id, email, phone_number, name, auth_provider, created_at, last_login_at
+                FROM users
+                WHERE email ILIKE $1 OR phone_number ILIKE $1 OR name ILIKE $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+                """,
+                pattern,
+                limit,
+                offset,
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE email ILIKE $1 OR phone_number ILIKE $1 OR name ILIKE $1",
+                pattern,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, email, phone_number, name, auth_provider, created_at, last_login_at
+                FROM users
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit,
+                offset,
+            )
+            total = await conn.fetchval("SELECT COUNT(*) FROM users")
+
+    users = []
+    for r in rows:
+        created_at = r.get("created_at")
+        last_login_at = r.get("last_login_at")
+        users.append(
+            {
+                "id": str(r.get("id") or ""),
+                "email": r.get("email") or "",
+                "phone_number": r.get("phone_number") or "",
+                "name": r.get("name") or "",
+                "auth_provider": r.get("auth_provider") or "",
+                "created_at": created_at.isoformat() if created_at else "",
+                "last_login_at": last_login_at.isoformat() if last_login_at else "",
+            }
+        )
+    return {"users": users, "total": int(total or 0), "limit": limit, "offset": offset}
+
+
+# Hard-coded identities permitted to delete users. Intentionally not configurable.
+# Phone stored in JWT without '+' (validator strips it), so compare digits only.
+_USER_DELETE_ALLOWED_EMAILS = {"code.harshkanjariya@gmail.com"}
+_USER_DELETE_ALLOWED_PHONES = {"917802004735", "7802004735"}
+
+
+def _require_delete_permission(request: Request) -> None:
+    """Raises 403 unless the caller is one of the hard-coded delete-permitted identities."""
+    claims = get_request_auth_claims(request) or {}
+    email = str(claims.get("email") or "").strip().lower()
+    # Normalise: strip +, spaces, dashes to match whatever format the JWT carries
+    raw_phone = str(claims.get("phone_number") or "")
+    phone = re.sub(r"[\s\-+]", "", raw_phone)
+    if email not in _USER_DELETE_ALLOWED_EMAILS and phone not in _USER_DELETE_ALLOWED_PHONES:
+        raise HTTPException(
+            status_code=403,
+            detail="User deletion is restricted to authorised identities only.",
+        )
+
+
+@router.delete("/users/{user_id}", response_model=dict[str, Any])
+async def delete_user(request: Request, user_id: str):
+    require_super_admin(request)
+    _require_delete_permission(request)
+
+    uid = (user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        # Fetch user to confirm existence and grab onboarding_session_id
+        user_row = await conn.fetchrow(
+            "SELECT id, email, phone_number, onboarding_session_id FROM users WHERE id::text = $1 LIMIT 1",
+            uid,
+        )
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        onboarding_session_id = user_row.get("onboarding_session_id") or ""
+
+        async with conn.transaction():
+            # 1. Conversations → cascades messages, skill_calls, plan_runs
+            await conn.execute("DELETE FROM conversations WHERE user_id = $1", uid)
+
+            # 2. Onboarding rows linked by user_id (TEXT)
+            await conn.execute("DELETE FROM onboarding WHERE user_id = $1", uid)
+
+            # 3. Onboarding row linked by session_id (if present and different)
+            if onboarding_session_id:
+                await conn.execute(
+                    "DELETE FROM onboarding WHERE session_id = $1",
+                    onboarding_session_id,
+                )
+
+            # 4. Crawl runs
+            try:
+                await conn.execute("DELETE FROM crawl_runs WHERE user_id::text = $1", uid)
+            except Exception:
+                pass  # table may not use UUID cast
+
+            # 5. Playbook runs
+            try:
+                await conn.execute("DELETE FROM playbook_runs WHERE user_id::text = $1", uid)
+            except Exception:
+                pass
+
+            # 6. Task stream streams (user_id is TEXT in this table)
+            await conn.execute("DELETE FROM task_stream_streams WHERE user_id = $1", uid)
+
+            # 7. Session-user links
+            await conn.execute("DELETE FROM session_user_links WHERE user_id = $1", uid)
+
+            # 8. Delete user — cascades: payment_checkout_context, user_plan_grants,
+            #    admin_subscription_grants, admin_subscription_grant_logs
+            await conn.execute("DELETE FROM users WHERE id::text = $1", uid)
+
+    return {
+        "success": True,
+        "deleted_user_id": uid,
+        "deleted_email": str(user_row.get("email") or ""),
+        "deleted_phone": str(user_row.get("phone_number") or ""),
     }
 
 

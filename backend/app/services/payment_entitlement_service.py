@@ -14,6 +14,7 @@ import structlog
 
 from app.db import get_pool
 from app.services import juspay_service
+from app.services import admin_subscription_grant_service
 
 logger = structlog.get_logger()
 
@@ -44,6 +45,10 @@ async def check_agent_access(*, user_id: str, agent_id: str) -> dict[str, Any]:
             "reason": "Authentication required to use this agent.",
             "required_capability": required_cap,
         }
+
+    # Check if user has admin-granted subscription (full access)
+    if await admin_subscription_grant_service.has_admin_subscription_grant(user_id):
+        return {"allowed": True, "via_admin_grant": True}
 
     uid = _as_uuid(user_id)
     pool = get_pool()
@@ -262,6 +267,10 @@ def _aggregate_capability(rows: list[dict[str, Any]], cap_key: str) -> dict[str,
 async def get_user_entitlements(*, user_id: str) -> dict[str, Any]:
     pool = get_pool()
     uid = _as_uuid(user_id)
+
+    # Check for admin-granted subscription first
+    admin_grant = await admin_subscription_grant_service.get_admin_subscription_grant(user_id)
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -297,6 +306,21 @@ async def get_user_entitlements(*, user_id: str) -> dict[str, Any]:
         grant_rows.append(d)
 
     grants_out: list[dict[str, Any]] = []
+
+    # If user has admin grant, add a synthetic "unlimited" grant entry
+    if admin_grant:
+        grants_out.append({
+            "plan_slug": "admin_granted",
+            "plan_name": "Admin Granted Full Access",
+            "order_id": f"admin_grant:{admin_grant['id']}",
+            "credits_remaining": None,
+            "credits_unlimited": True,
+            "granted_at": admin_grant.get("granted_at"),
+            "granted_by_email": admin_grant.get("granted_by_email", ""),
+            "is_admin_grant": True,
+            "features": {key: True for key in CAPABILITY_KEYS},
+        })
+
     for g in grant_rows:
         cr = g.get("credits_remaining")
         grants_out.append(
@@ -311,12 +335,19 @@ async def get_user_entitlements(*, user_id: str) -> dict[str, Any]:
             }
         )
 
+    # If admin grant exists, all capabilities are unlocked
     capabilities: dict[str, Any] = {}
-    for key in CAPABILITY_KEYS:
-        capabilities[key] = _aggregate_capability(grant_rows, key)
+    if admin_grant:
+        for key in CAPABILITY_KEYS:
+            capabilities[key] = {"allowed": True, "unlimited": True, "credits_remaining": None, "via_admin_grant": True}
+    else:
+        for key in CAPABILITY_KEYS:
+            capabilities[key] = _aggregate_capability(grant_rows, key)
 
     return {
         "user_id": str(user_id).strip(),
         "grants": grants_out,
         "capabilities": capabilities,
+        "has_admin_grant": admin_grant is not None,
+        "admin_grant": admin_grant,
     }

@@ -5,12 +5,31 @@ export const API_ROUTES = {
     googleExchange: '/api/v1/auth/google/exchange',
     sendOtp: '/api/v1/auth/send-otp',
     verifyOtp: '/api/v1/auth/verify-otp',
+    // For linking phone/email to existing user
+    linkPhone: '/api/v1/auth/verify-otp',  // same endpoint, but with link_to_user_id
+    linkEmail: '/api/v1/auth/google/exchange',  // same endpoint, but with link_to_user_id
   },
   admin: {
     management: {
       observability: '/api/v1/admin/management/observability',
       config: '/api/v1/admin/management/config',
       configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
+      deleteUser: (userId: string) => `/api/v1/admin/management/users/${encodeURIComponent(userId)}`,
+      users: (q?: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (q) params.set('q', q);
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/users${qs ? `?${qs}` : ''}`;
+      },
+    },
+    subscriptionGrants: {
+      list: '/api/v1/admin/subscription-grants',
+      auditLog: '/api/v1/admin/subscription-grants/audit-log',
+      searchUsers: (q: string) => `/api/v1/admin/subscription-grants/search-users?q=${encodeURIComponent(q)}`,
+      grant: '/api/v1/admin/subscription-grants/grant',
+      revoke: '/api/v1/admin/subscription-grants/revoke',
     },
   },
   onboarding: {

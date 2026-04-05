@@ -790,7 +790,9 @@ VALUES
     ('auth.otp_bypass_enabled', 'false', 'Enable OTP bypass for local/dev testing'),
     ('auth.otp_send_sms_enabled', 'true', 'If false, OTP is generated and stored but SMS send is skipped'),
     ('auth.super_admin_emails', '[]', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
-    ('auth.admin_emails', '[]', 'JSON array of admin emails. (Admin UI features can optionally use this.)')
+    ('auth.admin_emails', '[]', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
+    ('auth.super_admin_phones', '[]', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
+    ('auth.admin_phones', '[]', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS otp_provider_logs (
@@ -861,6 +863,53 @@ CREATE TABLE IF NOT EXISTS otp_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_otp_sessions_expires_at
     ON otp_sessions (expires_at);
+
+-- ── Admin Subscription Grants ──────────────────────────────────────────────────
+-- Allows admins to grant full subscription access to team members.
+-- Tracks who granted access (for audit purposes).
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS admin_subscription_grants (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    granted_by_user_id      UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    reason                  TEXT NOT NULL DEFAULT '',
+    is_active               BOOLEAN NOT NULL DEFAULT TRUE,
+    granted_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at              TIMESTAMPTZ NULL,
+    revoked_by_user_id      UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT admin_subscription_grants_user_unique UNIQUE (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_user
+    ON admin_subscription_grants (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_granted_by
+    ON admin_subscription_grants (granted_by_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_active
+    ON admin_subscription_grants (is_active) WHERE is_active = TRUE;
+
+COMMENT ON TABLE admin_subscription_grants IS
+    'Admin-granted full subscription access for team members. Tracks audit trail of who granted/revoked access.';
+
+-- Audit log for admin subscription grant actions
+CREATE TABLE IF NOT EXISTS admin_subscription_grant_logs (
+    id                      BIGSERIAL PRIMARY KEY,
+    target_user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action                  TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
+    admin_user_id           UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    reason                  TEXT NOT NULL DEFAULT '',
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_subscription_grant_logs_target
+    ON admin_subscription_grant_logs (target_user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_admin_subscription_grant_logs_admin
+    ON admin_subscription_grant_logs (admin_user_id, created_at DESC);
+
+COMMENT ON TABLE admin_subscription_grant_logs IS
+    'Audit log for all admin subscription grant/revoke actions.';
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════

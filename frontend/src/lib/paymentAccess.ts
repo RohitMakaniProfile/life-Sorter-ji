@@ -14,6 +14,7 @@ export type CapabilityState = {
   allowed: boolean;
   unlimited?: boolean;
   credits_remaining?: number | null;
+  via_admin_grant?: boolean;
 };
 
 export type PlanGrantSummary = {
@@ -24,12 +25,27 @@ export type PlanGrantSummary = {
   credits_unlimited: boolean;
   granted_at?: string | null;
   features: Record<string, unknown>;
+  // Admin grant specific fields
+  is_admin_grant?: boolean;
+  granted_by_email?: string;
+};
+
+export type AdminGrantInfo = {
+  id: string;
+  user_id: string;
+  granted_by_user_id: string;
+  granted_by_email: string;
+  reason: string;
+  is_active: boolean;
+  granted_at?: string | null;
 };
 
 export type UserEntitlements = {
   user_id: string;
   grants: PlanGrantSummary[];
   capabilities: Record<string, CapabilityState>;
+  has_admin_grant?: boolean;
+  admin_grant?: AdminGrantInfo | null;
 };
 
 export type PlanCatalogRow = {

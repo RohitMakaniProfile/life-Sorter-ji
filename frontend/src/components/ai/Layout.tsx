@@ -58,28 +58,38 @@ export default function Layout() {
             <span className="text-lg text-slate-200 group-hover:text-white">👤</span>
             <span className="text-sm text-slate-200 group-hover:text-white">Account</span>
           </NavLink>
-          {isSuperAdmin && (
-            <NavLink to="/admin/agents" className={navLinkClass}>
-              <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>
-              <span className="text-sm text-slate-200 group-hover:text-white">Agents (Edit)</span>
-            </NavLink>
-          )}
-          {isSuperAdmin && (
-            <NavLink to="/admin/observability" className={navLinkClass}>
-              <span className="text-lg text-slate-200 group-hover:text-white">📈</span>
-              <span className="text-sm text-slate-200 group-hover:text-white">Observability</span>
-            </NavLink>
-          )}
-          {isSuperAdmin && (
-            <NavLink to="/admin/config" className={navLinkClass}>
-              <span className="text-lg text-slate-200 group-hover:text-white">⚙️</span>
-              <span className="text-sm text-slate-200 group-hover:text-white">System Config</span>
-            </NavLink>
-          )}
           <NavLink to="/new" className={navLinkClass}>
             <span className="text-lg text-slate-200 group-hover:text-white">✨</span>
             <span className="text-sm text-slate-200 group-hover:text-white">New Chat</span>
           </NavLink>
+
+          {isSuperAdmin && (
+            <>
+              <div className="pt-3 pb-1 px-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Admin</p>
+              </div>
+              <NavLink to="/admin/users" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">👥</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">Users</span>
+              </NavLink>
+              <NavLink to="/admin/subscription-grants" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">🎫</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">Subscription Grants</span>
+              </NavLink>
+              <NavLink to="/admin/observability" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">📈</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">Observability</span>
+              </NavLink>
+              <NavLink to="/admin/config" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">⚙️</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">System Config</span>
+              </NavLink>
+              <NavLink to="/admin/agents" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">Agents (Edit)</span>
+              </NavLink>
+            </>
+          )}
         </nav>
 
         {/* Sidebar body (currently empty; Agents are managed on /agents page) */}
@@ -105,7 +115,7 @@ export default function Layout() {
                 } catch {
                   // ignore
                 }
-                window.location.href = '/admin/login?mode=internal';
+                window.location.href = '/phone-verify';
               }}
               className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800"
             >

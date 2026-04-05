@@ -169,3 +169,55 @@ export interface ObservabilitySnapshot {
   recentErrors: RecentErrorEntry[];
 }
 
+// Admin Subscription Grant types
+export interface AdminSubscriptionGrant {
+  id: string;
+  user_id: string;
+  user_email: string;
+  user_phone: string;
+  granted_by_user_id: string | null;
+  granted_by_email: string;
+  reason: string;
+  is_active: boolean;
+  granted_at: string | null;
+  revoked_at: string | null;
+  revoked_by_user_id: string | null;
+  revoked_by_email: string;
+}
+
+export interface AdminSubscriptionGrantAuditLog {
+  id: string;
+  target_user_id: string;
+  target_email: string;
+  action: 'grant' | 'revoke';
+  admin_user_id: string | null;
+  admin_email: string;
+  reason: string;
+  created_at: string | null;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  phone_number: string;
+  name: string;
+  auth_provider: string;
+  created_at: string;
+  last_login_at: string;
+}
+
+export interface AdminUsersResponse {
+  users: AdminUser[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminSubscriptionUserSearchResult {
+  id: string;
+  email: string;
+  phone_number: string;
+  created_at: string | null;
+  has_admin_grant: boolean;
+}
+

@@ -103,6 +103,7 @@ class CapabilityState(BaseModel):
     allowed: bool
     unlimited: bool = False
     credits_remaining: Optional[int] = None
+    via_admin_grant: bool = False
 
 
 class PlanGrantSummary(BaseModel):
@@ -113,6 +114,20 @@ class PlanGrantSummary(BaseModel):
     credits_unlimited: bool
     granted_at: Optional[str] = None
     features: dict[str, Any] = Field(default_factory=dict)
+    # Admin grant specific fields
+    is_admin_grant: bool = False
+    granted_by_email: Optional[str] = None
+
+
+class AdminGrantInfo(BaseModel):
+    """Details about an admin-granted subscription."""
+    id: str
+    user_id: str
+    granted_by_user_id: str
+    granted_by_email: str = ""
+    reason: str = ""
+    is_active: bool
+    granted_at: Optional[str] = None
 
 
 class UserEntitlementsResponse(BaseModel):
@@ -121,6 +136,8 @@ class UserEntitlementsResponse(BaseModel):
     user_id: str
     grants: list[PlanGrantSummary] = Field(default_factory=list)
     capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
+    has_admin_grant: bool = False
+    admin_grant: Optional[AdminGrantInfo] = None
 
 
 class PlanCatalogRow(BaseModel):

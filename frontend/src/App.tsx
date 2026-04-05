@@ -13,9 +13,13 @@ import AccountPage from './pages/AccountPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 import { getConversations } from './api';
 import AdminLoginPage from './pages/AdminLoginPage';
+import GoogleLoginPage from './pages/GoogleLoginPage';
+import PhoneVerifyPage from './pages/PhoneVerifyPage';
 import RequireSuperAdmin from './components/RequireSuperAdmin';
 import AdminSystemConfigPage from './pages/AdminSystemConfigPage';
 import AdminObservabilityPage from './pages/AdminObservabilityPage';
+import AdminSubscriptionGrantsPage from './pages/AdminSubscriptionGrantsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -53,11 +57,9 @@ function App() {
       <UiAgentsProvider>
         <BrowserRouter>
           <Routes>
-            <Route path="admin/login" element={<AdminLoginPage />} />
-
-            {/* Backwards-compatible routes (can be removed later). */}
-            <Route path="login-internal" element={<Navigate to="/admin/login?mode=internal" replace />} />
-            <Route path="login-admin" element={<Navigate to="/admin/login?mode=admin" replace />} />
+            <Route path="/admin/login" element={<AdminLoginPage />} />
+            <Route path="/google-login" element={<GoogleLoginPage />} />
+            <Route path="/phone-verify" element={<PhoneVerifyPage />} />
 
             {/* Standalone pages (no sidebar layout) */}
             <Route path="/payment" element={<PaymentPage />} />
@@ -77,8 +79,10 @@ function App() {
 
               <Route path="admin" element={<RequireSuperAdmin />}>
                 <Route index element={<Navigate to="/admin/observability" replace />} />
+                <Route path="users" element={<AdminUsersPage />} />
                 <Route path="observability" element={<AdminObservabilityPage />} />
                 <Route path="config" element={<AdminSystemConfigPage />} />
+                <Route path="subscription-grants" element={<AdminSubscriptionGrantsPage />} />
                 <Route path="agents" element={<AgentsPage />} />
                 <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
               </Route>
