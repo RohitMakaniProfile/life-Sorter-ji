@@ -237,6 +237,39 @@ class PostgresTaskStreamStore:
                         exp,
                     )
 
+    async def clear_actor_mapping(
+        self,
+        task_type: str,
+        *,
+        session_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Remove actor mapping so next start creates a fresh stream."""
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            if session_id:
+                sid = (session_id or "").strip()
+                if sid:
+                    await conn.execute(
+                        """
+                        DELETE FROM task_stream_maps
+                        WHERE task_type = $1 AND map_kind = 'session' AND map_key = $2
+                        """,
+                        task_type,
+                        sid,
+                    )
+            if user_id:
+                uid = (user_id or "").strip()
+                if uid:
+                    await conn.execute(
+                        """
+                        DELETE FROM task_stream_maps
+                        WHERE task_type = $1 AND map_kind = 'user' AND map_key = $2
+                        """,
+                        task_type,
+                        uid,
+                    )
+
     async def xadd_event(self, stream_id: str, event_type: str, data: dict[str, Any]) -> TaskStreamEvent:
         event_obj = {"type": event_type, **data}
         event_json = json.dumps(event_obj, separators=(",", ":"), ensure_ascii=False)

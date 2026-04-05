@@ -952,6 +952,9 @@ async def start_plan_via_task_stream(body: dict[str, Any]) -> dict[str, Any]:
     - Survives page refreshes (durable to Redis/Postgres)
     - Provides real-time streaming updates via SSE
     - Eliminates the need for polling
+
+    Uses force_fresh=True to ensure any stale streams are cancelled before
+    starting a new one. This prevents showing old/stale data from crashed tasks.
     """
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import get_task_registry
@@ -984,7 +987,8 @@ async def start_plan_via_task_stream(body: dict[str, Any]) -> dict[str, Any]:
         },
         session_id=session_id,
         user_id=user_id,
-        resume_if_exists=True,
+        resume_if_exists=False,  # Don't resume - user explicitly clicked Start
+        force_fresh=True,  # Clear any stale streams before starting
     )
 
     return {

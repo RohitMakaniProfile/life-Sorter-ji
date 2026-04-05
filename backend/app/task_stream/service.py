@@ -35,13 +35,28 @@ class TaskStreamService:
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         resume_if_exists: bool = True,
+        force_fresh: bool = False,
     ) -> dict[str, str]:
         if not (session_id or user_id):
             raise HTTPException(status_code=400, detail="Provide session_id or user_id")
 
+        # Force fresh: mark any existing streams as cancelled/stale before starting new
+        if force_fresh:
+            existing = await self.store.resolve_stream_id(
+                task_type, session_id=session_id, user_id=user_id
+            )
+            if existing:
+                old_status = await self.store.get_status(existing)
+                # Mark as cancelled if it was running (stale)
+                if old_status == "running":
+                    await self.store.set_status(existing, "cancelled")
+                    await self.store.xadd_event(existing, "error", {"message": "Superseded by new task"})
+                # Clear the actor mapping so we start fresh
+                await self.store.clear_actor_mapping(task_type, session_id=session_id, user_id=user_id)
+
         # 1) Resume by mapping (session_id/user_id) if desired.
         #    Only resume if the stream is still running; ignore done/error/cancelled streams.
-        if resume_if_exists:
+        if resume_if_exists and not force_fresh:
             existing = await self.store.resolve_stream_id(
                 task_type, session_id=session_id, user_id=user_id
             )

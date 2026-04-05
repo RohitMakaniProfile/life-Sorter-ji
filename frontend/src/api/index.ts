@@ -3,5 +3,6 @@ export { apiRequest, apiGet, apiPost } from './http';
 export * from './services/core';
 export * from './services/admin';
 export * from './services/planExecution';
+export * from './services/taskStream';
 export * from './types';
 

@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import ChatUI from '../../components/ai/chat/ChatUI';
 import type { RichMessage, CrossAgentAction } from '../../components/ai/chat/ChatUI';
 import AgentSelector from '../../components/ai/AgentSelector';
-import { checkAgentAccess, getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream } from '../../api';
+import { checkAgentAccess, getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream, clearStoredTaskStreamId } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../../context/UiAgentsContext';
 
@@ -774,6 +774,9 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
       // Approve/Retry: start durable background execution via /message/background.
       const optionLower = option.trim().toLowerCase();
       if (optionLower === 'approve' || optionLower === 'retry') {
+        // Clear any stale stream IDs from localStorage before starting fresh
+        clearStoredTaskStreamId('plan/execute', { sessionId: null, userId: null });
+        
         let retryPlanId: string | undefined;
         if (optionLower === 'retry') {
           const latestPlan = [...messages]

@@ -134,6 +134,24 @@ class RedisTaskStreamStore:
             if uid:
                 await redis.set(self._map_user_key(task_type, uid), stream_id, ex=ttl)
 
+    async def clear_actor_mapping(
+        self,
+        task_type: str,
+        *,
+        session_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Remove actor mapping so next start creates a fresh stream."""
+        redis = await _require_redis()
+        if session_id:
+            sid = (session_id or "").strip()
+            if sid:
+                await redis.delete(self._map_session_key(task_type, sid))
+        if user_id:
+            uid = (user_id or "").strip()
+            if uid:
+                await redis.delete(self._map_user_key(task_type, uid))
+
     async def xadd_event(self, stream_id: str, event_type: str, data: dict[str, Any]) -> TaskStreamEvent:
         redis = await _require_redis()
 
