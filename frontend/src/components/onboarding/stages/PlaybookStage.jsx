@@ -19,12 +19,50 @@ export default function PlaybookStage({
 }) {
   const gapComplete = gapQuestions.length === 0 || gapQuestions.every((_, i) => gapAnswers[i]);
   const streamContainerRef = useRef(null);
+  // true = auto-scroll is active; false = user scrolled up and locked it
+  const autoScrollEnabledRef = useRef(true);
+  // prevents the scroll listener from reacting to our own programmatic scrolls
+  const isProgrammaticScrollRef = useRef(false);
 
+  // Reset auto-scroll when a new stream starts
   useEffect(() => {
-    if (!playbookStreaming || !playbookText || playbookDone) return;
+    if (playbookStreaming && !playbookDone) {
+      autoScrollEnabledRef.current = true;
+    }
+  }, [playbookStreaming, playbookDone]);
+
+  // Listen for user-initiated scrolls to lock / unlock auto-scroll
+  useEffect(() => {
     const el = streamContainerRef.current;
     if (!el) return;
+
+    const handleScroll = () => {
+      // Ignore scrolls we triggered ourselves
+      if (isProgrammaticScrollRef.current) return;
+
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Within 40 px of the bottom → re-enable; anywhere above → lock
+      autoScrollEnabledRef.current = distanceFromBottom <= 40;
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Auto-scroll to bottom as tokens arrive, unless the user has locked it
+  useEffect(() => {
+    if (!playbookStreaming || !playbookText || playbookDone) return;
+    if (!autoScrollEnabledRef.current) return;
+    const el = streamContainerRef.current;
+    if (!el) return;
+
+    // Mark the upcoming scroll as programmatic so the listener ignores it
+    isProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
+    // Clear the flag after the browser has processed the scroll event
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
   }, [playbookText, playbookStreaming, playbookDone]);
 
   return (
