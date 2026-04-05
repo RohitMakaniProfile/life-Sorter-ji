@@ -67,6 +67,8 @@ async def chat_completion(
     choice = (data.get("choices") or [{}])[0]
     message = _extract_text((choice.get("message") or {}).get("content"))
     usage = data.get("usage") or {}
+    # OpenRouter uses "finish_reason" (OpenAI-style), sometimes "stop_reason" (Anthropic-style)
+    finish_reason = choice.get("finish_reason") or choice.get("stop_reason") or ""
     return {
         "message": message.strip(),
         "usage": {
@@ -74,6 +76,7 @@ async def chat_completion(
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "total_tokens": int(usage.get("total_tokens") or 0),
         },
+        "finish_reason": finish_reason,
     }
 
 
@@ -93,6 +96,7 @@ async def chat_completion_stream(
         "stream": True,
     }
     full_text = ""
+    finish_reason = ""
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", OPENROUTER_CHAT_URL, json=payload, headers=_headers()) as resp:
             resp.raise_for_status()
@@ -116,8 +120,13 @@ async def chat_completion_stream(
                         result = on_token(token)
                         if asyncio.iscoroutine(result):
                             await result
+                # Capture finish_reason from final chunk
+                fr = choice.get("finish_reason") or choice.get("stop_reason")
+                if fr:
+                    finish_reason = fr
     # OpenRouter does not always emit final usage in streamed lines reliably.
     return {
         "message": full_text.strip(),
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "finish_reason": finish_reason,
     }

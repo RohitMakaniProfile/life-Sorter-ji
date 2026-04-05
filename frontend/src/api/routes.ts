@@ -68,6 +68,7 @@ export const API_ROUTES = {
     tokenUsage: '/api/v1/ai-chat/token-usage',
     insightFeedback: '/api/v1/ai-chat/insight-feedback',
     planStatus: '/api/v1/ai-chat/plan-status',
+    planExecute: '/api/v1/ai-chat/plan-execute',
     agentAccess: '/api/v1/ai-chat/agent-access',
   },
   agents: {
@@ -93,6 +94,8 @@ export const API_ROUTES = {
     eventsByStreamId: (streamId: string) => `/api/v1/task-stream/events/${encodeURIComponent(streamId)}`,
     eventsByActor: (taskType: string) => `/api/v1/task-stream/events/${encodeURIComponent(taskType)}/resume`,
     statusByStreamId: (streamId: string) => `/api/v1/task-stream/status/${encodeURIComponent(streamId)}`,
+    // Plan execution via task stream (replaces polling)
+    planExecute: '/api/v1/task-stream/start/plan%2Fexecute',
   },
 } as const;
 

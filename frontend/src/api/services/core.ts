@@ -154,6 +154,7 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
           assistantMessageId?: string;
           mode?: string;
           journeyStep?: string;
+          taskStream?: { streamId: string; taskType: string };
         };
 
         if (data.error && !data.stage) throw new Error(data.error);
@@ -186,6 +187,7 @@ async function readSseStream(response: Response, callbacks: StreamCallbacks): Pr
             assistantMessageId: data.assistantMessageId,
             mode: data.mode as string | undefined,
             journeyStep: data.journeyStep as string | undefined,
+            taskStream: data.taskStream,
           };
         }
       } catch (e) {
@@ -240,6 +242,11 @@ export async function sendMessage(opts: {
   planMarkdown?: string;
   assistantMessageId?: string;
   agentId?: AgentId;
+  /** Task stream metadata when background task is started */
+  taskStream?: {
+    streamId: string;
+    taskType: string;
+  };
 }> {
   return apiJsonPost<{
     message?: string;
@@ -254,6 +261,10 @@ export async function sendMessage(opts: {
     planMarkdown?: string;
     assistantMessageId?: string;
     agentId?: AgentId;
+    taskStream?: {
+      streamId: string;
+      taskType: string;
+    };
   }>(
     API_ROUTES.aiChat.message,
     withAuthActor({
@@ -277,6 +288,11 @@ export async function sendMessageBackground(opts: {
   planId?: string;
   assistantMessageId?: string;
   agentId?: AgentId;
+  /** Task stream metadata when background task is started */
+  taskStream?: {
+    streamId: string;
+    taskType: string;
+  };
 }> {
   return apiJsonPost<{
     conversationId: string;
@@ -286,6 +302,10 @@ export async function sendMessageBackground(opts: {
     planId?: string;
     assistantMessageId?: string;
     agentId?: AgentId;
+    taskStream?: {
+      streamId: string;
+      taskType: string;
+    };
   }>(
     API_ROUTES.aiChat.messageBackground,
     withAuthActor({
@@ -388,6 +408,7 @@ export async function checkAgentAccess(agentId: string): Promise<AgentAccessResu
 export interface TaskStreamCallbacks {
   onToken?: (token: string) => void;
   onStage?: (stage: string, label: string) => void;
+  onProgress?: (data: Record<string, unknown>) => void;
   onDone?: (data: Record<string, unknown>) => void;
   onError?: (message: string) => void;
 }
@@ -421,6 +442,8 @@ export async function subscribeToTaskStream(
           callbacks.onToken?.(data.token);
         } else if (type === 'stage') {
           callbacks.onStage?.(String(data.stage ?? ''), String(data.label ?? ''));
+        } else if (type === 'progress') {
+          callbacks.onProgress?.(data);
         } else if (type === 'done') {
           callbacks.onDone?.(data);
           return;

@@ -939,6 +939,59 @@ async def schedule_plan_approval_background(body: dict[str, Any]) -> dict[str, A
     }
 
 
+async def start_plan_via_task_stream(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Start plan execution via the task-stream system (replaces polling).
+
+    Returns stream_id that the frontend can use to subscribe to real-time updates.
+    This is the preferred method as it:
+    - Survives page refreshes (durable to Redis/Postgres)
+    - Provides real-time streaming updates via SSE
+    - Eliminates the need for polling
+    """
+    from app.task_stream.service import TaskStreamService
+    from app.task_stream.registry import get_task_registry
+
+    plan_id = str(body.get("planId") or "").strip()
+    conversation_id = str(body.get("conversationId") or "").strip()
+
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="planId is required")
+    if not str(body.get("agentId") or "").strip():
+        raise HTTPException(status_code=400, detail="agentId is required for plan execution")
+
+    session_id, user_id = actor_from_payload(body)
+
+    # Get the task function from registry
+    task_registry = get_task_registry()
+    task_fn = task_registry.get("plan/execute")
+    if not task_fn:
+        raise HTTPException(status_code=500, detail="plan/execute task not registered")
+
+    service = TaskStreamService()
+    result = await service.start_task_stream(
+        task_type="plan/execute",
+        task_fn=task_fn,
+        payload={
+            "plan_id": plan_id,
+            "conversation_id": conversation_id,
+            "agent_id": str(body.get("agentId") or "").strip(),
+            "message": str(body.get("message") or "approve"),
+        },
+        session_id=session_id,
+        user_id=user_id,
+        resume_if_exists=True,
+    )
+
+    return {
+        "conversationId": conversation_id,
+        "planId": plan_id,
+        "streamId": result["stream_id"],
+        "status": result["status"],
+        "useTaskStream": True,
+    }
+
+
 async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any]:
     """
     Ensure background execution exists for planId.

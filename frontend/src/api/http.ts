@@ -3,6 +3,7 @@ import { IKSHAN_AUTH_TOKEN_KEY } from '../config/authStorage';
 
 type Primitive = string | number | boolean | null;
 type JsonValue = Primitive | JsonValue[] | { [k: string]: JsonValue };
+type JsonSerializable = JsonValue | Record<string, unknown>;
 
 function getAuthToken(): string | null {
   try {
@@ -95,7 +96,7 @@ export async function apiGet<T>(pathOrUrl: string, init: RequestInit = {}): Prom
   return (await res.json()) as T;
 }
 
-export async function apiPost<T>(pathOrUrl: string, body?: JsonValue, init: RequestInit = {}): Promise<T> {
+export async function apiPost<T>(pathOrUrl: string, body?: JsonSerializable, init: RequestInit = {}): Promise<T> {
   const res = await apiRequest(pathOrUrl, {
     ...init,
     method: 'POST',

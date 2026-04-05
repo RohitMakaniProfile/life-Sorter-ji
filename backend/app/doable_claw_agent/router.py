@@ -20,6 +20,7 @@ from app.services.agent_checklist_service import (
     schedule_plan_approval_background,
     ensure_plan_approval_background,
     execute_plan_approval_work,
+    start_plan_via_task_stream,
 )
 from .stores import append_assistant_placeholder
 

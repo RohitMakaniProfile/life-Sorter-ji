@@ -184,6 +184,10 @@ export function getStoredTaskStreamId(taskType: string, opts: { sessionId?: stri
   return safeLocalStorageGet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null));
 }
 
+export function storeTaskStreamId(taskType: string, streamId: string, opts: { sessionId?: string | null; userId?: string | null }): void {
+  safeLocalStorageSet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null), streamId);
+}
+
 export function clearStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): void {
   const key = streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null);
   const streamId = safeLocalStorageGet(key);

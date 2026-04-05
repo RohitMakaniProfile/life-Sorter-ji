@@ -636,6 +636,10 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     phase1AutoSendKeysRef.current.add(location.key);
     if (st?.agentId) setActiveAgentId(st.agentId);
     setAgentSelected(true);
+    // Clear existing conversation to start fresh when triggered by cross-agent action
+    setMessages([]);
+    setConversationId(undefined);
+    setConversationStageOutputs({});
     navigate(location.pathname, { replace: true, state: {} });
     if (msg) void runStreamRef.current(msg, undefined, undefined, st?.agentId);
   }, [initLoading, location.key, location.pathname, location.state, navigate, setActiveAgentId]);

@@ -19,6 +19,7 @@ class AiChatResult:
     message: str
     input_tokens: int
     output_tokens: int
+    stop_reason: str = ""
 
 
 def _extract_json_object(text: str) -> str:
@@ -257,6 +258,7 @@ class AIHelper:
             message=str(response.get("message") or "").strip(),
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
+            stop_reason=str(response.get("finish_reason") or ""),
         )
 
     async def chat_stream(
@@ -292,6 +294,7 @@ class AIHelper:
             message=str(streamed.get("message") or "").strip(),
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
+            stop_reason=str(streamed.get("finish_reason") or ""),
         )
 
 

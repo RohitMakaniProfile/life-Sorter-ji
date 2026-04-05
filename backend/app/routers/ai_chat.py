@@ -164,7 +164,8 @@ async def send_message(req: Request) -> dict[str, Any]:
                 "sessionId": body.get("sessionId"),
                 "userId": body.get("userId"),
             }
-            started = await agent_router.schedule_plan_approval_background(approve_body)
+            # Start plan execution via task stream (replaces background execution + polling)
+            task_stream_result = await agent_router.start_plan_via_task_stream(approve_body)
             return {
                 "mode": "option",
                 "conversationId": conversation_id,
@@ -173,7 +174,11 @@ async def send_message(req: Request) -> dict[str, Any]:
                 "planId": plan_id,
                 "requiresStream": False,
                 "backgroundExecution": True,
-                **started,
+                "taskStream": {
+                    "streamId": task_stream_result.get("streamId"),
+                    "taskType": "plan/execute",
+                },
+                **{k: v for k, v in task_stream_result.items() if k not in ("streamId", "useTaskStream")},
             }
         return {
             "mode": "option",
@@ -338,7 +343,8 @@ async def send_message_background(req: Request) -> dict[str, Any]:
             "sessionId": body.get("sessionId"),
             "userId": body.get("userId"),
         }
-        started = await agent_router.ensure_plan_approval_background(approve_body)
+        # Start plan execution via task stream (replaces background execution + polling)
+        task_stream_result = await agent_router.start_plan_via_task_stream(approve_body)
         return {
             "mode": "option",
             "conversationId": conversation_id_direct,
@@ -346,7 +352,11 @@ async def send_message_background(req: Request) -> dict[str, Any]:
             "status": "accepted",
             "planId": plan_id_direct,
             "backgroundExecution": True,
-            **started,
+            "taskStream": {
+                "streamId": task_stream_result.get("streamId"),
+                "taskType": "plan/execute",
+            },
+            **{k: v for k, v in task_stream_result.items() if k not in ("streamId", "useTaskStream")},
         }
 
     matched = await _match_pending_option(body)
@@ -382,7 +392,8 @@ async def send_message_background(req: Request) -> dict[str, Any]:
         "sessionId": body.get("sessionId"),
         "userId": body.get("userId"),
     }
-    started = await agent_router.ensure_plan_approval_background(approve_body)
+    # Start plan execution via task stream (replaces background execution + polling)
+    task_stream_result = await agent_router.start_plan_via_task_stream(approve_body)
     return {
         "mode": "option",
         "conversationId": conversation_id,
@@ -390,7 +401,11 @@ async def send_message_background(req: Request) -> dict[str, Any]:
         "status": "accepted",
         "planId": plan_id,
         "backgroundExecution": True,
-        **started,
+        "taskStream": {
+            "streamId": task_stream_result.get("streamId"),
+            "taskType": "plan/execute",
+        },
+        **{k: v for k, v in task_stream_result.items() if k not in ("streamId", "useTaskStream")},
     }
 
 
@@ -522,6 +537,43 @@ async def plan_status(plan_id: str = Query(..., alias="planId")) -> dict[str, An
     if row.get("errorMessage"):
         result["errorMessage"] = row.get("errorMessage")
     return result
+
+
+@router.post("/plan-execute")
+async def plan_execute_via_task_stream(req: Request) -> dict[str, Any]:
+    """
+    Start plan execution via the task-stream system.
+
+    Note: Plan execution is also triggered automatically when sending "approve"
+    via /message or /message/background. This endpoint exists as a fallback
+    or for explicit task stream control.
+
+    This method:
+    - Survives page refreshes (durable to Redis/Postgres)
+    - Provides real-time streaming updates via SSE (no polling needed)
+    - Allows resume after reconnection
+
+    Returns:
+        streamId: The task stream ID to subscribe to for real-time updates
+        planId: The plan being executed
+        conversationId: The conversation ID
+        status: "running" if the stream was started/resumed
+
+    Frontend should subscribe to: /api/v1/task-stream/events/{streamId}
+    """
+    body = await req.json()
+
+    # Plan access check
+    bg_conv_id = str(body.get("conversationId") or "").strip()
+    bg_agent_id = str(body.get("agentId") or "").strip()
+    if bg_conv_id and not bg_agent_id:
+        bg_conv = await get_conversation(bg_conv_id)
+        if bg_conv:
+            bg_agent_id = str(bg_conv.get("agentId") or "").strip()
+    if bg_agent_id:
+        await _enforce_agent_access(req, bg_agent_id)
+
+    return await agent_router.start_plan_via_task_stream(body)
 
 
 AGENT_INITIAL_MESSAGES: dict[str, dict[str, Any]] = {

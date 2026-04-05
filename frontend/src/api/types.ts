@@ -109,6 +109,11 @@ export interface StreamResult {
   assistantMessageId?: string;
   mode?: string;
   journeyStep?: string;
+  /** Task stream metadata when background task is started */
+  taskStream?: {
+    streamId: string;
+    taskType: string;
+  };
 }
 
 export interface SendMessageStreamOptions {

@@ -28,3 +28,9 @@ def register_task_stream(task_type: str) -> Callable[[F], F]:
 
     return _decorator
 
+
+def get_task_registry() -> dict[str, TaskFn]:
+    """Return the current task registry dictionary."""
+    return TASK_STREAM_REGISTRY
+
+
