@@ -218,6 +218,84 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         // Sync active agent to match the conversation's stored agentId.
         if (data.agentId) setActiveAgentId(data.agentId as AgentId);
 
+        // Playbook-step resume: if the last message is a playbook step, subscribe to its stream.
+        const lastMappedMsg = mapped[mapped.length - 1];
+        if (
+          lastMappedMsg?.role === 'assistant' &&
+          (lastMappedMsg as any).journeyStep === 'playbook'
+        ) {
+          const playbookStreamId = (lastMappedMsg as any).journeySelections?.streamId as string | undefined;
+          const playbookWebsiteUrl = (lastMappedMsg as any).journeySelections?.websiteUrl as string | undefined;
+          if (playbookStreamId) {
+            setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: loadedAgentId } as any]);
+            const handlePlaybookError = (msg: string) => {
+              setMessages((prev) => {
+                const updated = [...prev];
+                // Remove the streaming placeholder
+                updated.pop();
+                // Update the original playbook message with error + retry option
+                const idx = [...updated].reverse().findIndex(
+                  (m) => m.role === 'assistant' && (m as any).journeyStep === 'playbook'
+                );
+                const playbookIdx = idx >= 0 ? updated.length - 1 - idx : -1;
+                if (playbookIdx >= 0) {
+                  updated[playbookIdx] = {
+                    ...updated[playbookIdx],
+                    content: `⚠️ Playbook generation failed${msg ? `: ${msg}` : ''}. Click **Retry Playbook** to try again.`,
+                    options: ['Retry Playbook'],
+                  } as any;
+                }
+                return updated;
+              });
+            };
+            subscribeToTaskStream(playbookStreamId, {
+              onToken: (token) => {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token } as any;
+                  }
+                  return updated;
+                });
+              },
+              onDone: (doneData) => {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    const playbookData = {
+                      playbook: String(doneData.playbook ?? last.content ?? ''),
+                      websiteAudit: String(doneData.website_audit ?? ''),
+                      contextBrief: String(doneData.context_brief ?? ''),
+                      icpCard: String(doneData.icp_card ?? ''),
+                    };
+                    const crossAgentActions: CrossAgentAction[] = [];
+                    if (playbookWebsiteUrl) {
+                      crossAgentActions.push({
+                        label: 'Do Deep Analysis',
+                        icon: '🔬',
+                        agentId: 'research-orchestrator',
+                        initialMessage: `Do deep analysis of ${playbookWebsiteUrl}`,
+                      });
+                    }
+                    updated[updated.length - 1] = {
+                      ...last,
+                      kind: 'final',
+                      playbookData,
+                      ...(crossAgentActions.length ? { crossAgentActions } : {}),
+                    } as any;
+                  }
+                  return updated;
+                });
+              },
+              onError: (msg) => handlePlaybookError(msg),
+            }).catch((err) => {
+              handlePlaybookError(err instanceof Error ? err.message : 'Stream unavailable');
+            });
+          }
+        }
+
         // Refresh-resume: if latest plan is still executing, show running state and keep polling.
         const latestPlan = [...mapped]
           .reverse()

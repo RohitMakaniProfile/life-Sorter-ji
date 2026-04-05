@@ -66,6 +66,7 @@ class OnboardingStateResponse(BaseModel):
     precision_answers: Optional[list[dict[str, Any]]] = None
     precision_status: Optional[str] = None
     playbook_status: Optional[str] = None
+    playbook_error: Optional[str] = None
     gap_questions: Optional[list[dict[str, Any]]] = None
     gap_answers: Optional[str] = None
 
@@ -101,7 +102,7 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
 
     # Check if playbook is complete or generating
     playbook_status = str(row.get("playbook_status") or "")
-    if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers"):
+    if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers", "error"):
         return "playbook"
 
     # Check if precision questions are in progress
@@ -177,11 +178,11 @@ async def get_onboarding_state(
         if uid:
             row = await conn.fetchrow(
                 """
-                SELECT 
+                SELECT
                     session_id, outcome, domain, task, website_url, gbp_url,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
-                    playbook_status, gap_questions, gap_answers, onboarding_completed_at
+                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
                 FROM onboarding
                 WHERE user_id::text = $1
                 ORDER BY updated_at DESC NULLS LAST, created_at DESC
@@ -194,11 +195,11 @@ async def get_onboarding_state(
         if not row and sid:
             row = await conn.fetchrow(
                 """
-                SELECT 
+                SELECT
                     session_id, outcome, domain, task, website_url, gbp_url,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
-                    playbook_status, gap_questions, gap_answers, onboarding_completed_at
+                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
                 FROM onboarding
                 WHERE session_id = $1
                 """,
@@ -245,6 +246,7 @@ async def get_onboarding_state(
             precision_answers=precision_answers if precision_answers else None,
             precision_status=str(row_dict.get("precision_status") or "") or None,
             playbook_status=str(row_dict.get("playbook_status") or "") or None,
+            playbook_error=str(row_dict.get("playbook_error") or "") or None,
             gap_questions=gap_questions if gap_questions else None,
             gap_answers=str(row_dict.get("gap_answers") or "") or None,
         )

@@ -145,6 +145,7 @@ export default function OnboardingApp() {
     playbookResult,
     needsManualRetry,
     prepareStreaming,
+    markRetryNeeded,
     stopStreaming,
     startForSession,
   } = usePlaybookTaskStream({
@@ -346,8 +347,11 @@ export default function OnboardingApp() {
               setShowGapQuestions(true);
             }
             setShowPlaybook(true);
-            // Resume playbook stream if it was in progress
-            if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
+            if (state.playbook_status === 'error') {
+              // Previous generation failed — show retry button immediately
+              markRetryNeeded();
+            } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
+              // Resume playbook stream if it was in progress
               prepareStreaming();
               const sid = sessionIdRef.current;
               if (sid) {

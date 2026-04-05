@@ -473,6 +473,11 @@ async def next_step(
     """
     prev = dict(journey_selections or {})
 
+    # ── Playbook retry ──────────────────────────────────────────────────────
+    if current_step == JOURNEY_STEP_PLAYBOOK:
+        # Any message on the playbook step restarts generation (handles retry after failure)
+        return await _playbook_start(prev)
+
     # ── Q1: Outcome ─────────────────────────────────────────────────────────
     if current_step == JOURNEY_STEP_OUTCOME:
         domains = get_domain_options(selected_option)

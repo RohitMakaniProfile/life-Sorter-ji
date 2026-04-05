@@ -240,6 +240,13 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     startForSession(sid, { fresh: true }).catch(() => {});
   }, [otpVerified, startForSession]);
 
+  const markRetryNeeded = useCallback(() => {
+    setPlaybookStreaming(false);
+    setPlaybookDone(false);
+    setPlaybookResult(null);
+    setNeedsManualRetry(true);
+  }, []);
+
   return {
     playbookStreaming,
     playbookText,
@@ -247,6 +254,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     playbookResult,
     needsManualRetry,
     prepareStreaming: resetPlaybackState,
+    markRetryNeeded,
     stopStreaming,
     startForSession,
     markStepReached,

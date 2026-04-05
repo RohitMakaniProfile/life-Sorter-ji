@@ -236,6 +236,29 @@ async def send_message(req: Request) -> dict[str, Any]:
                         "messages": conv.get("messages") or [],
                     }
 
+                # Playbook retry: any message restarts generation
+                if step == journey_service.JOURNEY_STEP_PLAYBOOK and user_text:
+                    await append_message(conversation_id_ft, "user", user_text)
+                    next_msg = await journey_service.next_step(step, user_text, prev_selections)
+                    if next_msg is not None:
+                        await append_message(
+                            conversation_id_ft,
+                            "assistant",
+                            next_msg["content"],
+                            options=next_msg["options"],
+                            allowCustomAnswer=next_msg["allowCustomAnswer"],
+                            journeyStep=next_msg["journeyStep"],
+                            journeySelections=next_msg.get("journeySelections", {}),
+                            kind="final",
+                        )
+                        conv = await get_conversation(conversation_id_ft) or {}
+                        return {
+                            "mode": "journey",
+                            "conversationId": conversation_id_ft,
+                            "journeyStep": next_msg["journeyStep"],
+                            "messages": conv.get("messages") or [],
+                        }
+
                 # Diagnostic / Precision / Gap free-text answers
                 _FREE_TEXT_STEPS = {
                     journey_service.JOURNEY_STEP_DIAGNOSTIC,
@@ -481,7 +504,28 @@ async def send_message_stream(req: Request) -> StreamingResponse:
                         journey_service.JOURNEY_STEP_PRECISION,
                         journey_service.JOURNEY_STEP_GAP,
                     }
-                    if step_s in _FREE_TEXT_STEPS_S and user_text_s and last_asst_s.get("allowCustomAnswer"):
+                    if step_s == journey_service.JOURNEY_STEP_PLAYBOOK and user_text_s:
+                        await append_message(conversation_id_s, "user", user_text_s)
+                        next_msg_s = await journey_service.next_step(step_s, user_text_s, prev_sel_s)
+
+                        if next_msg_s is not None:
+                            await append_message(
+                                conversation_id_s,
+                                "assistant",
+                                next_msg_s["content"],
+                                options=next_msg_s["options"],
+                                allowCustomAnswer=next_msg_s["allowCustomAnswer"],
+                                journeyStep=next_msg_s["journeyStep"],
+                                journeySelections=next_msg_s.get("journeySelections", {}),
+                                kind="final",
+                            )
+                            next_step_val_pb = next_msg_s["journeyStep"]
+
+                            async def _playbook_retry_gen():
+                                yield _sse({"done": True, "conversationId": conversation_id_s, "mode": "journey", "journeyStep": next_step_val_pb})
+
+                            return StreamingResponse(_playbook_retry_gen(), media_type="text/event-stream")
+                    elif step_s in _FREE_TEXT_STEPS_S and user_text_s and last_asst_s.get("allowCustomAnswer"):
                         await append_message(conversation_id_s, "user", user_text_s)
                         if step_s == journey_service.JOURNEY_STEP_URL:
                             next_msg_s = journey_service.start_scale_questions(url=user_text_s, acc=prev_sel_s)
