@@ -318,8 +318,11 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
               resumeAttempted: resumeAttemptedPlanIdsRef.current.has(latestPlan.planId || ''),
             });
 
-            if (status === 'error') {
-              pushBackgroundStatus(errorMessage ? `Background task failed: ${errorMessage}` : 'Background task failed', 'error', latestPlan.planId);
+            if (status === 'error' || status === 'interrupted') {
+              const errMsg = status === 'interrupted'
+                ? (errorMessage || 'Process was interrupted (server restart). You can retry this plan.')
+                : (errorMessage || 'Background task failed');
+              pushBackgroundStatus(errMsg, 'error', latestPlan.planId);
               setMessages((prev) => {
                 const u = [...prev];
                 const idx = u.findIndex((m) => (m as any).planId === latestPlan.planId);
@@ -455,13 +458,13 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                   );
                   return;
                 }
-                if (st.status === 'error') {
+                if (st.status === 'error' || st.status === 'interrupted') {
                   pushBackgroundStatus(st.errorMessage ? `Background task failed: ${st.errorMessage}` : 'Background task failed', 'error', latestPlan.planId);
                 }
                 if (st.status === 'cancelled') {
                   pushBackgroundStatus('Background task cancelled', 'error', latestPlan.planId);
                 }
-                if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled') return;
+                if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled' && st.status !== 'interrupted') return;
                 if (planPollIntervalRef.current) {
                   clearInterval(planPollIntervalRef.current);
                   planPollIntervalRef.current = null;
@@ -470,7 +473,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 const a = (refreshed.agentId ?? loadedAgentId) as AgentId;
                 setMessages((refreshed.messages ?? []).map((m) => ({ ...m, agentId: a } as any)));
                 if (refreshed.lastStageOutputs) setConversationStageOutputs(refreshed.lastStageOutputs);
-                if ((st.status === 'error' || st.status === 'cancelled') && latestPlan.planId) {
+                if ((st.status === 'error' || st.status === 'cancelled' || st.status === 'interrupted') && latestPlan.planId) {
                   reopenPlanOptions(latestPlan.planId);
                 }
               } catch {
@@ -816,13 +819,13 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 );
                 return;
               }
-              if (st.status === 'error') {
+              if (st.status === 'error' || st.status === 'interrupted') {
                 pushBackgroundStatus(st.errorMessage ? `Background task failed: ${st.errorMessage}` : 'Background task failed', 'error', pid);
               }
               if (st.status === 'cancelled') {
                 pushBackgroundStatus('Background task cancelled', 'error', pid);
               }
-              if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled') return;
+              if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled' && st.status !== 'interrupted') return;
               if (planPollIntervalRef.current) {
                 clearInterval(planPollIntervalRef.current);
                 planPollIntervalRef.current = null;
@@ -832,7 +835,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
               setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
               if (data.conversationId) setConversationId(data.conversationId);
               if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
-              if (st.status === 'error' || st.status === 'cancelled') reopenPlanOptions(pid);
+              if (st.status === 'error' || st.status === 'cancelled' || st.status === 'interrupted') reopenPlanOptions(pid);
             } catch {
               // retry
             }
@@ -1053,13 +1056,13 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
               pushBackgroundStatus('Background task running', 'thinking');
               return;
             }
-            if (st.status === 'error') {
+            if (st.status === 'error' || st.status === 'interrupted') {
               pushBackgroundStatus(st.errorMessage ? `Background task failed: ${st.errorMessage}` : 'Background task failed', 'error', pid);
             }
             if (st.status === 'cancelled') {
               pushBackgroundStatus('Background task cancelled', 'error', pid);
             }
-            if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled') return;
+            if (st.status !== 'done' && st.status !== 'error' && st.status !== 'cancelled' && st.status !== 'interrupted') return;
             if (planPollIntervalRef.current) {
               clearInterval(planPollIntervalRef.current);
               planPollIntervalRef.current = null;
@@ -1069,7 +1072,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             setMessages((data.messages ?? []).map((m) => ({ ...m, agentId: loadedAgentId } as any)));
             if (data.conversationId) setConversationId(data.conversationId);
             if (data.lastStageOutputs) setConversationStageOutputs(data.lastStageOutputs);
-            if (st.status === 'error' || st.status === 'cancelled') reopenPlanOptions(pid);
+            if (st.status === 'error' || st.status === 'cancelled' || st.status === 'interrupted') reopenPlanOptions(pid);
           } catch {
             // retry
           }

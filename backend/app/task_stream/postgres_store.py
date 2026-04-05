@@ -407,3 +407,26 @@ class PostgresTaskStreamStore:
                 cursor = e.cursor
                 if e.type in ("done", "error"):
                     return
+
+    async def cleanup_stale_running_streams(self, max_age_minutes: int = 30) -> int:
+        """
+        Mark 'running' streams older than max_age_minutes as 'error'.
+
+        This handles the case where backend was restarted while streams were active.
+        Returns the count of streams cleaned up.
+        """
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE task_stream_streams
+                SET status = 'error',
+                    expires_at = NOW() + INTERVAL '1 hour'
+                WHERE status = 'running'
+                  AND created_at < NOW() - INTERVAL '%s minutes'
+                """ % int(max_age_minutes)
+            )
+            # Result format: "UPDATE N"
+            count = int(result.split()[-1]) if result else 0
+            return count
+

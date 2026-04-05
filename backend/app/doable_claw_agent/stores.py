@@ -1415,3 +1415,46 @@ async def get_token_usage(message_id: str) -> dict[str, Any]:
         "totalInputTokens": sum(e["inputTokens"] for e in entries),
         "totalOutputTokens": sum(e["outputTokens"] for e in entries),
     }
+
+
+async def cleanup_stale_executing_plans() -> int:
+    """
+    Mark any 'executing' plans as 'interrupted' on backend startup.
+
+    This handles the case where the backend was restarted while plans were
+    running. The in-memory task references are lost, so we mark them as
+    interrupted so the frontend can offer a retry option.
+
+    Returns the number of plans that were cleaned up.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE plan_runs
+            SET status = 'interrupted',
+                error_message = 'Process interrupted (backend restart). You can retry this plan.',
+                updated_at = NOW()
+            WHERE status = 'executing'
+            """
+        )
+        # Result format: "UPDATE N"
+        count = int(result.split()[-1]) if result else 0
+        return count
+
+
+async def mark_plan_as_interrupted(plan_id: str, error_message: str = "Process interrupted") -> None:
+    """Mark a specific plan as interrupted (e.g., when detecting a stale task)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE plan_runs
+            SET status = 'interrupted',
+                error_message = $1,
+                updated_at = NOW()
+            WHERE id = $2 AND status = 'executing'
+            """,
+            error_message,
+            plan_id,
+        )

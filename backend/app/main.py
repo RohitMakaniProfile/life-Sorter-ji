@@ -67,6 +67,20 @@ async def lifespan(app: FastAPI):
     try:
         await connect_db()
 
+        # Clean up any plans that were executing when the backend was last shut down
+        from app.doable_claw_agent.stores import cleanup_stale_executing_plans
+        stale_count = await cleanup_stale_executing_plans()
+        if stale_count > 0:
+            logger.info(f"✅ Cleaned up {stale_count} stale executing plan(s) from previous session")
+
+        # Clean up stale task streams (running for more than 30 minutes)
+        from app.task_stream.store_factory import get_task_stream_store
+        store = get_task_stream_store()
+        if hasattr(store, 'cleanup_stale_running_streams'):
+            stream_cleanup_count = await store.cleanup_stale_running_streams(max_age_minutes=30)
+            if stream_cleanup_count > 0:
+                logger.info(f"✅ Cleaned up {stream_cleanup_count} stale task stream(s)")
+
         # Dev bootstrap: make JusPay sandbox test-card details visible/editable
         # in `/admin/config` via the `system_config` table.
         try:
