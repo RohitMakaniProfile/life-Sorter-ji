@@ -216,6 +216,24 @@ function PlanMessage({
           {canEdit && !started && (
             <button
               type="button"
+              disabled={saving}
+              onClick={async () => {
+                if (!onOptionSelect) return;
+                setSaving(true);
+                try {
+                  await onOptionSelect('Cancel');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-3 py-2 rounded-lg border border-red-500/50 text-red-400 text-sm font-semibold hover:bg-red-500/10"
+            >
+              Cancel
+            </button>
+          )}
+          {canEdit && !started && (
+            <button
+              type="button"
               onClick={() => setEditing((v) => !v)}
               className="px-3 py-2 rounded-lg border border-slate-600 text-sm font-semibold text-slate-200 hover:bg-slate-800"
             >
