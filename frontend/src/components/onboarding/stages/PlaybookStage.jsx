@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import PlaybookViewer from '../../PlaybookViewer';
 
@@ -16,6 +16,8 @@ export default function PlaybookStage({
   showRetry,
   onRetry,
   retryLabel = 'Retry',
+  onCancel,
+  onRetryPlaybook,
 }) {
   const gapComplete = gapQuestions.length === 0 || gapQuestions.every((_, i) => gapAnswers[i]);
   const streamContainerRef = useRef(null);
@@ -30,6 +32,7 @@ export default function PlaybookStage({
       autoScrollEnabledRef.current = true;
     }
   }, [playbookStreaming, playbookDone]);
+  const [showCancelModal, setShowCancelModal] = useState(false);
 
   // Listen for user-initiated scrolls to lock / unlock auto-scroll
   useEffect(() => {
@@ -132,10 +135,57 @@ export default function PlaybookStage({
         </div>
       )}
 
+      {/* Cancel confirmation modal */}
+      {showCancelModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-sm rounded-2xl border border-white/10 bg-[#1a1030] p-6 shadow-2xl">
+            <h3 className="m-0 mb-2 text-lg font-bold text-white">Cancel Playbook?</h3>
+            <p className="m-0 mb-6 text-sm text-white/50">
+              Your playbook is being generated. What would you like to do?
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => { setShowCancelModal(false); if (onRetryPlaybook) onRetryPlaybook(); }}
+                className="w-full cursor-pointer rounded-xl border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-3 text-sm font-bold text-white"
+              >
+                Retry — Generate Again
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowCancelModal(false); if (onCancel) onCancel(); }}
+                className="w-full cursor-pointer rounded-xl border border-white/15 bg-white/[0.05] py-3 text-sm font-semibold text-white/70 transition hover:bg-white/[0.10] hover:text-white"
+              >
+                Return to Homepage
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(false)}
+                className="w-full cursor-pointer rounded-xl border-none bg-transparent py-2 text-sm text-white/30 transition hover:text-white/50"
+              >
+                Keep Waiting
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {!showGapQuestions && (
         <div ref={streamContainerRef} className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
           {playbookStreaming && !playbookText && (
             <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
+          )}
+
+          {!playbookDone && !playbookText && (
+            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-20">
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(true)}
+                className="cursor-pointer rounded-lg border border-white/15 bg-[#0d0d0d]/80 backdrop-blur-sm px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.08] hover:text-white/80"
+              >
+                Cancel
+              </button>
+            </div>
           )}
 
           {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
@@ -154,16 +204,27 @@ export default function PlaybookStage({
           )}
 
           {playbookText && !playbookDone && (
-            <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
-              <PlaybookViewer
-                playbookData={{
-                  playbook: `${playbookText}\n\n▍`,
-                  websiteAudit: playbookResult?.website_audit || '',
-                  contextBrief: playbookResult?.context_brief || '',
-                  icpCard: playbookResult?.icp_card || '',
-                }}
-              />
-            </div>
+            <>
+              <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
+                <PlaybookViewer
+                  playbookData={{
+                    playbook: `${playbookText}\n\n▍`,
+                    websiteAudit: playbookResult?.website_audit || '',
+                    contextBrief: playbookResult?.context_brief || '',
+                    icpCard: playbookResult?.icp_card || '',
+                  }}
+                />
+              </div>
+              <div className="mb-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowCancelModal(true)}
+                  className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
           )}
 
           {playbookDone && (

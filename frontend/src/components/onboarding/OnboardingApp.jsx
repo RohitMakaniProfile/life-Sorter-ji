@@ -135,7 +135,7 @@ export default function OnboardingApp() {
   const [showGapQuestions, setShowGapQuestions] = useState(false);
 
   const [showOtpModal, setShowOtpModal] = useState(false);
-  const [otpVerified, setOtpVerified] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(() => Boolean(getUserIdFromJwt()));
   const pendingPlaybookLaunchRef = useRef(false);
 
   const {
@@ -187,6 +187,12 @@ export default function OnboardingApp() {
     sessionRestoredRef.current = true;
 
     const restoreSession = async () => {
+      // If ?reset=1 is in URL, skip restoration and start fresh
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('reset') === '1') {
+        try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
+        return;
+      }
       try {
         const state = await getSessionState();
         console.log('[Onboarding Restore] State received:', state);
@@ -801,6 +807,21 @@ export default function OnboardingApp() {
           showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}
           retryLabel="Retry Playbook"
+          onRetryPlaybook={() => handleStartPlaybook()}
+          onCancel={() => {
+            try {
+              const keepKeys = new Set(['ikshan-auth-token', 'luna_user_id']);
+              const keysToDelete = [];
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && !keepKeys.has(k) && (k.startsWith('life-sorter') || k.startsWith('ikshan'))) {
+                  keysToDelete.push(k);
+                }
+              }
+              keysToDelete.forEach((k) => localStorage.removeItem(k));
+            } catch { /* ignore */ }
+            window.location.href = '/?reset=1';
+          }}
         />
       </StageLayout>
     );

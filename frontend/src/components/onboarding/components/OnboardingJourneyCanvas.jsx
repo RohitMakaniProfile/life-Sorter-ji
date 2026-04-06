@@ -11,7 +11,7 @@ const TASK_SINGLE_COLUMN_MAX = 8;
 const colBase = 'flex shrink-0 items-center justify-center px-1.5';
 const nodeCol = 'flex flex-col gap-2 items-stretch';
 const nodeWrap = 'relative transition-[opacity,transform] duration-[700ms] ease-out';
-const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-30';
+const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-0 pointer-events-none';
 
 /** Animates width when `open` toggles (flex `transition` cannot interpolate sibling reflow). */
 const JourneyGrow = forwardRef(function JourneyGrow({ open, children, className = '' }, ref) {
@@ -286,13 +286,19 @@ export default function OnboardingJourneyCanvas({
   const journeyConnectorSegments = useMemo(() => {
     const segments = [];
     if (showDomainColumn && effectiveOutcome?.id && branchDomains.length > 0) {
+      // If a domain is committed, show only the arrow to that domain
+      const domainTargets = selectedDomain
+        ? [selectedDomain]
+        : hoveredDomain
+        ? [hoveredDomain]
+        : branchDomains;
       segments.push({
         key: 'outcome-domain',
         show: true,
         sourceType: 'outcome',
         sourceKey: effectiveOutcome.id,
         targetType: 'domain',
-        targetKeys: branchDomains,
+        targetKeys: domainTargets,
       });
     }
     if (showTaskColumn && branchDomainKey && branchTasks.length > 0) {
@@ -300,13 +306,17 @@ export default function OnboardingJourneyCanvas({
         branchTasks.length > TASK_SINGLE_COLUMN_MAX
           ? branchTasks.filter((_, i) => i % 2 === 0)
           : branchTasks;
+      // If a task is committed, show only the arrow to that task
+      const taskTargets = selectedTask
+        ? [`${branchDomainKey}${TASK_KEY_SEP}${selectedTask}`]
+        : tasksWithArrows.map((t) => `${branchDomainKey}${TASK_KEY_SEP}${t}`);
       segments.push({
         key: 'domain-task',
         show: true,
         sourceType: 'domain',
         sourceKey: branchDomainKey,
         targetType: 'task',
-        targetKeys: tasksWithArrows.map((t) => `${branchDomainKey}${TASK_KEY_SEP}${t}`),
+        targetKeys: taskTargets,
       });
     }
     return segments;
@@ -317,6 +327,9 @@ export default function OnboardingJourneyCanvas({
     showTaskColumn,
     branchDomainKey,
     branchTasks,
+    selectedDomain,
+    selectedTask,
+    hoveredDomain,
   ]);
 
   const branchProps = {
