@@ -1450,6 +1450,10 @@ async def cleanup_stale_executing_plans() -> int:
     """
     pool = get_pool()
     async with pool.acquire() as conn:
+        try:
+            await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS error_message TEXT")
+        except Exception:
+            pass
         result = await conn.execute(
             """
             UPDATE plan_runs

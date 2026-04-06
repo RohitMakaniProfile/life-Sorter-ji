@@ -605,6 +605,7 @@ CREATE TABLE IF NOT EXISTS plan_runs (
     plan_markdown   TEXT        NOT NULL DEFAULT '',
     -- {steps: [{id, title, skillId, description, status}]}
     plan_json       JSONB       NOT NULL DEFAULT '{"steps":[]}'::JSONB,
+    error_message   TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
