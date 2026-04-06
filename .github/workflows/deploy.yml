@@ -54,6 +54,21 @@ jobs:
             echo "JUSPAY_RESPONSE_KEY=${{ secrets.JUSPAY_RESPONSE_KEY_PROD }}" >> $GITHUB_ENV
           fi
 
+      - name: Debug DB URL
+        run: |
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          url = os.environ.get("DB_URL", "")
+          if not url:
+            print("[DB DEBUG] DB_URL is EMPTY")
+          else:
+            p = urlparse(url)
+            print(f"[DB DEBUG] host={p.hostname} port={p.port} db={p.path.lstrip('/')} user={p.username}")
+          PY
+        env:
+          DB_URL: ${{ env.DB_URL }}
+
       - name: Set runtime env defaults
         run: |
           echo "OPENAI_MODEL=gpt-4.1" >> $GITHUB_ENV
