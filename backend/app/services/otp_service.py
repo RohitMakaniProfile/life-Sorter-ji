@@ -19,6 +19,9 @@ import structlog
 
 from app.config import get_settings
 from app.db import get_pool
+from app.task_stream.redis_client import get_redis
+
+_OTP_PREFIX = "ikshan:otp"
 
 logger = structlog.get_logger()
 
@@ -145,7 +148,19 @@ async def store_otp_in_redis(
     expiry_seconds: int,
     provider_session_id: str = "",
 ) -> None:
-    # Always use PostgreSQL for OTP storage (Redis disabled)
+    redis = await get_redis()
+    if redis:
+        payload = json.dumps({
+            "phone_number": phone_number,
+            "otp_code": otp_code,
+            "onboarding_session_id": onboarding_session_id or "",
+            "provider_session_id": provider_session_id or "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        ttl = max(60, int(expiry_seconds))
+        await redis.set(f"{_OTP_PREFIX}:{otp_session_id}", payload, ex=ttl)
+        return
+
     await _store_otp_postgres(
         otp_session_id=otp_session_id,
         phone_number=phone_number,
@@ -157,12 +172,26 @@ async def store_otp_in_redis(
 
 
 async def load_otp_from_redis(otp_session_id: str) -> dict | None:
-    # Always use PostgreSQL for OTP storage (Redis disabled)
+    redis = await get_redis()
+    if redis:
+        raw = await redis.get(f"{_OTP_PREFIX}:{otp_session_id}")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
     return await _load_otp_postgres(otp_session_id)
 
 
 async def delete_otp_from_redis(otp_session_id: str) -> None:
-    # Always use PostgreSQL for OTP storage (Redis disabled)
+    redis = await get_redis()
+    if redis:
+        await redis.delete(f"{_OTP_PREFIX}:{otp_session_id}")
+        return
+
     await _delete_otp_postgres(otp_session_id)
 
 
