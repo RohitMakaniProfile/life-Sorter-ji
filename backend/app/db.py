@@ -12,7 +12,9 @@ async def connect_db() -> None:
     global _pool
     if _pool is not None:
         return
+    print(f"[DB] Connecting with DATABASE_URL: {DATABASE_URL}")
     _pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=10)
+    print(f"[DB] Pool initialized: {_pool}")
 
 
 async def close_db() -> None:
