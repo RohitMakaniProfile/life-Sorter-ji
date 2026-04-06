@@ -3,6 +3,7 @@
   "activeEnvcsBranch": "main",
   "trackedFiles": [
     "backend/.env",
+    "backend/.env.bak",
     "frontend/.env"
   ],
   "crypto": {
@@ -11,11 +12,11 @@
   },
   "branches": {
     "main": {
-      "createdAt": "2026-03-27T03:40:00.498Z",
-      "lastSourceCommit": "16d9f64713d29bfb4f784530ddadd156ab72305b",
-      "lastPushedAt": "2026-03-27T06:17:02.923Z"
+      "createdAt": "2026-04-06T23:27:26.874Z",
+      "lastSourceCommit": null,
+      "lastPushedAt": null
     }
   },
-  "createdAt": "2026-03-27T03:40:00.499Z",
-  "updatedAt": "2026-03-27T06:17:02.924Z"
+  "createdAt": "2026-04-06T23:27:26.875Z",
+  "updatedAt": "2026-04-06T23:27:26.875Z"
 }
