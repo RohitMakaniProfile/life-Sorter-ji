@@ -664,6 +664,8 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
+      // Wait for crawl to finish so RCA questions use actual website data
+      await waitForCrawl();
       const res = await rcaNextQuestion({ session_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);

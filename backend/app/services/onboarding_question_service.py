@@ -134,6 +134,7 @@ async def _try_llm_question(
     rca_history: list[dict[str, str]],
     business_profile: dict[str, Any] | None,
     gbp_data: dict[str, Any] | None,
+    crawl_summary: dict[str, Any] | None = None,
 ) -> tuple[Optional[DynamicQuestion], str, str]:
     complete_summary = ""
     complete_handoff = ""
@@ -146,6 +147,7 @@ async def _try_llm_question(
         rca_history=rca_history,
         business_profile=business_profile,
         gbp_data=gbp_data,
+        crawl_summary=crawl_summary,
     )
 
     if claude_result and claude_result.get("status") == "question":
@@ -240,7 +242,7 @@ async def generate_next_rca_question_for_onboarding(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, outcome, domain, task, rca_qa, scale_answers, questions_answers
+            SELECT id, outcome, domain, task, rca_qa, scale_answers, questions_answers, crawl_cache_key
             FROM onboarding
             WHERE session_id = $1
             """,
@@ -254,6 +256,17 @@ async def generate_next_rca_question_for_onboarding(
         domain = row.get("domain") or ""
         task = row.get("task") or ""
         scale_answers = _normalize_json_dict(row.get("scale_answers"))
+
+        # Fetch crawl summary for personalized RCA questions
+        crawl_summary: dict[str, Any] | None = None
+        crawl_cache_key = (row.get("crawl_cache_key") or "").strip()
+        if crawl_cache_key:
+            crawl_row = await conn.fetchrow(
+                "SELECT crawl_summary FROM crawl_cache WHERE normalized_url = $1 ORDER BY updated_at DESC LIMIT 1",
+                crawl_cache_key,
+            )
+            if crawl_row and crawl_row.get("crawl_summary"):
+                crawl_summary = _normalize_json_dict(crawl_row["crawl_summary"])
 
         rca_qa = _normalize_rca_qa(row.get("rca_qa"))
         questions_answers = _normalize_questions_answers(row.get("questions_answers"))
@@ -303,6 +316,7 @@ async def generate_next_rca_question_for_onboarding(
                 rca_history=rca_history,
                 business_profile=scale_answers or None,
                 gbp_data=None,
+                crawl_summary=crawl_summary,
             )
 
             if dyn_question is None:
