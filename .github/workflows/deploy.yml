@@ -186,4 +186,7 @@ jobs:
             --concurrency=1 \
             --min-instances=1 \
             --env-vars-file /tmp/cloudrun-env.yaml \
-            --allow-unauthenticated
+            --allow-unauthenticated \
+            --network=default \
+            --subnet=default \
+            --vpc-egress=private-ranges-only
