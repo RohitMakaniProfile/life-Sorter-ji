@@ -148,6 +148,7 @@ export default function OnboardingApp() {
     markRetryNeeded,
     stopStreaming,
     startForSession,
+    clearStepReached,
   } = usePlaybookTaskStream({
     ensureSession,
     otpVerified,
@@ -354,11 +355,30 @@ export default function OnboardingApp() {
             }
             setShowPlaybook(true);
             if (state.playbook_status === 'error') {
-              // Previous generation failed — show retry button immediately
               markRetryNeeded();
             } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
-              // Resume playbook stream if it was in progress
               prepareStreaming();
+              const sid = sessionIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            } else if (state.playbook_status === 'complete') {
+              // Playbook done — clear auto-resume flag, then reconnect once to fetch result
+              clearStepReached();
+              prepareStreaming();
+              const sid = sessionIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            }
+            break;
+
+          case 'complete':
+            // Onboarding fully complete — playbook is done, show it
+            setShowPlaybook(true);
+            clearStepReached();
+            prepareStreaming();
+            {
               const sid = sessionIdRef.current;
               if (sid) {
                 startForSession(sid, { fresh: false }).catch(() => {});
@@ -664,6 +684,8 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
+      // Wait for crawl to finish (up to 10s) — crawl has been running during scale questions
+      await waitForCrawl(10000);
       const res = await rcaNextQuestion({ session_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);

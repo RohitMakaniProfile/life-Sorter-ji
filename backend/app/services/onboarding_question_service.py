@@ -134,6 +134,7 @@ async def _try_llm_question(
     rca_history: list[dict[str, str]],
     business_profile: dict[str, Any] | None,
     gbp_data: dict[str, Any] | None,
+    crawl_summary: dict[str, Any] | None = None,
 ) -> tuple[Optional[DynamicQuestion], str, str]:
     complete_summary = ""
     complete_handoff = ""
@@ -146,6 +147,7 @@ async def _try_llm_question(
         rca_history=rca_history,
         business_profile=business_profile,
         gbp_data=gbp_data,
+        crawl_summary=crawl_summary,
     )
 
     if claude_result and claude_result.get("status") == "question":
@@ -240,7 +242,7 @@ async def generate_next_rca_question_for_onboarding(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, outcome, domain, task, rca_qa, scale_answers, questions_answers
+            SELECT id, outcome, domain, task, rca_qa, scale_answers, questions_answers, crawl_cache_key
             FROM onboarding
             WHERE session_id = $1
             """,
@@ -254,6 +256,36 @@ async def generate_next_rca_question_for_onboarding(
         domain = row.get("domain") or ""
         task = row.get("task") or ""
         scale_answers = _normalize_json_dict(row.get("scale_answers"))
+
+        # Fetch crawl data for personalized RCA questions
+        crawl_summary: dict[str, Any] | None = None
+        crawl_cache_key = (row.get("crawl_cache_key") or "").strip()
+        if crawl_cache_key:
+            crawl_row = await conn.fetchrow(
+                "SELECT crawl_summary, crawl_raw FROM crawl_cache WHERE normalized_url = $1 ORDER BY updated_at DESC LIMIT 1",
+                crawl_cache_key,
+            )
+            if crawl_row and crawl_row.get("crawl_summary"):
+                crawl_summary = _normalize_json_dict(crawl_row["crawl_summary"])
+                # Enrich summary with page content from crawl_raw for better LLM context
+                if crawl_row.get("crawl_raw"):
+                    crawl_raw = _normalize_json_dict(crawl_row["crawl_raw"])
+                    homepage = crawl_raw.get("homepage") or {}
+                    pages = crawl_raw.get("pages") or crawl_raw.get("pages_crawled") or []
+                    # Add richer content to points
+                    extra_points = []
+                    body_text = str(homepage.get("body_text") or homepage.get("content") or "")[:500]
+                    if body_text:
+                        extra_points.append(f"Homepage content: {body_text}")
+                    headings = homepage.get("headings") or []
+                    if headings:
+                        extra_points.append(f"Homepage headings: {', '.join(str(h) for h in headings[:5])}")
+                    if isinstance(pages, list) and pages:
+                        page_urls = [str(p.get("url") or p) for p in pages[:5] if p]
+                        extra_points.append(f"Pages found: {', '.join(page_urls)}")
+                    if extra_points:
+                        existing = crawl_summary.get("points") or []
+                        crawl_summary = {**crawl_summary, "points": existing + extra_points}
 
         rca_qa = _normalize_rca_qa(row.get("rca_qa"))
         questions_answers = _normalize_questions_answers(row.get("questions_answers"))
@@ -282,12 +314,18 @@ async def generate_next_rca_question_for_onboarding(
         diagnostic = get_diagnostic_sections(domain=domain, task=task) or {}
         outcome_label = _outcome_label(outcome)
 
-        dyn_question = _try_static_tree_question(
-            outcome=outcome,
-            domain=domain,
-            task=task,
-            rca_history=rca_history,
-        )
+        # Skip static tree when crawl data is available — use LLM directly so
+        # questions reference the business's actual website content.
+        has_crawl_data = bool(crawl_summary and crawl_summary.get("points"))
+        if not has_crawl_data:
+            dyn_question = _try_static_tree_question(
+                outcome=outcome,
+                domain=domain,
+                task=task,
+                rca_history=rca_history,
+            )
+        else:
+            dyn_question = None
 
         match_source = "tree" if dyn_question is not None else "llm"
         complete_summary = ""
@@ -303,6 +341,7 @@ async def generate_next_rca_question_for_onboarding(
                 rca_history=rca_history,
                 business_profile=scale_answers or None,
                 gbp_data=None,
+                crawl_summary=crawl_summary,
             )
 
             if dyn_question is None:

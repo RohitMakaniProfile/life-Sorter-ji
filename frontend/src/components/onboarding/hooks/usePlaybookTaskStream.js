@@ -90,8 +90,6 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
 
       const myRunId = ++runIdRef.current;
       let finished = false;
-      const actorUserId = getUserIdFromJwt();
-
       const callbacks = {
         onEvent: (e) => {
           if (runIdRef.current !== myRunId) return;
@@ -128,9 +126,9 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
       };
 
       await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
-        userId: actorUserId || null,
-        sessionId: actorUserId ? null : sessionId,
-        payload: actorUserId ? { user_id: actorUserId } : { session_id: sessionId },
+        userId: null,
+        sessionId: sessionId,
+        payload: { session_id: sessionId },
         maxRetries: 4,
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks,
@@ -176,9 +174,9 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         let finished = false;
 
         await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
-          userId: actorUserId || null,
-          sessionId: actorUserId ? null : sid,
-          payload: actorUserId ? { user_id: actorUserId } : { session_id: sid },
+          userId: null,
+          sessionId: sid,
+          payload: { session_id: sid },
           maxRetries: 4,
           shouldStop: () => runIdRef.current !== myRunId,
           callbacks: {
