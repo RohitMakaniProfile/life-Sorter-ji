@@ -103,6 +103,8 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         onDone: (e) => {
           if (runIdRef.current !== myRunId) return;
           finished = true;
+          // Playbook is done — clear flag so auto-resume never re-triggers on next page load
+          safeRemoveItem(STORAGE_PLAYBOOK_STEP_REACHED);
           setPlaybookStreaming(false);
           setPlaybookDone(true);
           setPlaybookResult({
@@ -190,6 +192,8 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
             onDone: (e) => {
               if (runIdRef.current !== myRunId) return;
               finished = true;
+              // Clear flag so auto-resume doesn't re-trigger on next page load
+              safeRemoveItem(STORAGE_PLAYBOOK_STEP_REACHED);
               setPlaybookStreaming(false);
               setPlaybookDone(true);
               setPlaybookResult({
