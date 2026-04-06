@@ -145,7 +145,9 @@ def load_skills() -> None:
     global _SKILLS
     skills: dict[str, SkillManifest] = {}
 
-    if SKILLS_ROOT.exists():
+    if not SKILLS_ROOT.exists():
+        print(f"[skills.load_skills] SKILLS_ROOT not found: {SKILLS_ROOT}")
+    else:
         for child in sorted(SKILLS_ROOT.iterdir()):
             if not child.is_dir():
                 continue
@@ -154,7 +156,8 @@ def load_skills() -> None:
                 continue
             try:
                 raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as exc:
+                print(f"[skills.load_skills] failed to parse {manifest_path}: {exc}")
                 continue
             sid = str(raw.get("id", "")).strip()
             entry = str(raw.get("entry", "")).strip()
@@ -205,6 +208,7 @@ def load_skills() -> None:
         )
 
     _SKILLS = skills
+    print(f"[skills.load_skills] loaded {len(_SKILLS)} skill(s): {sorted(_SKILLS.keys())}")
 
 
 def get_skill(skill_id: str) -> SkillManifest | None:

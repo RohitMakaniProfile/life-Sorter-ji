@@ -63,6 +63,9 @@ async def lifespan(app: FastAPI):
     from app.services.rca_tree_service import load_tree
     load_tree()
 
+    # Load skills from disk — independent of DB, must run unconditionally.
+    load_skills()
+
     # ── DoableClaw Agent startup ───────────────────────────────────────────────
     try:
         await connect_db()
@@ -116,7 +119,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("⚠️ JusPay test-card bootstrap failed", error=str(e))
 
-        load_skills()
         await ensure_default_agents()
         logger.info("✅ DoableClaw Agent started")
     except Exception as e:
