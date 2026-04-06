@@ -57,14 +57,16 @@ jobs:
       - name: Debug DB URL
         run: |
           python3 - <<'PY'
-          import os
-          from urllib.parse import urlparse
+          import os, re
           url = os.environ.get("DB_URL", "")
           if not url:
             print("[DB DEBUG] DB_URL is EMPTY")
           else:
-            p = urlparse(url)
-            print(f"[DB DEBUG] host={p.hostname} port={p.port} db={p.path.lstrip('/')} user={p.username}")
+            m = re.match(r"postgresql://([^:]+):[^@]+@([^:/]+):?(\d*)/?(.*)$", url)
+            if m:
+              print(f"[DB DEBUG] user={m.group(1)} host={m.group(2)} port={m.group(3) or 5432} db={m.group(4)}")
+            else:
+              print(f"[DB DEBUG] could not parse URL (length={len(url)})")
           PY
         env:
           DB_URL: ${{ env.DB_URL }}
