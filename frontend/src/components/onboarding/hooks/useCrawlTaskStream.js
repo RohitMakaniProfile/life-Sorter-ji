@@ -113,15 +113,17 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
   );
 
   const waitForCrawl = useCallback(
-    () =>
+    (timeoutMs = 8000) =>
       new Promise((resolve) => {
         if (!crawlStreaming) {
           resolve();
           return;
         }
+        const deadline = setTimeout(resolve, timeoutMs);
         const t = window.setInterval(() => {
           if (!crawlStreaming) {
             window.clearInterval(t);
+            clearTimeout(deadline);
             resolve();
           }
         }, 250);

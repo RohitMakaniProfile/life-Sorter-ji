@@ -373,6 +373,19 @@ export default function OnboardingApp() {
             }
             break;
 
+          case 'complete':
+            // Onboarding fully complete — playbook is done, show it
+            setShowPlaybook(true);
+            clearStepReached();
+            prepareStreaming();
+            {
+              const sid = sessionIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            }
+            break;
+
           default:
             // Start stage - nothing to restore
             break;
@@ -671,8 +684,8 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
-      // Wait for crawl to finish so RCA questions use actual website data
-      await waitForCrawl();
+      // Wait for crawl to finish (up to 10s) — crawl has been running during scale questions
+      await waitForCrawl(10000);
       const res = await rcaNextQuestion({ session_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);
