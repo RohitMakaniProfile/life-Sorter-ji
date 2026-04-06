@@ -148,6 +148,7 @@ export default function OnboardingApp() {
     markRetryNeeded,
     stopStreaming,
     startForSession,
+    clearStepReached,
   } = usePlaybookTaskStream({
     ensureSession,
     otpVerified,
@@ -354,10 +355,16 @@ export default function OnboardingApp() {
             }
             setShowPlaybook(true);
             if (state.playbook_status === 'error') {
-              // Previous generation failed — show retry button immediately
               markRetryNeeded();
             } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
-              // Resume playbook stream if it was in progress
+              prepareStreaming();
+              const sid = sessionIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            } else if (state.playbook_status === 'complete') {
+              // Playbook done — clear auto-resume flag, then reconnect once to fetch result
+              clearStepReached();
               prepareStreaming();
               const sid = sessionIdRef.current;
               if (sid) {
