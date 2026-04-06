@@ -86,12 +86,19 @@ def _apply_answer_to_last_pending(rca_qa: list[dict[str, Any]], answer: str) -> 
 
 
 def _build_rca_history(rca_qa: list[dict[str, Any]]) -> list[dict[str, str]]:
-    # Matching/generation history: only questions that already have an answer.
-    return [
-        {"question": str(item.get("question") or ""), "answer": str(item.get("answer") or "")}
-        for item in rca_qa
-        if isinstance(item, dict) and item.get("answer") is not None
-    ]
+    # Include cumulative_insight so LLM has its own running diagnostic summary.
+    history = []
+    for item in rca_qa:
+        if not isinstance(item, dict) or item.get("answer") is None:
+            continue
+        entry: dict[str, str] = {
+            "question": str(item.get("question") or ""),
+            "answer": str(item.get("answer") or ""),
+        }
+        if item.get("cumulative_insight"):
+            entry["cumulative_insight"] = str(item["cumulative_insight"])
+        history.append(entry)
+    return history
 
 
 def _outcome_label(outcome: str) -> str:
@@ -135,9 +142,19 @@ async def _try_llm_question(
     business_profile: dict[str, Any] | None,
     gbp_data: dict[str, Any] | None,
     crawl_summary: dict[str, Any] | None = None,
-) -> tuple[Optional[DynamicQuestion], str, str]:
+) -> tuple[Optional[DynamicQuestion], str, str, str]:
     complete_summary = ""
     complete_handoff = ""
+    cumulative_insight = ""
+    # Extract the latest cumulative_insight from history to use as running summary.
+    # This lets Claude reason from its own compressed diagnostic summary rather than
+    # replaying all raw Q&A, which degrades question quality over turns.
+    rca_running_summary = None
+    for item in reversed(rca_history):
+        if isinstance(item, dict) and item.get("cumulative_insight"):
+            rca_running_summary = str(item["cumulative_insight"])
+            break
+
     claude_result = await generate_next_rca_question(
         outcome=outcome,
         outcome_label=outcome_label,
@@ -148,6 +165,7 @@ async def _try_llm_question(
         business_profile=business_profile,
         gbp_data=gbp_data,
         crawl_summary=crawl_summary,
+        rca_running_summary=rca_running_summary,
     )
 
     if claude_result and claude_result.get("status") == "question":
@@ -159,7 +177,8 @@ async def _try_llm_question(
             section_label=claude_result.get("section_label", "Diagnostic") or "Diagnostic",
             insight=claude_result.get("insight", "") or "",
         )
-        return dyn_question, complete_summary, complete_handoff
+        cumulative_insight = str(claude_result.get("cumulative_insight", "") or "")
+        return dyn_question, complete_summary, complete_handoff, cumulative_insight
 
     if claude_result and claude_result.get("status") == "complete":
         complete_summary = claude_result.get("summary", "") or ""
@@ -169,7 +188,7 @@ async def _try_llm_question(
         else:
             complete_handoff = str(raw_handoff or "")
 
-    return None, complete_summary, complete_handoff
+    return None, complete_summary, complete_handoff, cumulative_insight
 
 
 async def _persist_rca_complete_fields(
@@ -330,9 +349,10 @@ async def generate_next_rca_question_for_onboarding(
         match_source = "tree" if dyn_question is not None else "llm"
         complete_summary = ""
         complete_handoff = ""
+        llm_cumulative_insight = ""
 
         if dyn_question is None:
-            dyn_question, complete_summary, complete_handoff = await _try_llm_question(
+            dyn_question, complete_summary, complete_handoff, llm_cumulative_insight = await _try_llm_question(
                 outcome=outcome,
                 outcome_label=outcome_label,
                 domain=domain,
@@ -379,10 +399,18 @@ async def generate_next_rca_question_for_onboarding(
                 "complete_handoff": complete_handoff or "",
             }
 
+        new_entry: dict[str, Any] = {
+            "question": dyn_question.question,
+            "options": dyn_question.options or [],
+            "answer": None,
+        }
+        if llm_cumulative_insight:
+            new_entry["cumulative_insight"] = llm_cumulative_insight
+
         if pending_idx is not None and answer is None:
-            rca_qa[pending_idx] = {"question": dyn_question.question, "options": dyn_question.options or [], "answer": None}
+            rca_qa[pending_idx] = new_entry
         else:
-            rca_qa.append({"question": dyn_question.question, "options": dyn_question.options or [], "answer": None})
+            rca_qa.append(new_entry)
 
         await _persist_rca_qa(conn, onboarding_id=onboarding_id, rca_qa=rca_qa)
         if questions_answers is not None:
