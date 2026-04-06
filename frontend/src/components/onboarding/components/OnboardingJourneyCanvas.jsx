@@ -11,7 +11,7 @@ const TASK_SINGLE_COLUMN_MAX = 8;
 const colBase = 'flex shrink-0 items-center justify-center px-1.5';
 const nodeCol = 'flex flex-col gap-2 items-stretch';
 const nodeWrap = 'relative transition-[opacity,transform] duration-[700ms] ease-out';
-const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-0 pointer-events-none';
+const nodeWrapDimmed = 'scale-[0.96] cursor-pointer opacity-30 hover:opacity-70 transition-opacity';
 
 /** Animates width when `open` toggles (flex `transition` cannot interpolate sibling reflow). */
 const JourneyGrow = forwardRef(function JourneyGrow({ open, children, className = '' }, ref) {

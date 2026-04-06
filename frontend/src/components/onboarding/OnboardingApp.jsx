@@ -92,7 +92,7 @@ export default function OnboardingApp() {
       cancelled = true;
     };
   }, [navigate]);
-  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState, clearSession } = useOnboardingSession();
+  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState } = useOnboardingSession();
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
@@ -202,9 +202,22 @@ export default function OnboardingApp() {
           return;
         }
 
-        // If onboarding is complete, clear the session and start fresh
+        // If onboarding is complete, show the completed playbook
         if (state.stage === 'complete') {
-          clearSession();
+          if (state.outcome) {
+            const outcome = outcomeOptions.find((o) => o.id === state.outcome);
+            if (outcome) setSelectedOutcome(outcome);
+          }
+          if (state.domain) setSelectedDomain(state.domain);
+          if (state.task) setSelectedTask(state.task);
+          setShowPlaybook(true);
+          clearStepReached();
+          prepareStreaming();
+          const sid = state.session_id;
+          if (sid) {
+            sessionIdRef.current = sid;
+            startForSession(sid, { fresh: false }).catch(() => {});
+          }
           return;
         }
 
@@ -826,6 +839,7 @@ export default function OnboardingApp() {
           playbookDone={playbookDone}
           playbookResult={playbookResult}
           onDeepAnalysis={handleDeepAnalysis}
+          onGoHome={() => { window.location.href = '/?reset=1'; }}
           showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}
           retryLabel="Retry Playbook"

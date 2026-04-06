@@ -13,6 +13,7 @@ export default function PlaybookStage({
   playbookDone,
   playbookResult,
   onDeepAnalysis,
+  onGoHome,
   showRetry,
   onRetry,
   retryLabel = 'Retry',
@@ -242,9 +243,16 @@ export default function PlaybookStage({
               <button
                 type="button"
                 onClick={onDeepAnalysis}
-                className="mb-6 mt-2 w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-br from-indigo-500 to-violet-500 py-3 px-8 text-[15px] font-bold text-white"
+                className="mb-3 mt-2 w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-br from-indigo-500 to-violet-500 py-3 px-8 text-[15px] font-bold text-white"
               >
                 Do Deep Analysis →
+              </button>
+              <button
+                type="button"
+                onClick={onGoHome}
+                className="mb-6 w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
+              >
+                Go to Homepage
               </button>
             </>
           )}
