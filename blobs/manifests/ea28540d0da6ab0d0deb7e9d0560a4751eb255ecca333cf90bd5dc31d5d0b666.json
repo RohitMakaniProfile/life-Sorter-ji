@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "parent": "b2104df7f6556e4c2e1c2d89b02fe93be299528af24c2412e3d112f45557b434",
+  "sourceCommit": "d6a0ca10d0257e7661d519076e3593efdc982748",
+  "message": "env backup",
+  "createdAt": "2026-04-06T23:27:46.234Z",
+  "files": {
+    "backend/.env": {
+      "objectId": "dda67a45861172435d66e936b5e3eeba1d2d8532d439c1d3ad0201a621e12fcc",
+      "hash": "dda67a45861172435d66e936b5e3eeba1d2d8532d439c1d3ad0201a621e12fcc"
+    },
+    "backend/.env.bak": {
+      "objectId": "9e5ab406377d12e383123e38a9a2aba8f4c7062ce8663c541748fea00d347214",
+      "hash": "9e5ab406377d12e383123e38a9a2aba8f4c7062ce8663c541748fea00d347214"
+    },
+    "frontend/.env": {
+      "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+      "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    }
+  },
+  "id": "ea28540d0da6ab0d0deb7e9d0560a4751eb255ecca333cf90bd5dc31d5d0b666"
+}
