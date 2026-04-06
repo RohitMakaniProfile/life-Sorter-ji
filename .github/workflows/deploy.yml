@@ -33,25 +33,34 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Set variables
+        env:
+          _DB_URL_DEV: ${{ secrets.BACKEND_DATABASE_URL_DEV }}
+          _DB_URL_PROD: ${{ secrets.BACKEND_DATABASE_URL_PROD }}
+          _REDIS_URL_DEV: ${{ secrets.BACKEND_REDIS_URL_DEV }}
+          _REDIS_URL_PROD: ${{ secrets.BACKEND_REDIS_URL_PROD }}
+          _JUSPAY_API_KEY_DEV: ${{ secrets.JUSPAY_API_KEY_DEV }}
+          _JUSPAY_API_KEY_PROD: ${{ secrets.JUSPAY_API_KEY_PROD }}
+          _JUSPAY_RESPONSE_KEY_DEV: ${{ secrets.JUSPAY_RESPONSE_KEY_DEV }}
+          _JUSPAY_RESPONSE_KEY_PROD: ${{ secrets.JUSPAY_RESPONSE_KEY_PROD }}
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
             echo "SERVICE=ikshan-be-dev" >> $GITHUB_ENV
             echo "REPO=ikshan-be-dev" >> $GITHUB_ENV
             echo "APP_ENV=development" >> $GITHUB_ENV
-            echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_DEV }}" >> $GITHUB_ENV
-            echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_DEV }}" >> $GITHUB_ENV
+            printf 'DB_URL=%s\n' "$_DB_URL_DEV" >> $GITHUB_ENV
+            printf 'REDIS_URL=%s\n' "$_REDIS_URL_DEV" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.development.json" >> $GITHUB_ENV
-            echo "JUSPAY_API_KEY=${{ secrets.JUSPAY_API_KEY_DEV }}" >> $GITHUB_ENV
-            echo "JUSPAY_RESPONSE_KEY=${{ secrets.JUSPAY_RESPONSE_KEY_DEV }}" >> $GITHUB_ENV
+            printf 'JUSPAY_API_KEY=%s\n' "$_JUSPAY_API_KEY_DEV" >> $GITHUB_ENV
+            printf 'JUSPAY_RESPONSE_KEY=%s\n' "$_JUSPAY_RESPONSE_KEY_DEV" >> $GITHUB_ENV
           else
             echo "SERVICE=ikshan-be-prod" >> $GITHUB_ENV
             echo "REPO=ikshan-be-prod" >> $GITHUB_ENV
             echo "APP_ENV=production" >> $GITHUB_ENV
-            echo "DB_URL=${{ secrets.BACKEND_DATABASE_URL_PROD }}" >> $GITHUB_ENV
-            echo "REDIS_URL=${{ secrets.BACKEND_REDIS_URL_PROD }}" >> $GITHUB_ENV
+            printf 'DB_URL=%s\n' "$_DB_URL_PROD" >> $GITHUB_ENV
+            printf 'REDIS_URL=%s\n' "$_REDIS_URL_PROD" >> $GITHUB_ENV
             echo "ENV_JSON=.github/cloudrun/env.production.json" >> $GITHUB_ENV
-            echo "JUSPAY_API_KEY=${{ secrets.JUSPAY_API_KEY_PROD }}" >> $GITHUB_ENV
-            echo "JUSPAY_RESPONSE_KEY=${{ secrets.JUSPAY_RESPONSE_KEY_PROD }}" >> $GITHUB_ENV
+            printf 'JUSPAY_API_KEY=%s\n' "$_JUSPAY_API_KEY_PROD" >> $GITHUB_ENV
+            printf 'JUSPAY_RESPONSE_KEY=%s\n' "$_JUSPAY_RESPONSE_KEY_PROD" >> $GITHUB_ENV
           fi
 
       - name: Debug DB URL
