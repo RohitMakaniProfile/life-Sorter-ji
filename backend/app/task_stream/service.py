@@ -55,14 +55,15 @@ class TaskStreamService:
                 await self.store.clear_actor_mapping(task_type, session_id=session_id, user_id=user_id)
 
         # 1) Resume by mapping (session_id/user_id) if desired.
-        #    Only resume if the stream is still running; ignore done/error/cancelled streams.
+        #    Resume 'running' streams (live attach) and 'done' streams (replay final event).
+        #    Do NOT resume 'error' or 'cancelled' — those should restart fresh.
         if resume_if_exists and not force_fresh:
             existing = await self.store.resolve_stream_id(
                 task_type, session_id=session_id, user_id=user_id
             )
             if existing:
                 status = await self.store.get_status(existing)
-                if status == "running":
+                if status in ("running", "done"):
                     return {"stream_id": existing, "status": status}
 
         # 2) Acquire a lightweight lock so concurrent start requests don't double-spawn.
