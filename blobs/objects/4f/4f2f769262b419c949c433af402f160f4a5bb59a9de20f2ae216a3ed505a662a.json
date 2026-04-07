@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "objectId": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a",
+  "hash": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a",
+  "encryptedAt": "2026-04-07T13:26:27.342Z",
+  "cipher": {
+    "v": 1,
+    "alg": "aes-256-gcm",
+    "kdf": "scrypt",
+    "salt": "UfbGurCb4h8eFNNL/1fACA==",
+    "iv": "6cDRBsy/unxiwMsu",
+    "tag": "SqnFIbZM1jlmBnZ4Bwj7Ww==",
+    "data": "Bd5igijIDisjJHgEQ9h/o18xwPka9m8+HIHp85DS2NpGqOQdafREludsryx8IaRi9baOM1lt9/c9AvWiSjBSWxI9fQZk1MNLvwrtP5Wr8mQdBiUvIfT2kvI2esBlSuecCdDXKzBdHHipcDbDM/3ugqxckZFq42Vn6Rwk3lpIxtXlKEs6Tvh2wOISF0mLLXvLSHPquHih3yRl67IiRSCEAwXAjhOiNFCqdSWJ/jZTLvkuIOm19IbygmhOGqo8aQgysPi4kjnsIswFHUj3EGEepthjYOYEDx7yTEQmp1ACQC+5ZV6HqeOK2Gsd5uayZnke9LQ7/MtUeYQQTTsNOzh1wJ4v6RH84J99MpAASTZHKJcOWXpiVNtEGqW7Z4O6xkKnwou2bX9kma9p6BaSlSaH4zlykWxxFd5gzpLpefTRs2wrLL9MFfZ9GUbigilMtv7L5t9auyc+FpdnOw1dQZipZ/ll3wcR4ulLRNdRuoudgOR1KGmI2obh8GxBdzwbwbjy9P1r07k/U5vEwLt6bJO2T0CQYHQRWY+hzuLZ4cUj2R5J0xBwHuOjtfc4GMHTGRso3NgPZmIlItuqCLCUF6IiL8XLUH82gs0JPl262msj2O+6vm49NGHm4/vZEQCc7s/FFg/CDW5bZh7O23cZjlSsmeh3ZXO7e8g8Y7cfu3A0uIC/8x8g7kKS9DisGVqzXYzmqj5kmO30Z3YphQiejQeu4RM47pZs5plM0PCs0z0gM+tn5FGUndY="
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "parent": "ea28540d0da6ab0d0deb7e9d0560a4751eb255ecca333cf90bd5dc31d5d0b666",
+  "sourceCommit": "e19f2d485e5b113ed107d5775f3018eaac1c85c6",
+  "message": "openrouter local backend added",
+  "createdAt": "2026-04-07T13:26:27.273Z",
+  "files": {
+    "backend/.env": {
+      "objectId": "c31927bc84e7d84eae65d78abc3a56aa5cf105882eb89dd040ebb15b21d147b3",
+      "hash": "c31927bc84e7d84eae65d78abc3a56aa5cf105882eb89dd040ebb15b21d147b3"
+    },
+    "backend/.env.bak": {
+      "objectId": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a",
+      "hash": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a"
+    },
+    "frontend/.env": {
+      "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+      "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    }
+  },
+  "id": "32852546e6fc77c5ca5fbebe1475eb2cf8395daf7ae6b4502008a2b70cb77b93"
+}
