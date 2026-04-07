@@ -43,47 +43,6 @@ def _as_list(v: Any) -> list[dict[str, Any]]:
     return v if isinstance(v, list) else []
 
 
-async def _load_crawl_snapshots(conn, *, crawl_run_id: Any, crawl_cache_key: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    crawl_summary: dict[str, Any] = {}
-    crawl_raw: dict[str, Any] = {}
-    try:
-        row = None
-        if crawl_run_id:
-            row = await conn.fetchrow(
-                """
-                SELECT cc.crawl_summary, cc.crawl_raw
-                FROM crawl_runs cr
-                JOIN crawl_cache cc ON cc.id = cr.crawl_cache_id
-                WHERE cr.id = $1
-                """,
-                crawl_run_id,
-            )
-        elif crawl_cache_key:
-            row = await conn.fetchrow(
-                """
-                SELECT crawl_summary, crawl_raw
-                FROM crawl_cache
-                WHERE normalized_url = $1 AND crawler_version = 'v1'
-                """,
-                crawl_cache_key,
-            )
-        if row:
-            for field, target in (("crawl_summary", "summary"), ("crawl_raw", "raw")):
-                v = row.get(field)
-                if isinstance(v, str):
-                    vv = json.loads(v) if v else {}
-                elif isinstance(v, dict):
-                    vv = v
-                else:
-                    vv = {}
-                if target == "summary":
-                    crawl_summary = vv
-                else:
-                    crawl_raw = vv
-    except Exception:
-        crawl_summary, crawl_raw = {}, {}
-    return crawl_summary, crawl_raw
-
 
 @register_task_stream("playbook/onboarding-generate")
 async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> dict[str, Any]:
@@ -123,8 +82,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                   website_url,
                   scale_answers, rca_qa, rca_summary, rca_handoff,
                   gap_answers,
-                  crawl_run_id,
-                  crawl_cache_key
+                  web_summary
                 FROM onboarding
                 WHERE session_id = $1
                 """,
@@ -151,9 +109,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             rca_handoff = str(onboarding.get("rca_handoff") or "")
             gap_answers = str(onboarding.get("gap_answers") or "")
 
-            crawl_run_id = onboarding.get("crawl_run_id")
-            crawl_cache_key = str(onboarding.get("crawl_cache_key") or "").strip()
-            crawl_summary, crawl_raw = await _load_crawl_snapshots(conn, crawl_run_id=crawl_run_id, crawl_cache_key=crawl_cache_key)
+            web_summary = str(onboarding.get("web_summary") or "")
 
             # Create a playbook_runs row (running).
             playbook_run = await conn.fetchrow(
@@ -177,7 +133,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                         "gap_answers": gap_answers,
                     }
                 ),
-                json.dumps({"crawl_summary": crawl_summary, "crawl_raw": crawl_raw}),
+                json.dumps({"web_summary": web_summary}),
             )
             playbook_run_id = playbook_run.get("id")
 
@@ -207,7 +163,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             business_profile=business_profile,
             rca_history=rca_history,
             rca_summary=rca_summary,
-            crawl_summary=crawl_summary,
+            crawl_summary=web_summary,
             gap_answers=gap_answers,
             rca_handoff=rca_handoff,
         )
@@ -217,8 +173,8 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             task=task,
             business_profile=business_profile,
             rca_history=rca_history,
-            crawl_summary=crawl_summary,
-            crawl_raw=crawl_raw,
+            crawl_summary=web_summary,
+            crawl_raw={},
         )
 
         agent_a, agent_e = await asyncio.gather(agent_a_task, agent_e_task, return_exceptions=True)

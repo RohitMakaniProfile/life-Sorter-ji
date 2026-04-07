@@ -157,7 +157,7 @@ export default function OnboardingApp() {
     setError,
   });
 
-  const { crawlStreaming, startForSession: startCrawlForSession, waitForCrawl } = useCrawlTaskStream({
+  const { crawlStreaming, startForSession: startCrawlForSession, waitForCrawl, waitForCrawlDone } = useCrawlTaskStream({
     ensureSession,
     setError,
   });
@@ -684,8 +684,11 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
-      // Wait for crawl to finish (up to 10s) — crawl has been running during scale questions
-      await waitForCrawl(10000);
+      // Wait until the crawl task stream has finished successfully.
+      // The stream writes rca_qa to DB before emitting done — we must wait for
+      // that before calling rca-next-question, otherwise it falls back to the
+      // static tree and returns a question with no options.
+      await waitForCrawlDone(90000);
       const res = await rcaNextQuestion({ session_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);

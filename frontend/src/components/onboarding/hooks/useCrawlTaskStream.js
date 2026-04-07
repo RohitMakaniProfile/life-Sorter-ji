@@ -84,7 +84,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
             setCrawlDone(true);
             setCrawlStage('done');
             setCrawlLabel('Done');
-            setCrawlResult({ crawl_raw: e.crawl_raw, crawl_summary: e.crawl_summary });
+            setCrawlResult({ web_summary: e.web_summary, rca_questions: e.rca_questions ?? [] });
             monitorTaskStreamDone({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, sessionId, event: e });
           },
           onError: (e) => {
@@ -112,6 +112,28 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     [ensureSession, setError],
   );
 
+  // Wait until the crawl task stream has completed successfully (crawlDone=true).
+  // Falls through on timeout so the caller can decide what to do.
+  const waitForCrawlDone = useCallback(
+    (timeoutMs = 60000) =>
+      new Promise((resolve) => {
+        if (crawlDone) {
+          resolve(true);
+          return;
+        }
+        const deadline = setTimeout(() => resolve(false), timeoutMs);
+        const t = window.setInterval(() => {
+          if (crawlDone) {
+            window.clearInterval(t);
+            clearTimeout(deadline);
+            resolve(true);
+          }
+        }, 300);
+      }),
+    [crawlDone],
+  );
+
+  // Legacy alias — resolves as soon as streaming stops (done or error).
   const waitForCrawl = useCallback(
     (timeoutMs = 8000) =>
       new Promise((resolve) => {
@@ -165,6 +187,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     crawlResult,
     startForSession,
     waitForCrawl,
+    waitForCrawlDone,
     taskType: TASK_TYPE_CRAWL,
   };
 }

@@ -276,6 +276,9 @@ async def onboarding_upsert(
         create_or_patch_fields = eff.model_dump(exclude={"session_id"}, exclude_unset=True)
 
         if not sid:
+            # Inject JWT user_id so the row is linked to the authenticated user from creation.
+            if jwt_user_id and "user_id" not in create_or_patch_fields:
+                create_or_patch_fields["user_id"] = jwt_user_id
             return await onboarding_service.create_session_with_onboarding(create_or_patch_fields)
 
         return await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields, user_id=jwt_user_id)

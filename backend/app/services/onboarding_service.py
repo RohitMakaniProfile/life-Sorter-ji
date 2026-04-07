@@ -145,6 +145,10 @@ async def upsert_onboarding_patch(
     allowed = _allowed_updates(updates)
     uid = (user_id or "").strip() if user_id else None
 
+    # Inject JWT user_id into the patch so the row gets linked on first update too.
+    if uid and "user_id" not in allowed:
+        allowed["user_id"] = uid
+
     pool = get_pool()
     async with pool.acquire() as conn:
         # Check if the existing session is complete

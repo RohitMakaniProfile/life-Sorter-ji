@@ -44,8 +44,8 @@ function safeLocalStorageRemove(key: string): void {
 function actorKey(taskType: string, sessionId?: string | null, userId?: string | null): string {
   const s = (sessionId ?? '').trim();
   const u = (userId ?? '').trim();
-  if (s) return `${taskType}:session:${s}`;
   if (u) return `${taskType}:user:${u}`;
+  if (s) return `${taskType}:session:${s}`;
   return `${taskType}:anon`;
 }
 
