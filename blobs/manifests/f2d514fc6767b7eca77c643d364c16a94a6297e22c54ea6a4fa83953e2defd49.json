@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "parent": "32852546e6fc77c5ca5fbebe1475eb2cf8395daf7ae6b4502008a2b70cb77b93",
+  "sourceCommit": "e19f2d485e5b113ed107d5775f3018eaac1c85c6",
+  "message": "redis update",
+  "createdAt": "2026-04-07T14:46:42.721Z",
+  "files": {
+    "backend/.env": {
+      "objectId": "a65a257c16acba4a1dff01e2a7032608d2cf2553f9c9e60927d333f9b895f082",
+      "hash": "a65a257c16acba4a1dff01e2a7032608d2cf2553f9c9e60927d333f9b895f082"
+    },
+    "backend/.env.bak": {
+      "objectId": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a",
+      "hash": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a"
+    },
+    "frontend/.env": {
+      "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+      "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    }
+  },
+  "id": "f2d514fc6767b7eca77c643d364c16a94a6297e22c54ea6a4fa83953e2defd49"
+}
