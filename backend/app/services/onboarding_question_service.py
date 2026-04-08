@@ -28,16 +28,27 @@ def _normalize_questions_answers(value: Any) -> list[dict[str, Any]]:
     return value if isinstance(value, list) else []
 
 
-def _apply_answer_to_last_pending(rca_qa: list[dict[str, Any]], answer: str) -> None:
+def _first_unanswered_index(rca_qa: list[dict[str, Any]]) -> int | None:
+    return next(
+        (i for i, item in enumerate(rca_qa) if isinstance(item, dict) and item.get("answer") is None),
+        None,
+    )
+
+
+def _apply_answer_to_pending(rca_qa: list[dict[str, Any]], answer: str) -> int:
     if not rca_qa:
         raise HTTPException(status_code=400, detail="No pending question found to answer")
-    last = rca_qa[-1]
-    if not isinstance(last, dict):
+    idx = _first_unanswered_index(rca_qa)
+    if idx is None:
+        raise HTTPException(status_code=400, detail="No pending question found to answer")
+    item = rca_qa[idx]
+    if not isinstance(item, dict):
         raise HTTPException(status_code=400, detail="Pending question transcript is corrupted")
-    if last.get("answer") is not None:
-        raise HTTPException(status_code=400, detail="Last question already has an answer")
-    last["answer"] = answer
-    rca_qa[-1] = last
+    if item.get("answer") is not None:
+        raise HTTPException(status_code=400, detail="Pending question already has an answer")
+    item["answer"] = answer
+    rca_qa[idx] = item
+    return idx
 
 
 async def _persist_rca_qa(conn, *, onboarding_id: Any, rca_qa: list[dict[str, Any]]) -> None:
@@ -54,12 +65,12 @@ async def generate_next_rca_question_for_onboarding(
     answer: Optional[str],
 ) -> dict[str, Any]:
     """
-    Strictly DB-only RCA question service.
+    RCA question service with DB-first behavior.
 
-    Reads rca_qa from the onboarding row (pre-populated by the crawl task stream).
-    - If answer provided: persist it against the last unanswered question.
+    Reads rca_qa from onboarding row.
+    - If no questions exist yet, generate and persist up to 3 using onboarding context.
+    - If answer provided: persist it against the first unanswered question.
     - Return the first remaining unanswered question, or status=complete if none left.
-    - Never calls tree, LLM, or any generative fallback.
     """
     sid = (session_id or "").strip()
     if not sid:
@@ -68,7 +79,11 @@ async def generate_next_rca_question_for_onboarding(
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, rca_qa, questions_answers FROM onboarding WHERE session_id = $1",
+            """
+            SELECT id, rca_qa, questions_answers, outcome, domain, task, web_summary, scale_answers
+            FROM onboarding
+            WHERE session_id = $1
+            """,
             sid,
         )
         if not row:
@@ -77,15 +92,52 @@ async def generate_next_rca_question_for_onboarding(
         onboarding_id = row.get("id")
         rca_qa = _normalize_rca_qa(row.get("rca_qa"))
         questions_answers = _normalize_questions_answers(row.get("questions_answers"))
+        scale_answers_raw = row.get("scale_answers")
+        if isinstance(scale_answers_raw, str):
+            try:
+                parsed = json.loads(scale_answers_raw)
+                scale_answers = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                scale_answers = {}
+        else:
+            scale_answers = scale_answers_raw if isinstance(scale_answers_raw, dict) else {}
+
+        if not rca_qa:
+            from app.services.onboarding_crawl_service import generate_rca_questions
+
+            generated = await generate_rca_questions(
+                outcome=str(row.get("outcome") or ""),
+                domain=str(row.get("domain") or ""),
+                task=str(row.get("task") or ""),
+                web_summary=str(row.get("web_summary") or ""),
+                scale_answers=scale_answers,
+                max_questions=3,
+            )
+            rca_qa = [
+                {
+                    "question": str(q.get("question") or ""),
+                    "options": list(q.get("options") or []),
+                    "answer": None,
+                }
+                for q in generated
+                if isinstance(q, dict) and str(q.get("question") or "").strip()
+            ]
+            if rca_qa:
+                await _persist_rca_qa(conn, onboarding_id=onboarding_id, rca_qa=rca_qa)
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Could not generate RCA questions yet. Try again shortly.",
+                )
 
         if answer is not None:
-            _apply_answer_to_last_pending(rca_qa, answer)
+            answered_idx = _apply_answer_to_pending(rca_qa, answer)
             try:
-                last = rca_qa[-1] if rca_qa else {}
-                if isinstance(last, dict):
+                answered = rca_qa[answered_idx] if 0 <= answered_idx < len(rca_qa) else {}
+                if isinstance(answered, dict):
                     questions_answers.append({
-                        "question": str(last.get("question") or ""),
-                        "answer": str(last.get("answer") or ""),
+                        "question": str(answered.get("question") or ""),
+                        "answer": str(answered.get("answer") or ""),
                         "question_type": "rca",
                     })
             except Exception:
@@ -97,10 +149,7 @@ async def generate_next_rca_question_for_onboarding(
                 onboarding_id,
             )
 
-        first_unanswered_idx = next(
-            (i for i, item in enumerate(rca_qa) if isinstance(item, dict) and item.get("answer") is None),
-            None,
-        )
+        first_unanswered_idx = _first_unanswered_index(rca_qa)
 
         if first_unanswered_idx is not None:
             item = rca_qa[first_unanswered_idx]

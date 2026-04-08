@@ -153,9 +153,14 @@ async def upsert_onboarding_patch(
     async with pool.acquire() as conn:
         # Check if the existing session is complete
         existing = await conn.fetchrow(
-            "SELECT onboarding_completed_at FROM onboarding WHERE session_id = $1",
+            "SELECT onboarding_completed_at, website_url FROM onboarding WHERE session_id = $1",
             sid,
         )
+        website_url_changed = False
+        if existing and "website_url" in allowed:
+            old_url = str(existing.get("website_url") or "").strip()
+            new_url = str(allowed.get("website_url") or "").strip()
+            website_url_changed = old_url != new_url
 
         # If the session exists and is complete, create a new session
         if existing and existing.get("onboarding_completed_at"):
@@ -243,6 +248,23 @@ async def upsert_onboarding_patch(
                 """,
                 sid,
                 *vals,
+            )
+
+        if website_url_changed:
+            row = await conn.fetchrow(
+                """
+                UPDATE onboarding
+                SET web_summary = '',
+                    rca_qa = '[]'::jsonb,
+                    rca_summary = '',
+                    rca_handoff = '',
+                    updated_at = NOW()
+                WHERE session_id = $1
+                RETURNING id, session_id, user_id, outcome, domain, task,
+                          website_url, gbp_url, scale_answers, questions_answers, crawl_cache_key,
+                          onboarding_completed_at, created_at, updated_at
+                """,
+                sid,
             )
 
     out = _serialize_row(row)

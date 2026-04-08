@@ -57,13 +57,14 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
         )
 
     page_data: dict[str, Any] = {}
+    summary_text: str = ""
     scrape_error: str | None = None
 
     try:
         async def _on_progress(event: dict[str, Any]) -> None:
             await send("stage", **event)
 
-        page_data = await run_playwright_single_page(
+        page_data, summary_text = await run_playwright_single_page(
             url=website_url,
             on_progress=_on_progress,
         )
@@ -83,7 +84,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     # ── Stage 2: Build and persist web_summary ───────────────────────────────
     await send("stage", stage="summarizing", label="Building web summary")
 
-    web_summary = build_web_summary(page_data, website_url)
+    web_summary = (summary_text or "").strip() or build_web_summary(page_data, website_url)
 
     if session_id:
         await update_onboarding_web_summary(session_id, web_summary)
@@ -91,7 +92,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     # ── Stage 3: Generate RCA questions ──────────────────────────────────────
     await send("stage", stage="generating_questions", label="Generating RCA questions")
 
-    rca_questions: list[str] = []
+    rca_questions: list[dict[str, Any]] = []
 
     if session_id:
         onboarding = await fetch_onboarding_context(session_id)
@@ -100,6 +101,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
             domain=onboarding.get("domain", ""),
             task=onboarding.get("task", ""),
             web_summary=web_summary,
+            scale_answers=onboarding.get("scale_answers") or {},
             max_questions=3,
         )
         if rca_questions:

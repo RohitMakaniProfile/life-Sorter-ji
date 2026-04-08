@@ -11,16 +11,15 @@ Replaces crawl_service.py for the onboarding task stream. Responsibilities:
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from typing import Any, Awaitable, Callable
 
-import httpx
 import structlog
 
 from app.db import get_pool
 from app.services.ai_helper import ai_helper as _ai
+from app.skills.service import run_skill
 
 logger = structlog.get_logger()
 
@@ -92,82 +91,58 @@ async def run_playwright_single_page(
     *,
     url: str,
     on_progress: ProgressCb | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     """
-    Call the remote scraper microservice with maxPages=1.
-    Returns the first (and only) page dict from result.data.pages,
-    or a minimal error dict if the scrape fails.
+    Run scrape-playwright via the shared skills service with maxPages=1.
+    Returns:
+      - page_data: first page payload (or minimal fallback dict)
+      - web_summary_text: summary text returned by skill post-processing
     """
-    base = os.getenv("SCRAPER_BASE_URL", "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("SCRAPER_BASE_URL not configured")
+    async def _skill_progress(meta: dict[str, Any]) -> None:
+        if not on_progress:
+            return
+        if not isinstance(meta, dict):
+            return
+        if meta.get("stage") == "running":
+            label = str(meta.get("message") or meta.get("label") or "Scraping")
+            url_hint = ""
+            m = meta.get("meta")
+            if isinstance(m, dict):
+                url_hint = str(m.get("url") or "")
+            await on_progress(
+                {
+                    "stage": "scraping",
+                    "label": label,
+                    "current_page": url_hint,
+                }
+            )
 
-    payload: dict[str, Any] = {"url": url, "maxPages": 1}
-    done_result: dict[str, Any] | None = None
+    result = await run_skill(
+        "scrape-playwright",
+        message=f"Scrape this website homepage: {url}",
+        args={"url": url, "maxPages": 1},
+        on_progress=_skill_progress,
+    )
+    if result.status != "ok":
+        raise RuntimeError(str(result.error or "scrape-playwright failed"))
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            f"{base}/v1/scrape-playwright/stream",
-            json=payload,
-            headers={"Accept": "text/event-stream"},
-        ) as resp:
-            if resp.status_code >= 400:
-                err_text = (await resp.aread()).decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"scraper_http_{resp.status_code}: {err_text.strip() or 'request failed'}"
-                )
-
-            async for line in resp.aiter_lines():
-                if not line or line.startswith(":") or not line.startswith("data:"):
-                    continue
-                raw = line[len("data:"):].strip()
-                if not raw:
-                    continue
-                try:
-                    meta = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(meta, dict):
-                    continue
-
-                event = str(meta.get("event") or "").strip().lower()
-
-                if event == "done" and isinstance(meta.get("result"), dict):
-                    done_result = meta["result"]
-                    continue
-
-                # Forward progress to the task-stream send callback
-                if on_progress:
-                    await on_progress({
-                        "stage": "scraping",
-                        "label": str(meta.get("url") or meta.get("message") or event or "Scraping"),
-                        "current_page": str(meta.get("url") or ""),
-                    })
-
-    if done_result is None:
-        raise RuntimeError("scraper stream ended without done event")
-
-    if done_result.get("error"):
-        raise RuntimeError(str(done_result["error"]))
-
-    data = done_result.get("data") or {}
-    # Normalise: some scraper builds return payload directly instead of nesting under data
+    data = result.data or {}
     if not isinstance(data, dict):
-        data = done_result
+        data = {}
 
     pages: list[dict[str, Any]] = data.get("pages") or []
     if pages and isinstance(pages[0], dict):
-        return pages[0]
+        return pages[0], str(result.text or "").strip()
 
     # Fallback: build a minimal record from whatever the scraper returned
-    return {
+    page_data = {
         "url": url,
         "title": str(data.get("title") or ""),
         "meta_description": str(data.get("meta_description") or ""),
         "elements": data.get("elements") or [],
         "tech_stack": data.get("tech_stack") or {},
     }
+    return page_data, str(result.text or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -223,81 +198,20 @@ def build_web_summary(page_data: dict[str, Any], url: str) -> str:
 # Generate RCA questions
 # ---------------------------------------------------------------------------
 
-_RCA_SYSTEM_PROMPT = """\
+# Fallback prompt if not found in database
+_RCA_SYSTEM_PROMPT_DEFAULT = """\
 You are a world-class business growth consultant doing a 3-minute intake call with a founder.
 You have just looked at their website. You know exactly what they want to achieve.
 Your job: ask the 3 sharpest questions that will unlock a personalised action plan for them.
 
-━━━ YOUR CONTEXT ━━━
-You will receive:
-- GOAL = their outcome category (e.g. "Lead Generation") + their exact chosen task (e.g. "Generate cold outreach sequences")
-- DOMAIN = the business category they selected (e.g. "B2B Sales", "SEO & Organic Visibility")
-- WEBSITE EVIDENCE = what you scraped from their actual website (title, description, content, tech stack)
-
-━━━ YOUR DIAGNOSTIC MISSION ━━━
-Bridge the gap between:
-  → What their website shows right now
-  → What they need to achieve their specific TASK
-
-Ask questions that reveal WHY they haven't achieved this yet.
-Common root causes to probe (pick the ones most relevant given the website evidence):
-  • Missing clarity: they don't know WHO to target or WHAT to offer
-  • Missing proof: no testimonials, case studies, or trust signals visible on site
-  • Missing traffic: no way for their target customer to find them
-  • Missing conversion: site has traffic/leads but they don't convert
-  • Missing process: they don't have a system for follow-up, outreach, or fulfillment
-  • Missing tools: doing things manually that should be automated
-  • Wrong positioning: messaging on site doesn't match their ideal buyer
-
-━━━ WHAT MAKES A PERFECT QUESTION ━━━
-✅ References a SPECIFIC signal from their website (their actual headline, their CTA, their tech stack, what's missing)
-✅ Directly tied to THEIR task — not generic business advice
-✅ Short: max 12 words. Sounds like a smart friend, not a consultant survey.
-✅ Each option is a concrete realistic scenario for a founder in THEIR domain
-✅ A non-technical business owner answers it in under 15 seconds without confusion
-
-━━━ EXAMPLES: BAD vs GOOD ━━━
-
-BAD: "What is your monthly marketing budget?"
-GOOD (for a tutor with no testimonials trying to get leads): "Why aren't past students referring others to you?"
-
-BAD: "Who is your target audience?"
-GOOD (for a D2C brand with a weak CTA trying to boost sales): "What stops people from buying the first time they visit your site?"
-
-BAD: "How long have you been in business?"
-GOOD (for a SaaS with no pricing page trying to generate trials): "Why do visitors leave without signing up for a trial?"
-
-━━━ OPTION RULES ━━━
-- Exactly 4 options per question
-- Options A, B, C = distinct, specific scenarios for a founder in THEIR domain (not generic)
-- Option D = always "Something else / I'm not sure"
-- Max 8 words per option. No full sentences. No vague filler.
-- Options must be mutually exclusive — if someone picks A, they wouldn't also pick B
-
-━━━ CRITICAL RULES ━━━
-❌ NEVER ask: "What is your target audience?" / "What's your budget?" / "How long in business?" / "Describe your product"
-❌ NEVER ask something already answered by the website evidence
-❌ NEVER use corporate jargon — write like you're texting a founder
-❌ NEVER ask about things unrelated to their chosen TASK
-❌ ALL 3 questions must be about DIFFERENT root causes — no overlapping topics
-
-━━━ OUTPUT FORMAT (STRICT) ━━━
-Return ONLY a valid JSON array. No explanation. No preamble. No markdown. Just this:
-[
-  {
-    "question": "Your short question here?",
-    "options": ["Specific option A", "Specific option B", "Specific option C", "Something else / not sure"]
-  },
-  {
-    "question": "Second question?",
-    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
-  },
-  {
-    "question": "Third question?",
-    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
-  }
-]
+Return ONLY a valid JSON array of 3 questions with options.
 """
+
+
+async def _get_rca_system_prompt() -> str:
+    """Fetch RCA system prompt from prompts repository (Redis cached, DB fallback)."""
+    from app.services.prompts_service import get_prompt
+    return await get_prompt("rca-questions", default=_RCA_SYSTEM_PROMPT_DEFAULT)
 
 
 async def generate_rca_questions(
@@ -306,6 +220,7 @@ async def generate_rca_questions(
     domain: str,
     task: str,
     web_summary: str,
+    scale_answers: dict[str, Any] | None = None,
     max_questions: int = 3,
 ) -> list[dict[str, Any]]:
     """
@@ -316,6 +231,7 @@ async def generate_rca_questions(
         f"GOAL CATEGORY: {outcome}\n"
         f"THEIR EXACT TASK: {task}\n"
         f"DOMAIN: {domain}\n\n"
+        f"ONBOARDING SCALE ANSWERS: {json.dumps(scale_answers or {}, ensure_ascii=False)}\n\n"
         f"━━━ WEBSITE EVIDENCE (what I scraped from their site) ━━━\n"
         f"{web_summary}\n\n"
         f"━━━ YOUR JOB ━━━\n"
@@ -328,10 +244,13 @@ async def generate_rca_questions(
     )
 
     try:
+        # Fetch prompt from DB/Redis (with fallback)
+        system_prompt = await _get_rca_system_prompt()
+
         result = await _ai.complete(
             model="anthropic/claude-sonnet-4-6",
             messages=[
-                {"role": "system", "content": _RCA_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.3,
@@ -401,19 +320,29 @@ def _parse_questions(raw: str, max_questions: int) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 async def fetch_onboarding_context(session_id: str) -> dict[str, Any]:
-    """Return outcome, domain, task, web_summary from the onboarding row."""
+    """Return outcome, domain, task, scale_answers, web_summary from the onboarding row."""
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT outcome, domain, task, web_summary FROM onboarding WHERE session_id = $1",
+            "SELECT outcome, domain, task, scale_answers, web_summary FROM onboarding WHERE session_id = $1",
             session_id,
         )
     if not row:
         return {}
+    scale_answers_raw = row["scale_answers"]
+    if isinstance(scale_answers_raw, str):
+        try:
+            parsed = json.loads(scale_answers_raw)
+            scale_answers = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            scale_answers = {}
+    else:
+        scale_answers = scale_answers_raw if isinstance(scale_answers_raw, dict) else {}
     return {
         "outcome": str(row["outcome"] or ""),
         "domain": str(row["domain"] or ""),
         "task": str(row["task"] or ""),
+        "scale_answers": scale_answers,
         "web_summary": str(row["web_summary"] or ""),
     }
 
