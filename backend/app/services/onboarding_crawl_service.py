@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 import structlog
 
 from app.db import get_pool
-from app.services.ai_helper import ai_helper as _ai
+from app.services.ai_helper import _extract_json_value, ai_helper as _ai
 from app.skills.service import run_skill
 
 logger = structlog.get_logger()
@@ -211,11 +211,38 @@ Use short sections:
 - Gaps / Unknowns
 """
 
+_RCA_QUESTIONS_PROMPT_DEFAULT = """\
+You are generating exactly 3 diagnostic RCA questions for a business onboarding flow.
+
+Use all available context:
+- business outcome
+- business domain
+- business task
+- scale answers
+- website summary
+- business profile
+
+Requirements:
+- Return only valid JSON
+- Format: {"questions":[{"question":"...","options":["...","...","..."]}]}
+- Generate exactly 3 questions
+- Each question must be concrete and diagnostic, not generic
+- Each question must include 3-5 short multiple-choice options
+- Use the business profile when available to tailor the questions
+- Avoid repeating what is already obvious from the website
+"""
+
 
 async def _get_business_profile_prompt() -> str:
     """Fetch business-profile prompt from prompts repository (Redis cached, DB fallback)."""
     from app.services.prompts_service import get_prompt
     return await get_prompt("business-profile", default=_BUSINESS_PROFILE_PROMPT_DEFAULT)
+
+
+async def _get_rca_questions_prompt() -> str:
+    """Fetch RCA question prompt from prompts repository (Redis cached, DB fallback)."""
+    from app.services.prompts_service import get_prompt
+    return await get_prompt("rca-questions", default=_RCA_QUESTIONS_PROMPT_DEFAULT)
 
 
 async def generate_business_profile(*, web_summary: str) -> str:
@@ -240,6 +267,71 @@ async def generate_business_profile(*, web_summary: str) -> str:
     except Exception as exc:
         logger.warning("generate_business_profile failed", error=str(exc))
         return ""
+
+
+async def generate_rca_questions(
+    *,
+    outcome: str,
+    domain: str,
+    task: str,
+    web_summary: str,
+    scale_answers: dict[str, Any] | None,
+    business_profile: str = "",
+    max_questions: int = 3,
+) -> list[dict[str, Any]]:
+    """Generate RCA questions using onboarding context, including business_profile."""
+    raw = ""
+    try:
+        system_prompt = await _get_rca_questions_prompt()
+        user_payload = {
+            "outcome": str(outcome or "").strip(),
+            "domain": str(domain or "").strip(),
+            "task": str(task or "").strip(),
+            "scale_answers": scale_answers or {},
+            "web_summary": str(web_summary or "").strip(),
+            "business_profile": str(business_profile or "").strip(),
+            "max_questions": int(max_questions or 3),
+        }
+        result = await _ai.complete(
+            model="anthropic/claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+            ],
+            temperature=0.3,
+            max_tokens=900,
+        )
+        raw = str(result.get("message") or "").strip()
+        logger.info("generate_rca_questions raw_output", raw_output=raw[:4000])
+        parsed = json.loads(_extract_json_value(raw)) if raw else {}
+        if isinstance(parsed, dict):
+            items = parsed.get("questions")
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            items = None
+        if not isinstance(items, list):
+            raise ValueError("RCA prompt response did not contain a questions list")
+        out: list[dict[str, Any]] = []
+        for item in items[: max(1, int(max_questions or 3))]:
+            if not isinstance(item, dict):
+                continue
+            question = str(item.get("question") or "").strip()
+            options = item.get("options") or []
+            if not question:
+                continue
+            out.append(
+                {
+                    "question": question,
+                    "options": [str(opt).strip() for opt in options if str(opt).strip()][:5],
+                }
+            )
+        if not out:
+            raise ValueError("RCA prompt response produced zero usable questions")
+        return out
+    except Exception as exc:
+        logger.warning("generate_rca_questions failed", error=str(exc), raw_preview=raw[:400])
+        raise RuntimeError(f"RCA question generation failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

@@ -173,8 +173,23 @@ async def get_onboarding_state(
     async with pool.acquire() as conn:
         row = None
 
-        # Prefer user_id lookup if available (latest onboarding by created_at for this user)
-        if uid:
+        # Prefer explicit onboarding_id when provided; it is the only unambiguous row identifier.
+        if oid:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    id, outcome, domain, task, website_url, gbp_url, business_profile,
+                    scale_answers, rca_qa, rca_summary, rca_handoff,
+                    precision_questions, precision_answers, precision_status,
+                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
+                FROM onboarding
+                WHERE id = $1::uuid
+                """,
+                oid,
+            )
+
+        # Fall back to user_id lookup only when onboarding_id is absent.
+        if not row and uid:
             row = await conn.fetchrow(
                 """
                 SELECT
@@ -188,21 +203,6 @@ async def get_onboarding_state(
                 LIMIT 1
                 """,
                 uid,
-            )
-
-        # Fall back to onboarding_id lookup.
-        if not row and oid:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    id, outcome, domain, task, website_url, gbp_url, business_profile,
-                    scale_answers, rca_qa, rca_summary, rca_handoff,
-                    precision_questions, precision_answers, precision_status,
-                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
-                FROM onboarding
-                WHERE id = $1::uuid
-                """,
-                oid,
             )
 
         if not row:
@@ -326,6 +326,8 @@ class GenerateRcaQuestionResponse(BaseModel):
     match_source: str = ""  # tree | llm | static_fallback
     complete_summary: str = ""
     complete_handoff: str = ""
+    scale_answers: Optional[dict[str, Any]] = None
+    business_profile: Optional[str] = None
 
 
 @router.post("/rca-next-question", response_model=GenerateRcaQuestionResponse)

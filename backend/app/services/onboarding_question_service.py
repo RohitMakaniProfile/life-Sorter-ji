@@ -4,9 +4,12 @@ import json
 from typing import Any, Optional
 
 from fastapi import HTTPException
+import structlog
 
 from app.db import get_pool
 from app.models.session import DynamicQuestion
+
+logger = structlog.get_logger()
 
 
 def _normalize_rca_qa(rca_qa: Any) -> list[dict[str, Any]]:
@@ -80,7 +83,7 @@ async def generate_next_rca_question_for_onboarding(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, rca_qa, questions_answers, outcome, domain, task, web_summary, scale_answers
+            SELECT id, rca_qa, questions_answers, outcome, domain, task, web_summary, scale_answers, business_profile
             FROM onboarding
             WHERE id = $1::uuid
             """,
@@ -101,18 +104,28 @@ async def generate_next_rca_question_for_onboarding(
                 scale_answers = {}
         else:
             scale_answers = scale_answers_raw if isinstance(scale_answers_raw, dict) else {}
+        business_profile = str(row.get("business_profile") or "").strip()
 
         if not rca_qa:
             from app.services.onboarding_crawl_service import generate_rca_questions
 
-            generated = await generate_rca_questions(
-                outcome=str(row.get("outcome") or ""),
-                domain=str(row.get("domain") or ""),
-                task=str(row.get("task") or ""),
-                web_summary=str(row.get("web_summary") or ""),
-                scale_answers=scale_answers,
-                max_questions=3,
-            )
+            try:
+                generated = await generate_rca_questions(
+                    outcome=str(row.get("outcome") or ""),
+                    domain=str(row.get("domain") or ""),
+                    task=str(row.get("task") or ""),
+                    web_summary=str(row.get("web_summary") or ""),
+                    scale_answers=scale_answers,
+                    business_profile=business_profile,
+                    max_questions=3,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "generate_next_rca_question_for_onboarding failed to generate RCA questions",
+                    onboarding_id=str(onboarding_id),
+                    error=str(exc),
+                )
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             rca_qa = [
                 {
                     "question": str(q.get("question") or ""),
@@ -127,7 +140,7 @@ async def generate_next_rca_question_for_onboarding(
             else:
                 raise HTTPException(
                     status_code=503,
-                    detail="Could not generate RCA questions yet. Try again shortly.",
+                    detail="RCA question generation returned no usable questions.",
                 )
 
         if answer is not None:
@@ -165,6 +178,9 @@ async def generate_next_rca_question_for_onboarding(
                 ),
                 "match_source": "pre_generated",
                 "complete_summary": "",
+                "complete_handoff": "",
+                "scale_answers": scale_answers or None,
+                "business_profile": business_profile or None,
             }
 
         return {
@@ -173,4 +189,6 @@ async def generate_next_rca_question_for_onboarding(
             "match_source": "pre_generated",
             "complete_summary": "Diagnostic complete.",
             "complete_handoff": "",
+            "scale_answers": scale_answers or None,
+            "business_profile": business_profile or None,
         }

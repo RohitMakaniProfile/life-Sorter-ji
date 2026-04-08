@@ -22,7 +22,7 @@ class AiChatResult:
     stop_reason: str = ""
 
 
-def _extract_json_object(text: str) -> str:
+def _extract_json_value(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
         raise ValueError("Empty LLM output; expected JSON")
@@ -42,11 +42,30 @@ def _extract_json_object(text: str) -> str:
         except Exception:
             pass
 
-    obj = re.search(r"\{[\s\S]*\}", raw)
-    if not obj:
-        raise ValueError("Could not find a JSON object in LLM output")
-    candidate = obj.group(0).strip()
-    json.loads(candidate)
+    starts = [i for i, ch in enumerate(raw) if ch in "[{"]
+    if not starts:
+        raise ValueError("Could not find JSON-looking content in LLM output")
+
+    for start in starts:
+        open_ch = raw[start]
+        close_ch = "}" if open_ch == "{" else "]"
+        end_positions = [i for i in range(len(raw) - 1, start, -1) if raw[i] == close_ch]
+        for end in end_positions:
+            candidate = raw[start : end + 1].strip()
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                continue
+
+    raise ValueError("Could not extract valid JSON from LLM output")
+
+
+def _extract_json_object(text: str) -> str:
+    candidate = _extract_json_value(text)
+    parsed = json.loads(candidate)
+    if not isinstance(parsed, dict):
+        raise ValueError("Expected JSON object but got non-object JSON")
     return candidate
 
 
