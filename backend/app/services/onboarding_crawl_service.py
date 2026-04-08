@@ -224,16 +224,79 @@ def build_web_summary(page_data: dict[str, Any], url: str) -> str:
 # ---------------------------------------------------------------------------
 
 _RCA_SYSTEM_PROMPT = """\
-You are an expert business diagnostician. Given a business's website summary \
-and their stated goal, generate up to 3 concise, specific, layman-friendly \
-diagnostic questions that will help identify the root cause of their challenge.
+You are a world-class business growth consultant doing a 3-minute intake call with a founder.
+You have just looked at their website. You know exactly what they want to achieve.
+Your job: ask the 3 sharpest questions that will unlock a personalised action plan for them.
 
-Rules:
-- Maximum 3 questions.
-- Each question must be answerable in 1-3 sentences by a non-technical business owner.
-- Questions must be directly motivated by the website evidence and the user's goal.
-- Do not ask generic questions. Make every question specific to what you can observe.
-- Output ONLY a JSON array of question strings. Example: ["Q1", "Q2", "Q3"]
+━━━ YOUR CONTEXT ━━━
+You will receive:
+- GOAL = their outcome category (e.g. "Lead Generation") + their exact chosen task (e.g. "Generate cold outreach sequences")
+- DOMAIN = the business category they selected (e.g. "B2B Sales", "SEO & Organic Visibility")
+- WEBSITE EVIDENCE = what you scraped from their actual website (title, description, content, tech stack)
+
+━━━ YOUR DIAGNOSTIC MISSION ━━━
+Bridge the gap between:
+  → What their website shows right now
+  → What they need to achieve their specific TASK
+
+Ask questions that reveal WHY they haven't achieved this yet.
+Common root causes to probe (pick the ones most relevant given the website evidence):
+  • Missing clarity: they don't know WHO to target or WHAT to offer
+  • Missing proof: no testimonials, case studies, or trust signals visible on site
+  • Missing traffic: no way for their target customer to find them
+  • Missing conversion: site has traffic/leads but they don't convert
+  • Missing process: they don't have a system for follow-up, outreach, or fulfillment
+  • Missing tools: doing things manually that should be automated
+  • Wrong positioning: messaging on site doesn't match their ideal buyer
+
+━━━ WHAT MAKES A PERFECT QUESTION ━━━
+✅ References a SPECIFIC signal from their website (their actual headline, their CTA, their tech stack, what's missing)
+✅ Directly tied to THEIR task — not generic business advice
+✅ Short: max 12 words. Sounds like a smart friend, not a consultant survey.
+✅ Each option is a concrete realistic scenario for a founder in THEIR domain
+✅ A non-technical business owner answers it in under 15 seconds without confusion
+
+━━━ EXAMPLES: BAD vs GOOD ━━━
+
+BAD: "What is your monthly marketing budget?"
+GOOD (for a tutor with no testimonials trying to get leads): "Why aren't past students referring others to you?"
+
+BAD: "Who is your target audience?"
+GOOD (for a D2C brand with a weak CTA trying to boost sales): "What stops people from buying the first time they visit your site?"
+
+BAD: "How long have you been in business?"
+GOOD (for a SaaS with no pricing page trying to generate trials): "Why do visitors leave without signing up for a trial?"
+
+━━━ OPTION RULES ━━━
+- Exactly 4 options per question
+- Options A, B, C = distinct, specific scenarios for a founder in THEIR domain (not generic)
+- Option D = always "Something else / I'm not sure"
+- Max 8 words per option. No full sentences. No vague filler.
+- Options must be mutually exclusive — if someone picks A, they wouldn't also pick B
+
+━━━ CRITICAL RULES ━━━
+❌ NEVER ask: "What is your target audience?" / "What's your budget?" / "How long in business?" / "Describe your product"
+❌ NEVER ask something already answered by the website evidence
+❌ NEVER use corporate jargon — write like you're texting a founder
+❌ NEVER ask about things unrelated to their chosen TASK
+❌ ALL 3 questions must be about DIFFERENT root causes — no overlapping topics
+
+━━━ OUTPUT FORMAT (STRICT) ━━━
+Return ONLY a valid JSON array. No explanation. No preamble. No markdown. Just this:
+[
+  {
+    "question": "Your short question here?",
+    "options": ["Specific option A", "Specific option B", "Specific option C", "Something else / not sure"]
+  },
+  {
+    "question": "Second question?",
+    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
+  },
+  {
+    "question": "Third question?",
+    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
+  }
+]
 """
 
 
@@ -244,17 +307,25 @@ async def generate_rca_questions(
     task: str,
     web_summary: str,
     max_questions: int = 3,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     """
-    Call the LLM to generate up to max_questions RCA questions.
+    Call the LLM to generate up to max_questions RCA questions with options.
     Returns an empty list on any failure so the task stream is not blocked.
     """
-    user_content = json.dumps({
-        "outcome": outcome,
-        "domain": domain,
-        "task": task,
-        "web_summary": web_summary,
-    }, ensure_ascii=False)
+    user_content = (
+        f"GOAL CATEGORY: {outcome}\n"
+        f"THEIR EXACT TASK: {task}\n"
+        f"DOMAIN: {domain}\n\n"
+        f"━━━ WEBSITE EVIDENCE (what I scraped from their site) ━━━\n"
+        f"{web_summary}\n\n"
+        f"━━━ YOUR JOB ━━━\n"
+        f"Generate exactly {max_questions} diagnostic questions.\n"
+        f"Each question must:\n"
+        f"1. Reference something specific from the website evidence above\n"
+        f"2. Target a different root cause blocking their task: '{task}'\n"
+        f"3. Have 4 options — 3 specific scenarios + 'Something else / not sure'\n\n"
+        f"Focus on: what is the #1 thing stopping them from achieving '{task}' right now?"
+    )
 
     try:
         result = await _ai.complete(
@@ -263,24 +334,40 @@ async def generate_rca_questions(
                 {"role": "system", "content": _RCA_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
-            temperature=0.4,
-            max_tokens=512,
+            temperature=0.3,
+            max_tokens=800,
         )
         raw = str(result.get("message") or "").strip()
         questions = _parse_questions(raw, max_questions)
+        logger.info("generate_rca_questions success", count=len(questions), task=task)
         return questions
     except Exception as exc:
         logger.warning("generate_rca_questions failed", error=str(exc))
         return []
 
 
-def _parse_questions(raw: str, max_questions: int) -> list[str]:
-    """Extract a JSON array of strings from LLM output robustly."""
+def _parse_questions(raw: str, max_questions: int) -> list[dict[str, Any]]:
+    """Extract a JSON array of question objects from LLM output robustly."""
+    def _normalise(parsed: Any) -> list[dict[str, Any]]:
+        if not isinstance(parsed, list):
+            return []
+        out = []
+        for item in parsed:
+            if isinstance(item, str) and item.strip():
+                # Old format fallback: plain string question
+                out.append({"question": item.strip(), "options": []})
+            elif isinstance(item, dict) and item.get("question"):
+                q = str(item["question"]).strip()
+                opts = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
+                out.append({"question": q, "options": opts})
+        return out[:max_questions]
+
     # Try direct parse
     try:
         parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return [str(q) for q in parsed if str(q).strip()][:max_questions]
+        result = _normalise(parsed)
+        if result:
+            return result
     except Exception:
         pass
 
@@ -289,18 +376,20 @@ def _parse_questions(raw: str, max_questions: int) -> list[str]:
     if fence:
         try:
             parsed = json.loads(fence.group(1).strip())
-            if isinstance(parsed, list):
-                return [str(q) for q in parsed if str(q).strip()][:max_questions]
+            result = _normalise(parsed)
+            if result:
+                return result
         except Exception:
             pass
 
     # Try extracting the first [...] array
-    arr_match = re.search(r"\[[\s\S]*?\]", raw)
+    arr_match = re.search(r"\[[\s\S]*\]", raw)
     if arr_match:
         try:
             parsed = json.loads(arr_match.group(0))
-            if isinstance(parsed, list):
-                return [str(q) for q in parsed if str(q).strip()][:max_questions]
+            result = _normalise(parsed)
+            if result:
+                return result
         except Exception:
             pass
 
@@ -341,10 +430,18 @@ async def update_onboarding_web_summary(session_id: str, web_summary: str) -> No
 
 async def update_onboarding_rca_questions(
     session_id: str,
-    questions: list[str],
+    questions: list[dict[str, Any]],
 ) -> None:
-    """Store questions as [{question: str, answer: ""}] in rca_qa."""
-    rca_qa = [{"question": q, "answer": None} for q in questions]
+    """Store questions as [{question, options, answer}] in rca_qa."""
+    rca_qa = [
+        {
+            "question": q.get("question", ""),
+            "options": q.get("options") or [],
+            "answer": None,
+        }
+        for q in questions
+        if q.get("question")
+    ]
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
