@@ -139,3 +139,70 @@ This document marks each static prompt as one of:
 ### `backend/app/services/BACKUP_ORIGINAL_SYSTEM_PROMPT.txt`
 - **Status:** not runtime
 - **Reason:** backup/reference only.
+
+## 7) Frontend Connectivity Audit (Active/Conditional Prompt Paths)
+
+This section answers: prompt path is active in backend, but is it actually reachable from current frontend?
+
+### Connected from frontend (not dead-end)
+
+1. Onboarding RCA generation prompt path (`rca-questions`)
+- Frontend calls:
+  - `POST /api/v1/task-stream/start/crawl` via `useCrawlTaskStream` in `frontend/src/components/onboarding/hooks/useCrawlTaskStream.js`
+  - `POST /api/v1/onboarding/rca-next-question` via `OnboardingApp.jsx`
+- Backend path:
+  - `task_stream.tasks.onboarding_crawl` -> `generate_rca_questions(...)`
+  - `onboarding_question_service.generate_next_rca_question_for_onboarding(...)` fallback generation when `rca_qa` missing
+- **Frontend status:** **CONNECTED**
+
+2. Precision prompt path (`PRECISION_SYSTEM_PROMPT`)
+- Frontend calls:
+  - `POST /api/v1/onboarding/precision/start`
+  - `POST /api/v1/onboarding/precision/answer`
+  - via `coreApi` in `frontend/src/api/services/core.ts` and `OnboardingApp.jsx`
+- Backend path:
+  - `routers/onboarding.py` -> `generate_precision_questions(...)`
+- **Frontend status:** **CONNECTED**
+
+3. Playbook prompts (`PHASE0_PROMPT`, `AGENT_A_MERGED_PROMPT`, `AGENT_E_STANDALONE_PROMPT`, `AGENT3_PROMPT`)
+- Frontend calls:
+  - `POST /api/v1/onboarding/playbook/launch`
+  - `POST /api/v1/onboarding/playbook/gap-answers`
+  - `POST /api/v1/task-stream/start/playbook%2Fonboarding-generate` via `usePlaybookTaskStream`
+- Backend path:
+  - `run_phase0_gap_questions(...)` (launch/prep)
+  - `playbook/onboarding-generate` task -> agents A/E/C prompt paths
+- **Frontend status:** **CONNECTED**
+
+4. Persona prompts (`PRODUCT_PROMPT`, `CONTRIBUTOR_*`, `ASSISTANT_PROMPT`, `DEFAULT_PROMPT`)
+- Frontend calls:
+  - `/api/v1/ai-chat/message`
+  - `/api/v1/ai-chat/stream`
+  - via `sendMessage(...)` / `sendMessageStream(...)` in `frontend/src/api/services/core.ts`, used by `ChatPage.tsx`
+- Backend path:
+  - AI-chat standard mode -> `unified_chat_service.run_standard_chat(...)` -> `openai_service.chat_completion(...)` -> `build_system_prompt(...)`
+- **Frontend status:** **CONNECTED** (conditional on standard-chat routing, but reachable in current UI)
+
+5. Agent/skills pipeline prompts (`_SYSTEM_PROMPT`, evidence matcher, planner, formatter, skill-call summarizer, checklist note converter, skills service summarizers)
+- Frontend calls:
+  - `/api/v1/ai-chat/stream` and `/api/v1/ai-chat/message`
+  - plan/execute task stream path from chat approval actions
+- Backend path:
+  - agentic flow -> orchestrator/checklist/services/skills prompt usages
+- **Frontend status:** **CONNECTED** (triggered when agentic/deep-analysis flow runs)
+
+### Active in backend but frontend-dead-end (currently not called by current frontend)
+
+1. Sheets prompts (`search_prompt`, `explanation_prompt`)
+- Backend API path:
+  - `POST /api/search-companies` (legacy router) -> `sheets_service.search_companies(...)`
+- Frontend evidence:
+  - no call site for `/api/search-companies` found in `frontend/src`
+- **Frontend status:** **DEAD-END from current frontend**
+
+### Inactive in backend (therefore frontend status N/A)
+
+1. `TASK_FILTER_SYSTEM_PROMPT`
+2. `SYSTEM_PROMPT` (RCA next-question in `claude_rca_service.py`)
+
+Both are defined but their parent functions have no call sites in current backend runtime graph.
