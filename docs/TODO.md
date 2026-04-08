@@ -1,4 +1,4 @@
-# TODO: Playbook Preservation & New Journey Flow
+# TODO
 
 > **Created:** April 8, 2026
 
@@ -55,4 +55,3 @@
   - Send conversation link after report completes
   - Only if user has phone number
   - Add system config toggle to enable/disable
-
