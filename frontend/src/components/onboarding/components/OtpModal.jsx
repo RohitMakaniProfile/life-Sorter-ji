@@ -5,8 +5,8 @@ import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 
 // Storage keys for onboarding session (must match useOnboardingSession.js)
-const STORAGE_SESSION_KEY = 'life-sorter-onboarding-session-id';
-const STORAGE_ROW_ID_KEY = 'life-sorter-onboarding-row-id';
+const STORAGE_SESSION_KEY = 'doable-claw-onboarding-session-id';
+const STORAGE_ROW_ID_KEY = 'doable-claw-onboarding-row-id';
 
 export default function OtpModal({ sessionId, onVerified }) {
   const [step, setStep] = useState('phone');

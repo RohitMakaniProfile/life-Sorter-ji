@@ -52,6 +52,7 @@ class ToolsByQ1Q2Q3Response(BaseModel):
 
 class OnboardingStateResponse(BaseModel):
     """Response for GET /onboarding/state - returns the current onboarding state for session resumption."""
+    onboarding_id: str
     session_id: str
     stage: str = "start"  # start | url | questions | diagnostic | precision | playbook | complete
     outcome: Optional[str] = None
@@ -174,18 +175,18 @@ async def get_onboarding_state(
     async with pool.acquire() as conn:
         row = None
 
-        # Prefer user_id lookup if available
+        # Prefer user_id lookup if available (latest onboarding by created_at for this user)
         if uid:
             row = await conn.fetchrow(
                 """
                 SELECT
-                    session_id, outcome, domain, task, website_url, gbp_url,
+                    id, session_id, outcome, domain, task, website_url, gbp_url,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
                     playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
                 FROM onboarding
                 WHERE user_id::text = $1
-                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                ORDER BY created_at DESC
                 LIMIT 1
                 """,
                 uid,
@@ -196,7 +197,7 @@ async def get_onboarding_state(
             row = await conn.fetchrow(
                 """
                 SELECT
-                    session_id, outcome, domain, task, website_url, gbp_url,
+                    id, session_id, outcome, domain, task, website_url, gbp_url,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
                     playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
@@ -232,6 +233,7 @@ async def get_onboarding_state(
                     break
 
         return OnboardingStateResponse(
+            onboarding_id=str(row_dict.get("id") or ""),
             session_id=str(row_dict.get("session_id") or ""),
             stage=stage,
             outcome=str(row_dict.get("outcome") or "") or None,
@@ -275,13 +277,16 @@ async def onboarding_upsert(
     try:
         create_or_patch_fields = eff.model_dump(exclude={"session_id"}, exclude_unset=True)
 
+        result: dict[str, Any]
         if not sid:
             # Inject JWT user_id so the row is linked to the authenticated user from creation.
             if jwt_user_id and "user_id" not in create_or_patch_fields:
                 create_or_patch_fields["user_id"] = jwt_user_id
-            return await onboarding_service.create_session_with_onboarding(create_or_patch_fields)
+            result = await onboarding_service.create_session_with_onboarding(create_or_patch_fields)
+        else:
+            result = await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields, user_id=jwt_user_id)
 
-        return await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields, user_id=jwt_user_id)
+        return result
     except RuntimeError as e:
         if "pool" in str(e).lower() or "not initialized" in str(e).lower():
             raise HTTPException(status_code=503, detail="Database unavailable") from e
@@ -311,7 +316,7 @@ async def tools_by_q1_q2_q3(body: ToolsByQ1Q2Q3Request = Body(...)):
 
 
 class GenerateRcaQuestionRequest(BaseModel):
-    session_id: str
+    session_id: Optional[str] = None
     # Answer to the previously generated question.
     # When omitted, the endpoint generates the FIRST RCA question.
     answer: Optional[str] = None
@@ -336,8 +341,12 @@ async def rca_next_question(request: Request, body: GenerateRcaQuestionRequest =
     Persists question/answer history into `onboarding.rca_qa` (JSONB) so future
     questions can be generated and later replayed as chat messages.
     """
+    sid = await _resolve_onboarding_session_id(
+        request=request,
+        provided_session_id=body.session_id,
+    )
     res = await generate_next_rca_question_for_onboarding(
-        session_id=body.session_id,
+        session_id=sid,
         answer=body.answer,
     )
     return GenerateRcaQuestionResponse(**res)
@@ -482,30 +491,38 @@ async def _resolve_onboarding_session_id(
     request: Request,
     provided_session_id: Optional[str],
 ) -> str:
+    user = get_request_user(request) or {}
+    sub = str(user.get("id") or "").strip()
     sid = (provided_session_id or "").strip()
+
+    # Authenticated path: resolve to latest onboarding row by created_at for this user.
+    if sub:
+        from app.db import get_pool
+
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            resolved_sid = await conn.fetchval(
+                """
+                SELECT session_id
+                FROM onboarding
+                WHERE user_id::text = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                sub,
+            )
+        sid_db = str(resolved_sid or "").strip()
+        if sid_db:
+            return sid_db
+        raise HTTPException(status_code=400, detail="onboarding row not found for user")
+
+    # Guest path: session_id must be explicitly provided.
     if sid:
         return sid
-    user = get_request_user(request) or {}
-    sid_from_user = str(user.get("onboarding_session_id") or "").strip()
-    if sid_from_user:
-        return sid_from_user
     claims = getattr(request.state, "auth_claims", None) or {}
-    sid_claim = str(claims.get("onboarding_session_id") or claims.get("session_id") or "").strip()
+    sid_claim = str(claims.get("session_id") or "").strip()
     if sid_claim:
         return sid_claim
-    sub = str(user.get("id") or claims.get("sub") or "").strip()
-    if not sub:
-        raise HTTPException(status_code=400, detail="session_id is required")
-    from app.db import get_pool
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        linked_sid = await conn.fetchval(
-            "SELECT onboarding_session_id FROM users WHERE id::text = $1 LIMIT 1",
-            sub,
-        )
-    sid_db = str(linked_sid or "").strip()
-    if sid_db:
-        return sid_db
     raise HTTPException(status_code=400, detail="session_id is required")
 
 

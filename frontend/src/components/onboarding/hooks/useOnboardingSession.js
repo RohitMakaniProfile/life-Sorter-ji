@@ -3,8 +3,12 @@ import { apiPost, apiGet } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { getUserIdFromJwt } from '../../../api/authSession';
 
-const STORAGE_SESSION_KEY = 'life-sorter-onboarding-session-id';
-const STORAGE_ROW_ID_KEY = 'life-sorter-onboarding-row-id';
+const STORAGE_SESSION_KEY = 'doable-claw-onboarding-session-id';
+const STORAGE_ROW_ID_KEY = 'doable-claw-onboarding-row-id';
+
+function isAuthenticatedUser() {
+  return Boolean(getUserIdFromJwt());
+}
 
 function readStoredSessionId() {
   if (typeof window === 'undefined') return null;
@@ -15,8 +19,9 @@ function readStoredSessionId() {
   }
 }
 
-function persistSessionPayload(data) {
+function persistSessionPayload(data, { persistToStorage = true } = {}) {
   if (typeof window === 'undefined' || !data?.session_id) return;
+  if (!persistToStorage) return;
   try {
     localStorage.setItem(STORAGE_SESSION_KEY, data.session_id);
     if (data.id) localStorage.setItem(STORAGE_ROW_ID_KEY, data.id);
@@ -34,27 +39,40 @@ export function useOnboardingSession() {
    * with POST /onboarding so the new row is inserted with those columns set.
    */
   const ensureSession = useCallback(async (initialFields = {}) => {
+    const isAuth = isAuthenticatedUser();
     if (!sessionIdRef.current) {
-      const stored = readStoredSessionId();
+      const stored = isAuth ? null : readStoredSessionId();
       if (stored) sessionIdRef.current = stored;
     }
     if (sessionIdRef.current) return sessionIdRef.current;
 
     if (!sessionPromiseRef.current) {
-      const body =
-        initialFields && typeof initialFields === 'object' && Object.keys(initialFields).length > 0
-          ? initialFields
-          : {};
-      sessionPromiseRef.current = apiPost(API_ROUTES.onboarding.upsert, body ?? {})
-        .then((data) => {
-          sessionIdRef.current = data.session_id;
-          persistSessionPayload(data);
-          return data.session_id;
-        })
-        .catch((err) => {
-          sessionPromiseRef.current = null;
-          throw err;
-        });
+      sessionPromiseRef.current = (async () => {
+        if (isAuth) {
+          // Authenticated users should resolve by user identity first; don't use local session storage.
+          try {
+            const state = await apiGet(API_ROUTES.onboarding.state(null, getUserIdFromJwt()));
+            if (state?.session_id) {
+              sessionIdRef.current = state.session_id;
+              return state.session_id;
+            }
+          } catch {
+            // no existing onboarding row for this user yet
+          }
+        }
+
+        const body =
+          initialFields && typeof initialFields === 'object' && Object.keys(initialFields).length > 0
+            ? initialFields
+            : {};
+        const data = await apiPost(API_ROUTES.onboarding.upsert, body ?? {});
+        sessionIdRef.current = data.session_id;
+        persistSessionPayload(data, { persistToStorage: !isAuth });
+        return data.session_id;
+      })().catch((err) => {
+        sessionPromiseRef.current = null;
+        throw err;
+      });
     }
     return sessionPromiseRef.current;
   }, []);
@@ -64,18 +82,23 @@ export function useOnboardingSession() {
    * (because the old one was complete), updates the stored session_id.
    */
   const updateOnboarding = useCallback(async (fields) => {
-    const sid = sessionIdRef.current || readStoredSessionId();
-    if (!sid) {
-      throw new Error('No session to update');
-    }
+    const isAuth = isAuthenticatedUser();
+    const sid = sessionIdRef.current || (isAuth ? null : readStoredSessionId());
 
-    const data = await apiPost(API_ROUTES.onboarding.upsert, { session_id: sid, ...fields });
+    const data = await apiPost(
+      API_ROUTES.onboarding.upsert,
+      sid ? { session_id: sid, ...fields } : { ...fields },
+    );
+    if (data?.session_id) {
+      sessionIdRef.current = data.session_id;
+      persistSessionPayload(data, { persistToStorage: !isAuth });
+    }
 
     // If backend created a new session (old one was complete), update our refs
     if (data?.new_session && data?.session_id) {
       sessionIdRef.current = data.session_id;
       sessionPromiseRef.current = null; // Clear the promise so ensureSession works fresh
-      persistSessionPayload(data);
+      persistSessionPayload(data, { persistToStorage: !isAuth });
     }
 
     return data;
@@ -107,8 +130,8 @@ export function useOnboardingSession() {
       // Set sessionIdRef if we got a valid response
       if (state?.session_id) {
         sessionIdRef.current = state.session_id;
-        // Also persist the session_id if we got it from user_id lookup
-        persistSessionPayload(state);
+        // Persist only for guest users.
+        persistSessionPayload(state, { persistToStorage: !userId });
       }
       return state;
     } catch (err) {

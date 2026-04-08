@@ -3,7 +3,7 @@ import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/serv
 import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError } from '../../../api/services/taskStreamMonitor';
 
 const TASK_TYPE_CRAWL = 'crawl';
-const STORAGE_CRAWL_STEP_REACHED = 'life-sorter-crawl-step-reached';
+const STORAGE_CRAWL_STEP_REACHED = 'doable-claw-crawl-step-reached';
 
 function safeGetItem(key) {
   try {
@@ -191,4 +191,3 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     taskType: TASK_TYPE_CRAWL,
   };
 }
-

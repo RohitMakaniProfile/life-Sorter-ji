@@ -4,7 +4,7 @@ import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, 
 import { getUserIdFromJwt } from '../../../api/authSession';
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
-const STORAGE_PLAYBOOK_STEP_REACHED = 'life-sorter-playbook-step-reached';
+const STORAGE_PLAYBOOK_STEP_REACHED = 'doable-claw-playbook-step-reached';
 
 function safeGetItem(key) {
   try {
@@ -263,4 +263,3 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     clearStepReached,
   };
 }
-

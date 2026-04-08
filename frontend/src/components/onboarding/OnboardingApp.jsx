@@ -489,7 +489,6 @@ export default function OnboardingApp() {
       if (Object.keys(patch).length === 0) return;
 
       try {
-        await ensureSession(); // Make sure we have a session
         await updateOnboarding(patch);
       } catch (err) {
         console.warn('Onboarding update:', err?.message || err);
@@ -573,16 +572,16 @@ export default function OnboardingApp() {
     if (!urlValue.trim() && !gbpValue.trim()) return;
     setUrlSubmitting(true);
     try {
-      const sid = await ensureSession();
       const web = urlValue.trim();
       const gbp = gbpValue.trim();
       if (web || gbp) {
         const patch = {};
         if (web) patch.website_url = web;
         if (gbp) patch.gbp_url = gbp;
-        await handleOnboardingFieldUpdate({ ...patch, session_id: sid });
+        await handleOnboardingFieldUpdate({ ...patch });
 
-        if (web) startCrawlForSession(sid, { websiteUrl: web }).catch(() => {});
+        const sid = sessionIdRef.current || (await ensureSession());
+        if (web && sid) startCrawlForSession(sid, { websiteUrl: web }).catch(() => {});
       }
       await moveToScaleQuestions();
     } catch {
@@ -854,7 +853,7 @@ export default function OnboardingApp() {
               const keysToDelete = [];
               for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
-                if (k && !keepKeys.has(k) && (k.startsWith('life-sorter') || k.startsWith('ikshan'))) {
+                if (k && !keepKeys.has(k) && (k.startsWith('doable-claw') || k.startsWith('ikshan'))) {
                   keysToDelete.push(k);
                 }
               }
