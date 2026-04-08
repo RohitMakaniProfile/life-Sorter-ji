@@ -44,9 +44,9 @@ export const API_ROUTES = {
   },
   onboarding: {
     upsert: '/api/v1/onboarding',
-    state: (sessionId?: string | null, userId?: string | null) => {
+    state: (onboardingId?: string | null, userId?: string | null) => {
       const params = new URLSearchParams();
-      if (sessionId) params.append('session_id', sessionId);
+      if (onboardingId) params.append('onboarding_id', onboardingId);
       if (userId) params.append('user_id', userId);
       return `/api/v1/onboarding/state?${params.toString()}`;
     },
@@ -99,4 +99,3 @@ export const API_ROUTES = {
     planExecute: '/api/v1/task-stream/start/plan%2Fexecute',
   },
 } as const;
-

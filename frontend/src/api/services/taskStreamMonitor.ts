@@ -22,10 +22,10 @@ function emit() {
   for (const fn of listeners) fn();
 }
 
-export function makeActorKey(opts: { sessionId?: string | null; userId?: string | null }): ActorKey {
-  const sid = opts.sessionId ?? null;
+export function makeActorKey(opts: { onboardingId?: string | null; userId?: string | null }): ActorKey {
+  const sid = opts.onboardingId ?? null;
   const uid = opts.userId ?? null;
-  return `sid:${sid || ''}|uid:${uid || ''}`;
+  return `oid:${sid || ''}|uid:${uid || ''}`;
 }
 
 export function subscribeTaskStreamMonitor(fn: () => void): () => void {
@@ -60,7 +60,7 @@ function upsertRow(actorKey: ActorKey, taskType: string, patch: Partial<TaskStre
 export function monitorTaskStreamStart(opts: {
   taskType: string;
   streamId: string;
-  sessionId?: string | null;
+  onboardingId?: string | null;
   userId?: string | null;
 }) {
   upsertRow(makeActorKey(opts), opts.taskType, { streamId: opts.streamId, status: 'running', lastEventType: 'start' });
@@ -69,7 +69,7 @@ export function monitorTaskStreamStart(opts: {
 export function monitorTaskStreamEvent(opts: {
   taskType: string;
   streamId?: string;
-  sessionId?: string | null;
+  onboardingId?: string | null;
   userId?: string | null;
   event: any;
 }) {
@@ -88,7 +88,7 @@ export function monitorTaskStreamEvent(opts: {
 export function monitorTaskStreamDone(opts: {
   taskType: string;
   streamId?: string;
-  sessionId?: string | null;
+  onboardingId?: string | null;
   userId?: string | null;
   event?: any;
 }) {
@@ -105,7 +105,7 @@ export function monitorTaskStreamDone(opts: {
 export function monitorTaskStreamError(opts: {
   taskType: string;
   streamId?: string;
-  sessionId?: string | null;
+  onboardingId?: string | null;
   userId?: string | null;
   event?: any;
 }) {
@@ -119,4 +119,3 @@ export function monitorTaskStreamError(opts: {
     errorMessage: String(e.message || 'Task stream error'),
   });
 }
-

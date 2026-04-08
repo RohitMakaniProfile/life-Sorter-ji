@@ -775,7 +775,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
       const optionLower = option.trim().toLowerCase();
       if (optionLower === 'approve' || optionLower === 'retry') {
         // Clear any stale stream IDs from localStorage before starting fresh
-        clearStoredTaskStreamId('plan/execute', { sessionId: null, userId: null });
+        clearStoredTaskStreamId('plan/execute', { onboardingId: null, userId: null });
         
         let retryPlanId: string | undefined;
         if (optionLower === 'retry') {

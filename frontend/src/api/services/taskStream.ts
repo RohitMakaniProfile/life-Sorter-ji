@@ -41,16 +41,16 @@ function safeLocalStorageRemove(key: string): void {
   }
 }
 
-function actorKey(taskType: string, sessionId?: string | null, userId?: string | null): string {
-  const s = (sessionId ?? '').trim();
+function actorKey(taskType: string, onboardingId?: string | null, userId?: string | null): string {
+  const s = (onboardingId ?? '').trim();
   const u = (userId ?? '').trim();
   if (u) return `${taskType}:user:${u}`;
-  if (s) return `${taskType}:session:${s}`;
+  if (s) return `${taskType}:onboarding:${s}`;
   return `${taskType}:anon`;
 }
 
-function streamIdStorageKey(taskType: string, sessionId?: string | null, userId?: string | null): string {
-  return `${STORAGE_PREFIX}:stream_id:${actorKey(taskType, sessionId, userId)}`;
+function streamIdStorageKey(taskType: string, onboardingId?: string | null, userId?: string | null): string {
+  return `${STORAGE_PREFIX}:stream_id:${actorKey(taskType, onboardingId, userId)}`;
 }
 
 function cursorStorageKey(streamId: string): string {
@@ -121,17 +121,17 @@ async function listenTaskStreamUrl(
 export async function startTaskStreamAndListen(
   taskType: string,
   opts: {
-    sessionId?: string | null;
+    onboardingId?: string | null;
     userId?: string | null;
     payload?: Record<string, unknown>;
     resumeIfExists?: boolean;
     callbacks: TaskStreamCallbacks;
   },
 ): Promise<void> {
-  const sessionId = opts.sessionId ?? null;
+  const onboardingId = opts.onboardingId ?? null;
   const userId = opts.userId ?? null;
   const payload = opts.payload ?? {};
-  const streamIdKey = streamIdStorageKey(taskType, sessionId, userId);
+  const streamIdKey = streamIdStorageKey(taskType, onboardingId, userId);
 
   // Helper to clean up stored stream ID and cursor
   const cleanup = () => {
@@ -160,7 +160,7 @@ export async function startTaskStreamAndListen(
   const startRes = await apiRequest(API_ROUTES.taskStream.start(taskType), {
     method: 'POST',
     body: JSON.stringify({
-      session_id: sessionId,
+      onboarding_id: onboardingId,
       user_id: userId,
       payload,
       resume_if_exists: opts.resumeIfExists ?? true,
@@ -187,10 +187,10 @@ export async function startTaskStreamAndListen(
 export async function listenToTaskStreamById(
   streamId: string,
   callbacks: TaskStreamCallbacks,
-  opts?: { taskType?: string; sessionId?: string | null; userId?: string | null },
+  opts?: { taskType?: string; onboardingId?: string | null; userId?: string | null },
 ): Promise<void> {
   const taskType = opts?.taskType ?? 'unknown';
-  const streamIdKey = streamIdStorageKey(taskType, opts?.sessionId ?? null, opts?.userId ?? null);
+  const streamIdKey = streamIdStorageKey(taskType, opts?.onboardingId ?? null, opts?.userId ?? null);
 
   // Store the stream ID for potential resume
   safeLocalStorageSet(streamIdKey, streamId);
@@ -208,16 +208,16 @@ export async function listenToTaskStreamById(
   await listenTaskStreamUrl(url, callbacks, { streamIdKey, onCleanup: cleanup });
 }
 
-export function getStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): string | null {
-  return safeLocalStorageGet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null));
+export function getStoredTaskStreamId(taskType: string, opts: { onboardingId?: string | null; userId?: string | null }): string | null {
+  return safeLocalStorageGet(streamIdStorageKey(taskType, opts.onboardingId ?? null, opts.userId ?? null));
 }
 
-export function storeTaskStreamId(taskType: string, streamId: string, opts: { sessionId?: string | null; userId?: string | null }): void {
-  safeLocalStorageSet(streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null), streamId);
+export function storeTaskStreamId(taskType: string, streamId: string, opts: { onboardingId?: string | null; userId?: string | null }): void {
+  safeLocalStorageSet(streamIdStorageKey(taskType, opts.onboardingId ?? null, opts.userId ?? null), streamId);
 }
 
-export function clearStoredTaskStreamId(taskType: string, opts: { sessionId?: string | null; userId?: string | null }): void {
-  const key = streamIdStorageKey(taskType, opts.sessionId ?? null, opts.userId ?? null);
+export function clearStoredTaskStreamId(taskType: string, opts: { onboardingId?: string | null; userId?: string | null }): void {
+  const key = streamIdStorageKey(taskType, opts.onboardingId ?? null, opts.userId ?? null);
   const streamId = safeLocalStorageGet(key);
   safeLocalStorageRemove(key);
   if (streamId) {
@@ -244,7 +244,7 @@ function sleep(ms: number): Promise<void> {
 export async function runResumableTaskStream(
   taskType: string,
   opts: {
-    sessionId?: string | null;
+    onboardingId?: string | null;
     userId?: string | null;
     payload?: Record<string, unknown>;
     callbacks: TaskStreamCallbacks;
@@ -282,7 +282,7 @@ export async function runResumableTaskStream(
   while (attempt <= maxRetries && !shouldStop()) {
     try {
       await startTaskStreamAndListen(taskType, {
-        sessionId: opts.sessionId,
+        onboardingId: opts.onboardingId,
         userId: opts.userId,
         payload: opts.payload,
         resumeIfExists: true,
@@ -309,4 +309,3 @@ export async function runResumableTaskStream(
     opts.callbacks.onError?.({ type: 'error', message: String(lastErr?.message || lastErr || 'Stream failed') });
   }
 }
-

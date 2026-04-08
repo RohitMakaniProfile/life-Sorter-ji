@@ -67,8 +67,8 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
 
   const startForSession = useCallback(
     async (sid, { fresh = true } = {}) => {
-      const sessionId = sid;
-      if (!sessionId) return;
+      const onboardingId = sid;
+      if (!onboardingId) return;
 
       if (!fresh) {
         // Keep current UI state, but make sure streaming indicator is on.
@@ -83,7 +83,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
 
       // OTP gate: store pending and let effect below resume once verified.
       if (!otpVerified) {
-        pendingSidRef.current = sessionId;
+        pendingSidRef.current = onboardingId;
         onRequestOtp?.();
         return;
       }
@@ -94,8 +94,8 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         onEvent: (e) => {
           if (runIdRef.current !== myRunId) return;
           if (!e || typeof e !== 'object') return;
-          if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), sessionId: sessionId });
-          monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sessionId, event: e });
+          if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), onboardingId });
+          monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId, event: e });
           if (e.type === 'token' && e.token) {
             setPlaybookText((t) => t + String(e.token));
           }
@@ -113,7 +113,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
             context_brief: e.context_brief || '',
             icp_card: e.icp_card || '',
           });
-          monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sessionId, event: e });
+          monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId, event: e });
         },
         onError: (e) => {
           if (runIdRef.current !== myRunId) return;
@@ -123,14 +123,14 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
           setPlaybookResult(null);
           setNeedsManualRetry(true);
           setError?.(e?.message || 'Playbook generation failed');
-          monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, sessionId: sessionId, event: e });
+          monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, onboardingId, event: e });
         },
       };
 
       await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
         userId: null,
-        sessionId: sessionId,
-        payload: { session_id: sessionId },
+        onboardingId,
+        payload: { onboarding_id: onboardingId },
         maxRetries: 4,
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks,
@@ -147,7 +147,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     [ensureSession, otpVerified, onRequestOtp, onShowPlaybook, resetPlaybackState, setError, markStepReached],
   );
 
-  // Resume after refresh (localStorage has a stream_id) — needs session_id to resolve actor.
+  // Resume after refresh (localStorage has a stream_id) using the onboarding actor id.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -160,7 +160,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         const actorUserId = getUserIdFromJwt();
 
         autoResumeTriggeredRef.current = true;
-        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { sessionId: null, userId: actorUserId });
+        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { onboardingId: null, userId: actorUserId });
         if (!storedStreamId) return;
 
         // Auto-attach without status polling. If stale/expired, the attach will error and we'll ignore it.
@@ -177,16 +177,16 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
 
         await runResumableTaskStream(TASK_TYPE_PLAYBOOK_GENERATE, {
           userId: null,
-          sessionId: sid,
-          payload: { session_id: sid },
+          onboardingId: sid,
+          payload: { onboarding_id: sid },
           maxRetries: 4,
           shouldStop: () => runIdRef.current !== myRunId,
           callbacks: {
             onEvent: (e) => {
               if (runIdRef.current !== myRunId) return;
               if (!e || typeof e !== 'object') return;
-              if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), sessionId: sid });
-              monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sid, event: e });
+              if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), onboardingId: sid });
+              monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId: sid, event: e });
               if (e.type === 'token' && e.token) setPlaybookText((t) => t + String(e.token));
             },
             onDone: (e) => {
@@ -202,7 +202,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
                 context_brief: e.context_brief || '',
                 icp_card: e.icp_card || '',
               });
-              monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, sessionId: sid, event: e });
+              monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId: sid, event: e });
             },
             onError: (e) => {
               if (runIdRef.current !== myRunId) return;
@@ -212,7 +212,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
               setPlaybookResult(null);
               setNeedsManualRetry(true);
               setError?.(e?.message || 'Playbook generation failed');
-              monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, sessionId: sid, event: e });
+              monitorTaskStreamError({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e?.stream_id, onboardingId: sid, event: e });
             },
           },
         });

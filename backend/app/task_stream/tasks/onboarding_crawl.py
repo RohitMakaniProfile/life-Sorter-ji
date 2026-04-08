@@ -8,12 +8,10 @@ from app.utils.url_sanitize import sanitize_http_url
 from app.services.onboarding_crawl_service import (
     build_web_summary,
     create_onboarding_skill_call,
-    fetch_onboarding_context,
     finish_onboarding_skill_call,
-    generate_rca_questions,
+    generate_business_profile,
     run_playwright_single_page,
-    update_onboarding_rca_questions,
-    update_onboarding_web_summary,
+    update_onboarding_crawl_outputs,
 )
 
 
@@ -24,22 +22,22 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
 
     Replaces the old multi-page crawl_service flow with a focused three-stage pipeline:
       1. Scrape a single page via the scrape-playwright skill.
-      2. Build a compact web_summary and persist it to onboarding.
-      3. Generate up to 3 RCA questions and persist them to onboarding.rca_qa.
+      2. Build a compact web_summary.
+      3. Build a business_profile markdown summary from the web_summary and persist both together.
 
     Input payload:
-      - session_id  (injected by task-stream service)
+      - session_id  (carries onboarding_id from task-stream service)
       - user_id     (optional)
       - website_url (required)
 
-    Emits stage events throughout and returns { web_summary, rca_questions }.
+    Emits stage events throughout and returns { web_summary, business_profile }.
     """
     raw_url = str(payload.get("website_url") or payload.get("url") or "").strip()
     if not raw_url:
         raise ValueError("website_url is required")
 
     website_url = sanitize_http_url(raw_url) or raw_url
-    session_id = str(payload.get("session_id") or "").strip()
+    onboarding_id = str(payload.get("onboarding_id") or payload.get("session_id") or "").strip()
 
     await send("stage", stage="starting", label="Starting", url=website_url)
 
@@ -49,9 +47,9 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     skill_call_id: int | None = None
     scrape_started = time.time()
 
-    if session_id:
+    if onboarding_id:
         skill_call_id = await create_onboarding_skill_call(
-            onboarding_session_id=session_id,
+            onboarding_session_id=onboarding_id,
             skill_id="scrape-playwright",
             input={"url": website_url, "maxPages": 1},
         )
@@ -81,30 +79,20 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
             started_at_ms=scrape_started,
         )
 
-    # ── Stage 2: Build and persist web_summary ───────────────────────────────
+    # ── Stage 2: Build web_summary ───────────────────────────────────────────
     await send("stage", stage="summarizing", label="Building web summary")
 
     web_summary = (summary_text or "").strip() or build_web_summary(page_data, website_url)
 
-    if session_id:
-        await update_onboarding_web_summary(session_id, web_summary)
+    # ── Stage 3: Build business_profile and persist crawl outputs ────────────
+    await send("stage", stage="business_profile", label="Building business profile")
 
-    # ── Stage 3: Generate RCA questions ──────────────────────────────────────
-    await send("stage", stage="generating_questions", label="Generating RCA questions")
-
-    rca_questions: list[dict[str, Any]] = []
-
-    if session_id:
-        onboarding = await fetch_onboarding_context(session_id)
-        rca_questions = await generate_rca_questions(
-            outcome=onboarding.get("outcome", ""),
-            domain=onboarding.get("domain", ""),
-            task=onboarding.get("task", ""),
+    business_profile = await generate_business_profile(web_summary=web_summary) if onboarding_id else ""
+    if onboarding_id:
+        await update_onboarding_crawl_outputs(
+            onboarding_id,
             web_summary=web_summary,
-            scale_answers=onboarding.get("scale_answers") or {},
-            max_questions=3,
+            business_profile=business_profile,
         )
-        if rca_questions:
-            await update_onboarding_rca_questions(session_id, rca_questions)
 
-    return {"web_summary": web_summary, "rca_questions": rca_questions}
+    return {"web_summary": web_summary, "business_profile": business_profile}

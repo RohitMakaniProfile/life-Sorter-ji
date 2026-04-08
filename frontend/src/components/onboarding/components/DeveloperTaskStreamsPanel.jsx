@@ -17,7 +17,7 @@ function isDevEnv() {
   }
 }
 
-export default function DeveloperTaskStreamsPanel({ sessionId, userId = null, taskTypes = [] }) {
+export default function DeveloperTaskStreamsPanel({ onboardingId, userId = null, taskTypes = [] }) {
   const [open, setOpen] = useState(false);
   const enabled = isDevEnv();
 
@@ -27,7 +27,7 @@ export default function DeveloperTaskStreamsPanel({ sessionId, userId = null, ta
   const dragStartRef = useRef({ x: 0, y: 0, startX: 0, startY: 0 });
   const panelRef = useRef(null);
 
-  const actorKey = useMemo(() => makeActorKey({ sessionId: sessionId || null, userId: userId || null }), [sessionId, userId]);
+  const actorKey = useMemo(() => makeActorKey({ onboardingId: onboardingId || null, userId: userId || null }), [onboardingId, userId]);
   const [, forceRender] = useState(0);
 
   useEffect(() => {
@@ -133,7 +133,7 @@ export default function DeveloperTaskStreamsPanel({ sessionId, userId = null, ta
             className="flex-1 cursor-pointer py-2.5 pr-4 text-left text-[12px] font-semibold text-white/80 hover:text-white transition-colors"
           >
             Background Tasks {open ? '▾' : '▸'}
-            <span className="ml-2 text-[11px] font-normal text-white/40">{sessionId ? `sid: ${String(sessionId).slice(0, 8)}…` : 'no sid'}</span>
+            <span className="ml-2 text-[11px] font-normal text-white/40">{onboardingId ? `oid: ${String(onboardingId).slice(0, 8)}…` : 'no oid'}</span>
           </button>
         </div>
 
@@ -189,4 +189,3 @@ export default function DeveloperTaskStreamsPanel({ sessionId, userId = null, ta
     </div>
   );
 }
-

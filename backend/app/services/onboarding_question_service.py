@@ -61,7 +61,7 @@ async def _persist_rca_qa(conn, *, onboarding_id: Any, rca_qa: list[dict[str, An
 
 async def generate_next_rca_question_for_onboarding(
     *,
-    session_id: str,
+    onboarding_id: str,
     answer: Optional[str],
 ) -> dict[str, Any]:
     """
@@ -72,9 +72,9 @@ async def generate_next_rca_question_for_onboarding(
     - If answer provided: persist it against the first unanswered question.
     - Return the first remaining unanswered question, or status=complete if none left.
     """
-    sid = (session_id or "").strip()
-    if not sid:
-        raise HTTPException(status_code=400, detail="session_id is required")
+    oid = (onboarding_id or "").strip()
+    if not oid:
+        raise HTTPException(status_code=400, detail="onboarding_id is required")
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -82,12 +82,12 @@ async def generate_next_rca_question_for_onboarding(
             """
             SELECT id, rca_qa, questions_answers, outcome, domain, task, web_summary, scale_answers
             FROM onboarding
-            WHERE session_id = $1
+            WHERE id = $1::uuid
             """,
-            sid,
+            oid,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         onboarding_id = row.get("id")
         rca_qa = _normalize_rca_qa(row.get("rca_qa"))

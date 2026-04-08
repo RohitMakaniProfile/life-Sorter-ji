@@ -70,24 +70,3 @@ export function getNameFromJwt(): string | null {
   const name = payload?.name;
   return typeof name === 'string' && name.trim() ? name.trim() : null;
 }
-
-function getOnboardingSessionIdFromJwt(): string | null {
-  const token = getAppJwt();
-  if (!token) return null;
-  const payload = decodeJwtPayload(token);
-  for (const key of ['onboarding_session_id', 'sessionId', 'session_id', 'sid']) {
-    const v = payload?.[key];
-    if (typeof v === 'string' && v.trim()) return v.trim();
-  }
-  return null;
-}
-
-/** Actor fields read by backend APIs from payload/query. */
-export function getAuthActorFields(): { userId?: string; sessionId?: string } {
-  const userId = getUserIdFromJwt();
-  const sessionId = getOnboardingSessionIdFromJwt();
-  const out: { userId?: string; sessionId?: string } = {};
-  if (userId) out.userId = userId;
-  if (sessionId) out.sessionId = sessionId;
-  return out;
-}

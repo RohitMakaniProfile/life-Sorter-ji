@@ -92,7 +92,7 @@ export default function OnboardingApp() {
       cancelled = true;
     };
   }, [navigate]);
-  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState } = useOnboardingSession();
+  const { sessionIdRef: onboardingIdRef, ensureSession, updateOnboarding, getSessionState } = useOnboardingSession();
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
@@ -213,9 +213,9 @@ export default function OnboardingApp() {
           setShowPlaybook(true);
           clearStepReached();
           prepareStreaming();
-          const sid = state.session_id;
+          const sid = state.onboarding_id;
           if (sid) {
-            sessionIdRef.current = sid;
+            onboardingIdRef.current = sid;
             startForSession(sid, { fresh: false }).catch(() => {});
           }
           return;
@@ -278,12 +278,12 @@ export default function OnboardingApp() {
             if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
               console.log('[Onboarding Restore] Scale answers exist, should be diagnostic stage');
               setScaleQuestions(STATIC_SCALE_QUESTIONS);
-              // Ensure sessionIdRef is set for subsequent API calls
-              if (state.session_id) {
-                sessionIdRef.current = state.session_id;
+              // Ensure onboardingIdRef is set for subsequent API calls.
+              if (state.onboarding_id) {
+                onboardingIdRef.current = state.onboarding_id;
               }
               try {
-                const res = await rcaNextQuestion({ session_id: state.session_id });
+                const res = await rcaNextQuestion({ onboarding_id: state.onboarding_id });
                 console.log('[Onboarding Restore] rcaNextQuestion response:', res);
                 if (res?.status === 'question' && res?.question) {
                   setCurrentQuestion(res.question);
@@ -307,9 +307,9 @@ export default function OnboardingApp() {
           case 'diagnostic':
             // Scale questions done, show diagnostic
             setScaleQuestions(STATIC_SCALE_QUESTIONS);
-            // Ensure sessionIdRef is set for subsequent API calls
-            if (state.session_id) {
-              sessionIdRef.current = state.session_id;
+            // Ensure onboardingIdRef is set for subsequent API calls.
+            if (state.onboarding_id) {
+              onboardingIdRef.current = state.onboarding_id;
             }
             if (state.current_rca_question) {
               setCurrentQuestion(state.current_rca_question);
@@ -320,9 +320,9 @@ export default function OnboardingApp() {
             } else {
               // No current question stored - need to fetch the next RCA question
               // This happens when all questions in rca_qa have been answered but RCA isn't complete yet
-              console.log('[Onboarding Restore] No current_rca_question, fetching next question for session:', state.session_id);
+              console.log('[Onboarding Restore] No current_rca_question, fetching next question for onboarding row:', state.onboarding_id);
               try {
-                const res = await rcaNextQuestion({ session_id: state.session_id });
+                const res = await rcaNextQuestion({ onboarding_id: state.onboarding_id });
                 console.log('[Onboarding Restore] rcaNextQuestion response:', res);
                 if (res?.status === 'question' && res?.question) {
                   setCurrentQuestion(res.question);
@@ -371,7 +371,7 @@ export default function OnboardingApp() {
               markRetryNeeded();
             } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
               prepareStreaming();
-              const sid = sessionIdRef.current;
+              const sid = onboardingIdRef.current;
               if (sid) {
                 startForSession(sid, { fresh: false }).catch(() => {});
               }
@@ -379,7 +379,7 @@ export default function OnboardingApp() {
               // Playbook done — clear auto-resume flag, then reconnect once to fetch result
               clearStepReached();
               prepareStreaming();
-              const sid = sessionIdRef.current;
+              const sid = onboardingIdRef.current;
               if (sid) {
                 startForSession(sid, { fresh: false }).catch(() => {});
               }
@@ -392,7 +392,7 @@ export default function OnboardingApp() {
             clearStepReached();
             prepareStreaming();
             {
-              const sid = sessionIdRef.current;
+              const sid = onboardingIdRef.current;
               if (sid) {
                 startForSession(sid, { fresh: false }).catch(() => {});
               }
@@ -419,7 +419,7 @@ export default function OnboardingApp() {
   }, [scrollToEnd]);
 
   /**
-   * Single path for onboarding row fields: POST `/api/v1/onboarding` with `session_id` + any of
+   * Single path for onboarding row fields: POST `/api/v1/onboarding` with `onboarding_id` + any of
    * outcome, domain, task, website_url, gbp_url. `fields` uses only keys you intend to write (including `null` to clear).
    */
   const handleOnboardingFieldUpdate = useCallback(
@@ -580,7 +580,7 @@ export default function OnboardingApp() {
         if (gbp) patch.gbp_url = gbp;
         await handleOnboardingFieldUpdate({ ...patch });
 
-        const sid = sessionIdRef.current || (await ensureSession());
+        const sid = onboardingIdRef.current || (await ensureSession());
         if (web && sid) startCrawlForSession(sid, { websiteUrl: web }).catch(() => {});
       }
       await moveToScaleQuestions();
@@ -633,7 +633,7 @@ export default function OnboardingApp() {
     try {
       const sid = await ensureSession();
       await waitForCrawl();
-      const startData = await coreApi.onboardingPlaybookLaunch({ session_id: sid });
+      const startData = await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
       const parsedGap = startData.gap_questions_parsed || startData.gap_questions || [];
       if (Array.isArray(parsedGap) && parsedGap.length) {
         setGapQuestions(parsedGap);
@@ -675,8 +675,8 @@ export default function OnboardingApp() {
           return `${qNum}-${gapAnswers[i] || ''}`;
         })
         .join(', ');
-      await coreApi.onboardingPlaybookGapAnswers({ session_id: sid, answers: answersStr });
-      await coreApi.onboardingPlaybookLaunch({ session_id: sid });
+      await coreApi.onboardingPlaybookGapAnswers({ onboarding_id: sid, answers: answersStr });
+      await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
       await startForSession(sid, { fresh: false });
     } catch {
       setError('Failed to submit answers.');
@@ -701,7 +701,7 @@ export default function OnboardingApp() {
       // that before calling rca-next-question, otherwise it falls back to the
       // static tree and returns a question with no options.
       await waitForCrawlDone(90000);
-      const res = await rcaNextQuestion({ session_id: sid });
+      const res = await rcaNextQuestion({ onboarding_id: sid });
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);
         setQuestionIndex(0);
@@ -722,9 +722,9 @@ export default function OnboardingApp() {
     setLoading(true);
     try {
       const sid = await ensureSession();
-      const res = await rcaNextQuestion({ session_id: sid, answer });
+      const res = await rcaNextQuestion({ onboarding_id: sid, answer });
       if (res?.status === 'complete') {
-        const precData = await coreApi.onboardingPrecisionStart({ session_id: sid });
+        const precData = await coreApi.onboardingPrecisionStart({ onboarding_id: sid });
         if (precData?.available && precData?.questions?.length) {
           setPrecisionQuestions(precData.questions);
           setPrecisionAnswers({});
@@ -754,7 +754,7 @@ export default function OnboardingApp() {
     try {
       const sid = await ensureSession();
       const res = await coreApi.onboardingPrecisionAnswer({
-        session_id: sid,
+        onboarding_id: sid,
         question_index: precisionIndex,
         answer,
       });
@@ -820,14 +820,14 @@ export default function OnboardingApp() {
   const clearError = () => setError(null);
 
   if (showOtpModal) {
-    return <OtpModal sessionId={sessionIdRef.current || ''} onVerified={handleOtpVerified} />;
+    return <OtpModal onboardingId={onboardingIdRef.current || ''} onVerified={handleOtpVerified} />;
   }
 
   if (showPlaybook) {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
-          sessionId={sessionIdRef.current}
+          onboardingId={onboardingIdRef.current}
           userId={null}
           taskTypes={['crawl', 'playbook/onboarding-generate']}
         />
@@ -870,7 +870,7 @@ export default function OnboardingApp() {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
-          sessionId={sessionIdRef.current}
+          onboardingId={onboardingIdRef.current}
           userId={null}
           taskTypes={['crawl', 'playbook/onboarding-generate']}
         />
@@ -885,7 +885,7 @@ export default function OnboardingApp() {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
-          sessionId={sessionIdRef.current}
+          onboardingId={onboardingIdRef.current}
           userId={null}
           taskTypes={['crawl', 'playbook/onboarding-generate']}
         />
@@ -915,7 +915,7 @@ export default function OnboardingApp() {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
-          sessionId={sessionIdRef.current}
+          onboardingId={onboardingIdRef.current}
           userId={null}
           taskTypes={['crawl', 'playbook/onboarding-generate']}
         />
@@ -948,7 +948,7 @@ export default function OnboardingApp() {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
-          sessionId={sessionIdRef.current}
+          onboardingId={onboardingIdRef.current}
           userId={null}
           taskTypes={['crawl', 'playbook/onboarding-generate']}
         />
@@ -999,7 +999,7 @@ export default function OnboardingApp() {
     <div className="flex h-screen max-h-screen flex-col overflow-hidden bg-[#111] bg-[radial-gradient(circle,rgba(255,255,255,0.18)_1px,transparent_1px)] bg-[length:14px_14px] font-sans text-white [&_button]:font-inherit [&_input]:font-inherit">
       <Navbar />
       <DeveloperTaskStreamsPanel
-        sessionId={sessionIdRef.current}
+        onboardingId={onboardingIdRef.current}
         userId={null}
         taskTypes={['crawl', 'playbook/onboarding-generate']}
       />

@@ -6,7 +6,7 @@ Sends and verifies OTPs via the 2Factor.in REST API.
 
 Endpoints used:
   Send:   GET https://2factor.in/API/V1/{api_key}/SMS/{phone}/AUTOGEN
-  Verify: GET https://2factor.in/API/V1/{api_key}/SMS/VERIFY/{session_id}/{otp}
+  Verify: GET https://2factor.in/API/V1/{api_key}/SMS/VERIFY/{provider_session_id}/{otp}
 """
 
 from __future__ import annotations
@@ -30,15 +30,15 @@ TWO_FACTOR_BASE = "https://2factor.in/API/V1"
 
 async def _store_otp_postgres(
     *,
-    otp_session_id: str,
     phone_number: str,
     otp_code: str,
     onboarding_session_id: str | None,
     expiry_seconds: int,
     provider_session_id: str = "",
 ) -> None:
+    phone_key = _normalize_phone(phone_number)
     payload = {
-        "phone_number": phone_number,
+        "phone_number": phone_key,
         "otp_code": otp_code,
         "onboarding_session_id": onboarding_session_id or "",
         "provider_session_id": provider_session_id or "",
@@ -49,27 +49,28 @@ async def _store_otp_postgres(
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO otp_sessions (otp_session_id, payload, expires_at)
+            INSERT INTO otp_sessions (phone_number, payload, expires_at)
             VALUES ($1, $2::jsonb, $3)
-            ON CONFLICT (otp_session_id) DO UPDATE SET
+            ON CONFLICT (phone_number) DO UPDATE SET
               payload = EXCLUDED.payload,
               expires_at = EXCLUDED.expires_at
             """,
-            otp_session_id,
+            phone_key,
             json.dumps(payload),
             expires_at,
         )
 
 
-async def _load_otp_postgres(otp_session_id: str) -> dict | None:
+async def _load_otp_postgres(phone_number: str) -> dict | None:
+    phone_key = _normalize_phone(phone_number)
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT payload FROM otp_sessions
-            WHERE otp_session_id = $1 AND expires_at > NOW()
+            WHERE phone_number = $1 AND expires_at > NOW()
             """,
-            otp_session_id,
+            phone_key,
         )
     if not row or row.get("payload") is None:
         return None
@@ -86,10 +87,11 @@ async def _load_otp_postgres(otp_session_id: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def _delete_otp_postgres(otp_session_id: str) -> None:
+async def _delete_otp_postgres(phone_number: str) -> None:
+    phone_key = _normalize_phone(phone_number)
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM otp_sessions WHERE otp_session_id = $1", otp_session_id)
+        await conn.execute("DELETE FROM otp_sessions WHERE phone_number = $1", phone_key)
 
 
 def _mask_phone(phone: str) -> str:
@@ -141,29 +143,28 @@ async def log_provider_call(
 
 async def store_otp_in_redis(
     *,
-    otp_session_id: str,
     phone_number: str,
     otp_code: str,
     onboarding_session_id: str | None,
     expiry_seconds: int,
     provider_session_id: str = "",
 ) -> None:
+    phone_key = _normalize_phone(phone_number)
     redis = await get_redis()
     if redis:
         payload = json.dumps({
-            "phone_number": phone_number,
+            "phone_number": phone_key,
             "otp_code": otp_code,
             "onboarding_session_id": onboarding_session_id or "",
             "provider_session_id": provider_session_id or "",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         ttl = max(60, int(expiry_seconds))
-        await redis.set(f"{_OTP_PREFIX}:{otp_session_id}", payload, ex=ttl)
+        await redis.set(f"{_OTP_PREFIX}:{phone_key}", payload, ex=ttl)
         return
 
     await _store_otp_postgres(
-        otp_session_id=otp_session_id,
-        phone_number=phone_number,
+        phone_number=phone_key,
         otp_code=otp_code,
         onboarding_session_id=onboarding_session_id,
         expiry_seconds=expiry_seconds,
@@ -171,10 +172,11 @@ async def store_otp_in_redis(
     )
 
 
-async def load_otp_from_redis(otp_session_id: str) -> dict | None:
+async def load_otp_from_redis(phone_number: str) -> dict | None:
+    phone_key = _normalize_phone(phone_number)
     redis = await get_redis()
     if redis:
-        raw = await redis.get(f"{_OTP_PREFIX}:{otp_session_id}")
+        raw = await redis.get(f"{_OTP_PREFIX}:{phone_key}")
         if not raw:
             return None
         try:
@@ -183,16 +185,17 @@ async def load_otp_from_redis(otp_session_id: str) -> dict | None:
         except Exception:
             return None
 
-    return await _load_otp_postgres(otp_session_id)
+    return await _load_otp_postgres(phone_key)
 
 
-async def delete_otp_from_redis(otp_session_id: str) -> None:
+async def delete_otp_from_redis(phone_number: str) -> None:
+    phone_key = _normalize_phone(phone_number)
     redis = await get_redis()
     if redis:
-        await redis.delete(f"{_OTP_PREFIX}:{otp_session_id}")
+        await redis.delete(f"{_OTP_PREFIX}:{phone_key}")
         return
 
-    await _delete_otp_postgres(otp_session_id)
+    await _delete_otp_postgres(phone_key)
 
 
 async def send_otp(phone_number: str) -> dict:
@@ -271,12 +274,12 @@ async def send_otp(phone_number: str) -> dict:
         return {"success": False, "error": "Failed to send OTP"}
 
 
-async def verify_otp(session_id: str, otp_code: str) -> dict:
+async def verify_otp(provider_session_id: str, otp_code: str) -> dict:
     """
     Verify an OTP entered by the user.
 
     Args:
-        session_id: The session ID returned by send_otp().
+        provider_session_id: The provider session ID returned by send_otp().
         otp_code: The OTP code entered by the user.
 
     Returns:
@@ -292,7 +295,7 @@ async def verify_otp(session_id: str, otp_code: str) -> dict:
         return {"success": False, "error": "OTP service not configured"}
 
     # Sanitize inputs
-    sid = session_id.strip()
+    sid = provider_session_id.strip()
     code = otp_code.strip()
 
     if not code.isdigit() or len(code) < 4 or len(code) > 8:

@@ -13,7 +13,7 @@
  */
 
 import { runResumableTaskStream, TaskStreamEvent, clearStoredTaskStreamId, getStoredTaskStreamId, storeTaskStreamId } from './taskStream';
-import { getAuthActorFields } from '../authSession';
+import { getUserIdFromJwt } from '../authSession';
 import { subscribeToTaskStream as coreSubscribeToTaskStream } from './core';
 
 export const PLAN_EXECUTE_TASK_TYPE = 'plan/execute';
@@ -43,10 +43,9 @@ export async function subscribeToPlanExecutionStream(
   callbacks: PlanExecuteCallbacks,
 ): Promise<void> {
   // Store the stream ID so it can be resumed after page refresh
-  const actor = getAuthActorFields();
+  const userId = getUserIdFromJwt();
   storeTaskStreamId(PLAN_EXECUTE_TASK_TYPE, streamId, {
-    sessionId: actor.sessionId,
-    userId: actor.userId,
+    userId,
   });
 
   await coreSubscribeToTaskStream(streamId, {
@@ -56,8 +55,7 @@ export async function subscribeToPlanExecutionStream(
     onDone: (data) => {
       // Clear stored ID on completion
       clearStoredTaskStreamId(PLAN_EXECUTE_TASK_TYPE, {
-        sessionId: actor.sessionId,
-        userId: actor.userId,
+        userId,
       });
       callbacks.onDone?.({
         plan_id: String(data.plan_id ?? ''),
@@ -69,8 +67,7 @@ export async function subscribeToPlanExecutionStream(
     onError: (message) => {
       // Clear stored ID on error
       clearStoredTaskStreamId(PLAN_EXECUTE_TASK_TYPE, {
-        sessionId: actor.sessionId,
-        userId: actor.userId,
+        userId,
       });
       callbacks.onError?.(message);
     },
@@ -81,10 +78,9 @@ export async function subscribeToPlanExecutionStream(
  * Check if there's an active plan execution task stream for the current user.
  */
 export function hasActivePlanExecution(): boolean {
-  const actor = getAuthActorFields();
+  const userId = getUserIdFromJwt();
   return Boolean(getStoredTaskStreamId(PLAN_EXECUTE_TASK_TYPE, {
-    sessionId: actor.sessionId,
-    userId: actor.userId,
+    userId,
   }));
 }
 
@@ -92,10 +88,9 @@ export function hasActivePlanExecution(): boolean {
  * Clear any stored plan execution stream ID (e.g., after plan completes/errors).
  */
 export function clearPlanExecutionStream(): void {
-  const actor = getAuthActorFields();
+  const userId = getUserIdFromJwt();
   clearStoredTaskStreamId(PLAN_EXECUTE_TASK_TYPE, {
-    sessionId: actor.sessionId,
-    userId: actor.userId,
+    userId,
   });
 }
 
@@ -104,10 +99,9 @@ export function clearPlanExecutionStream(): void {
  * Returns true if a stream was found and resumed.
  */
 export async function resumePlanExecutionIfExists(callbacks: PlanExecuteCallbacks): Promise<boolean> {
-  const actor = getAuthActorFields();
+  const userId = getUserIdFromJwt();
   const streamId = getStoredTaskStreamId(PLAN_EXECUTE_TASK_TYPE, {
-    sessionId: actor.sessionId,
-    userId: actor.userId,
+    userId,
   });
 
   if (!streamId) {
@@ -116,8 +110,7 @@ export async function resumePlanExecutionIfExists(callbacks: PlanExecuteCallback
 
   // Use runResumableTaskStream which handles resume automatically
   await runResumableTaskStream(PLAN_EXECUTE_TASK_TYPE, {
-    sessionId: actor.sessionId,
-    userId: actor.userId,
+    userId,
     payload: {}, // Not used for resume
     callbacks: {
       onEvent: (event: TaskStreamEvent) => {
@@ -146,4 +139,3 @@ export async function resumePlanExecutionIfExists(callbacks: PlanExecuteCallback
 
   return true;
 }
-

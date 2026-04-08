@@ -37,13 +37,12 @@ $$ LANGUAGE plpgsql;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- onboarding
--- Phase 1 journey snapshot: outcome / domain / task and URLs keyed by session_id.
--- session_id is required; user_id optional until linked to an authenticated user.
+-- Phase 1 journey snapshot: outcome / domain / task and URLs keyed by onboarding.id.
+-- user_id is optional until linked to an authenticated user.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS onboarding (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    session_id      TEXT NOT NULL,
     user_id         TEXT,
 
     outcome         TEXT,
@@ -61,6 +60,7 @@ CREATE TABLE IF NOT EXISTS onboarding (
 
     -- Phase 1 scale / business-profile answers
     scale_answers   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    business_profile TEXT NOT NULL DEFAULT '',
 
     -- Gap questions (if playbook needs more context)
     gap_questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -95,20 +95,6 @@ CREATE TABLE IF NOT EXISTS onboarding (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
--- One row per session (idempotent; dedupe duplicates before first apply if upgrading legacy data)
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_constraint
-    WHERE conname = 'onboarding_session_id_unique'
-      AND conrelid = 'public.onboarding'::regclass
-  ) THEN
-    ALTER TABLE onboarding
-      ADD CONSTRAINT onboarding_session_id_unique UNIQUE (session_id);
-  END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_onboarding_user_id
     ON onboarding (user_id)
@@ -893,7 +879,7 @@ CREATE INDEX IF NOT EXISTS idx_task_stream_spawn_locks_expires_at
 
 -- OTP sessions (Postgres fallback when REDIS_URL is not set)
 CREATE TABLE IF NOT EXISTS otp_sessions (
-    otp_session_id  TEXT PRIMARY KEY,
+    phone_number    TEXT PRIMARY KEY,
     payload         JSONB NOT NULL,
     expires_at      TIMESTAMPTZ NOT NULL
 );

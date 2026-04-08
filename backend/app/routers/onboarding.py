@@ -1,6 +1,4 @@
-"""
-POST /api/v1/onboarding — create a new session + onboarding row, or patch onboarding by session_id.
-"""
+"""POST /api/v1/onboarding — create or patch onboarding rows keyed by `id`."""
 
 from typing import Any, Optional
 
@@ -23,9 +21,9 @@ router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
 
 
 class OnboardingRequest(BaseModel):
-    """Omit session_id (or send empty) to create a new session. Send session_id to patch."""
+    """Omit onboarding_id (or send empty) to create a new row. Send onboarding_id to patch."""
 
-    session_id: Optional[str] = Field(default=None, description="Existing session; when set, body fields update onboarding row.")
+    onboarding_id: Optional[str] = Field(default=None, description="Existing onboarding row id; when set, body fields update that row.")
     user_id: Optional[str] = None
     outcome: Optional[str] = None
     domain: Optional[str] = None
@@ -51,15 +49,15 @@ class ToolsByQ1Q2Q3Response(BaseModel):
 
 
 class OnboardingStateResponse(BaseModel):
-    """Response for GET /onboarding/state - returns the current onboarding state for session resumption."""
+    """Response for GET /onboarding/state - returns the current onboarding state for resumption."""
     onboarding_id: str
-    session_id: str
     stage: str = "start"  # start | url | questions | diagnostic | precision | playbook | complete
     outcome: Optional[str] = None
     domain: Optional[str] = None
     task: Optional[str] = None
     website_url: Optional[str] = None
     gbp_url: Optional[str] = None
+    business_profile: Optional[str] = None
     scale_answers: Optional[dict[str, Any]] = None
     rca_qa: Optional[list[dict[str, Any]]] = None
     current_rca_question: Optional[DynamicQuestion] = None
@@ -149,17 +147,17 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def get_onboarding_state(
     request: Request,
-    session_id: Optional[str] = None,
+    onboarding_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> OnboardingStateResponse:
     """
-    Get the current onboarding state for a session.
+    Get the current onboarding state for a row.
     Used for restoring the onboarding flow after page refresh.
-    Supports lookup by user_id (preferred) or session_id.
+    Supports lookup by user_id (preferred) or onboarding_id.
     """
     from app.db import get_pool
 
-    sid = (session_id or "").strip()
+    oid = (onboarding_id or "").strip()
     uid = (user_id or "").strip()
 
     # Also try to get user_id from JWT if not provided
@@ -168,8 +166,8 @@ async def get_onboarding_state(
         if jwt_user:
             uid = str(jwt_user.get("id") or "").strip()
 
-    if not sid and not uid:
-        raise HTTPException(status_code=400, detail="session_id or user_id is required")
+    if not oid and not uid:
+        raise HTTPException(status_code=400, detail="onboarding_id or user_id is required")
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -180,7 +178,7 @@ async def get_onboarding_state(
             row = await conn.fetchrow(
                 """
                 SELECT
-                    id, session_id, outcome, domain, task, website_url, gbp_url,
+                    id, outcome, domain, task, website_url, gbp_url, business_profile,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
                     playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
@@ -192,23 +190,23 @@ async def get_onboarding_state(
                 uid,
             )
 
-        # Fall back to session_id lookup
-        if not row and sid:
+        # Fall back to onboarding_id lookup.
+        if not row and oid:
             row = await conn.fetchrow(
                 """
                 SELECT
-                    id, session_id, outcome, domain, task, website_url, gbp_url,
+                    id, outcome, domain, task, website_url, gbp_url, business_profile,
                     scale_answers, rca_qa, rca_summary, rca_handoff,
                     precision_questions, precision_answers, precision_status,
                     playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
                 FROM onboarding
-                WHERE session_id = $1
+                WHERE id = $1::uuid
                 """,
-                sid,
+                oid,
             )
 
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         row_dict = dict(row)
         stage = _determine_onboarding_stage(row_dict)
@@ -234,13 +232,13 @@ async def get_onboarding_state(
 
         return OnboardingStateResponse(
             onboarding_id=str(row_dict.get("id") or ""),
-            session_id=str(row_dict.get("session_id") or ""),
             stage=stage,
             outcome=str(row_dict.get("outcome") or "") or None,
             domain=str(row_dict.get("domain") or "") or None,
             task=str(row_dict.get("task") or "") or None,
             website_url=str(row_dict.get("website_url") or "") or None,
             gbp_url=str(row_dict.get("gbp_url") or "") or None,
+            business_profile=str(row_dict.get("business_profile") or "") or None,
             scale_answers=scale_answers if scale_answers else None,
             rca_qa=rca_qa if rca_qa else None,
             current_rca_question=current_rca_question,
@@ -261,30 +259,30 @@ async def onboarding_upsert(
     body: Optional[OnboardingRequest] = Body(default=None),
 ) -> dict[str, Any]:
     """
-    - **No `session_id`**: creates a new onboarding `session_id` and inserts an `onboarding` row
+    - **No `onboarding_id`**: creates a new onboarding row
       (with any optional `user_id`, `outcome`, `domain`, `task`, `website_url`, `gbp_url` sent in the body),
-      returns `session_id` and `id` for the client to store (e.g. localStorage).
-    - **With `session_id`**: inserts or updates the latest `onboarding` row for that session with any provided fields.
-    - **If session is complete**: creates a new onboarding row instead of updating, with user_id from JWT if available.
+      returns `onboarding_id` and `id` for the client to store.
+    - **With `onboarding_id`**: updates that onboarding row with any provided fields.
+    - **If the row is complete**: creates a new onboarding row instead of updating, with user_id from JWT if available.
     """
     eff = body if body is not None else OnboardingRequest()
-    sid = (eff.session_id or "").strip()
+    oid = (eff.onboarding_id or "").strip()
 
     # Get user_id from JWT if available
     jwt_user = get_request_user(request)
     jwt_user_id = str(jwt_user.get("id") or "").strip() if jwt_user else None
 
     try:
-        create_or_patch_fields = eff.model_dump(exclude={"session_id"}, exclude_unset=True)
+        create_or_patch_fields = eff.model_dump(exclude={"onboarding_id"}, exclude_unset=True)
 
         result: dict[str, Any]
-        if not sid:
+        if not oid:
             # Inject JWT user_id so the row is linked to the authenticated user from creation.
             if jwt_user_id and "user_id" not in create_or_patch_fields:
                 create_or_patch_fields["user_id"] = jwt_user_id
             result = await onboarding_service.create_session_with_onboarding(create_or_patch_fields)
         else:
-            result = await onboarding_service.upsert_onboarding_patch(sid, create_or_patch_fields, user_id=jwt_user_id)
+            result = await onboarding_service.upsert_onboarding_patch(oid, create_or_patch_fields, user_id=jwt_user_id)
 
         return result
     except RuntimeError as e:
@@ -316,7 +314,7 @@ async def tools_by_q1_q2_q3(body: ToolsByQ1Q2Q3Request = Body(...)):
 
 
 class GenerateRcaQuestionRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
     # Answer to the previously generated question.
     # When omitted, the endpoint generates the FIRST RCA question.
     answer: Optional[str] = None
@@ -341,23 +339,23 @@ async def rca_next_question(request: Request, body: GenerateRcaQuestionRequest =
     Persists question/answer history into `onboarding.rca_qa` (JSONB) so future
     questions can be generated and later replayed as chat messages.
     """
-    sid = await _resolve_onboarding_session_id(
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        provided_session_id=body.session_id,
+        provided_onboarding_id=body.onboarding_id,
     )
     res = await generate_next_rca_question_for_onboarding(
-        session_id=sid,
+        onboarding_id=onboarding_id,
         answer=body.answer,
     )
     return GenerateRcaQuestionResponse(**res)
 
 
 class StartOnboardingPlaybookRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
 
 
 class SubmitOnboardingGapAnswersRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
     answers: str
 
 
@@ -369,18 +367,18 @@ class GapQuestion(BaseModel):
 
 
 class StartOnboardingPlaybookResponse(BaseModel):
-    session_id: str
+    onboarding_id: str
     stage: str  # gap_questions | ready
     gap_questions_parsed: list[GapQuestion] = []
     message: str = ""
 
 
 class LaunchOnboardingPlaybookRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
 
 
 class LaunchOnboardingPlaybookResponse(BaseModel):
-    session_id: str
+    onboarding_id: str
     stage: str  # gap_questions | started
     gap_questions_parsed: list[GapQuestion] = []
     stream_id: str = ""
@@ -389,7 +387,7 @@ class LaunchOnboardingPlaybookResponse(BaseModel):
 
 
 class SubmitOnboardingGapAnswersResponse(BaseModel):
-    session_id: str
+    onboarding_id: str
     stage: str  # ready
     message: str = ""
 
@@ -403,23 +401,23 @@ class PrecisionQuestionItem(BaseModel):
 
 
 class StartOnboardingPrecisionRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
 
 
 class StartOnboardingPrecisionResponse(BaseModel):
-    session_id: str
+    onboarding_id: str
     questions: list[PrecisionQuestionItem] = []
     available: bool = False
 
 
 class SubmitOnboardingPrecisionAnswerRequest(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
     question_index: int
     answer: str
 
 
 class SubmitOnboardingPrecisionAnswerResponse(BaseModel):
-    session_id: str
+    onboarding_id: str
     next_question: Optional[PrecisionQuestionItem] = None
     all_answered: bool = False
     precision_status: str = ""  # awaiting_answers | complete
@@ -486,14 +484,14 @@ def _parse_gap_questions(agent_output: str) -> list[dict[str, Any]]:
 
 
 
-async def _resolve_onboarding_session_id(
+async def _resolve_onboarding_id(
     *,
     request: Request,
-    provided_session_id: Optional[str],
+    provided_onboarding_id: Optional[str],
 ) -> str:
     user = get_request_user(request) or {}
     sub = str(user.get("id") or "").strip()
-    sid = (provided_session_id or "").strip()
+    oid = (provided_onboarding_id or "").strip()
 
     # Authenticated path: resolve to latest onboarding row by created_at for this user.
     if sub:
@@ -501,9 +499,9 @@ async def _resolve_onboarding_session_id(
 
         pool = get_pool()
         async with pool.acquire() as conn:
-            resolved_sid = await conn.fetchval(
+            resolved_oid = await conn.fetchval(
                 """
-                SELECT session_id
+                SELECT id::text
                 FROM onboarding
                 WHERE user_id::text = $1
                 ORDER BY created_at DESC
@@ -511,19 +509,19 @@ async def _resolve_onboarding_session_id(
                 """,
                 sub,
             )
-        sid_db = str(resolved_sid or "").strip()
-        if sid_db:
-            return sid_db
+        oid_db = str(resolved_oid or "").strip()
+        if oid_db:
+            return oid_db
         raise HTTPException(status_code=400, detail="onboarding row not found for user")
 
-    # Guest path: session_id must be explicitly provided.
-    if sid:
-        return sid
+    # Guest path: onboarding_id must be explicitly provided.
+    if oid:
+        return oid
     claims = getattr(request.state, "auth_claims", None) or {}
-    sid_claim = str(claims.get("session_id") or "").strip()
+    sid_claim = str(claims.get("onboarding_id") or claims.get("onboarding_session_id") or claims.get("session_id") or "").strip()
     if sid_claim:
         return sid_claim
-    raise HTTPException(status_code=400, detail="session_id is required")
+    raise HTTPException(status_code=400, detail="onboarding_id is required")
 
 
 async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPlaybookRequest) -> StartOnboardingPlaybookResponse:
@@ -536,9 +534,9 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
     from app.db import get_pool
     from app.services.playbook_service import run_phase0_gap_questions
 
-    sid = await _resolve_onboarding_session_id(
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        provided_session_id=body.session_id,
+        provided_onboarding_id=body.onboarding_id,
     )
 
     pool = get_pool()
@@ -547,12 +545,12 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
             """
             SELECT id, outcome, domain, task, scale_answers, rca_qa, rca_summary, rca_handoff, crawl_run_id, crawl_cache_key
             FROM onboarding
-            WHERE session_id = $1
+            WHERE id = $1::uuid
             """,
-            sid,
+            onboarding_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         onboarding_id = row.get("id")
         outcome = str(row.get("outcome") or "")
@@ -647,7 +645,7 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
                 onboarding_id,
             )
             return StartOnboardingPlaybookResponse(
-                session_id=sid,
+                onboarding_id=onboarding_id,
                 stage="gap_questions",
                 gap_questions_parsed=[GapQuestion(**g) for g in parsed],
                 message="I need a few more details before building your playbook.",
@@ -664,7 +662,7 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
             onboarding_id,
         )
         return StartOnboardingPlaybookResponse(
-            session_id=sid,
+            onboarding_id=onboarding_id,
             stage="ready",
             gap_questions_parsed=[],
             message="Ready to generate playbook.",
@@ -684,11 +682,11 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
 
     prep = await _prepare_onboarding_playbook(
         request=request,
-        body=StartOnboardingPlaybookRequest(session_id=body.session_id),
+        body=StartOnboardingPlaybookRequest(onboarding_id=body.onboarding_id),
     )
     if prep.stage == "gap_questions":
         return LaunchOnboardingPlaybookResponse(
-            session_id=prep.session_id,
+            onboarding_id=prep.onboarding_id,
             stage="gap_questions",
             gap_questions_parsed=prep.gap_questions_parsed,
             message=prep.message,
@@ -706,13 +704,13 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
     started = await service.start_task_stream(
         task_type=task_type,
         task_fn=task_fn,
-        payload={"session_id": prep.session_id},
-        session_id=prep.session_id,
+        payload={"onboarding_id": prep.onboarding_id},
+        session_id=prep.onboarding_id,
         user_id=None,
         resume_if_exists=True,
     )
     return LaunchOnboardingPlaybookResponse(
-        session_id=prep.session_id,
+        onboarding_id=prep.onboarding_id,
         stage="started",
         gap_questions_parsed=[],
         stream_id=str(started.get("stream_id") or ""),
@@ -730,9 +728,9 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
     from app.db import get_pool
 
     require_request_user(request)
-    sid = await _resolve_onboarding_session_id(
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        provided_session_id=body.session_id,
+        provided_onboarding_id=body.onboarding_id,
     )
 
     answers = str(body.answers or "").strip()
@@ -742,12 +740,12 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
             """
             SELECT id
             FROM onboarding
-            WHERE session_id = $1
+            WHERE id = $1::uuid
             """,
-            sid,
+            onboarding_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         await conn.execute(
             """
@@ -761,15 +759,15 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
             row.get("id"),
         )
 
-    return SubmitOnboardingGapAnswersResponse(session_id=sid, stage="ready", message="Gap answers saved.")
+    return SubmitOnboardingGapAnswersResponse(onboarding_id=onboarding_id, stage="ready", message="Gap answers saved.")
 
 
 @router.post("/precision/start", response_model=StartOnboardingPrecisionResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def onboarding_precision_start(request: Request, body: StartOnboardingPrecisionRequest = Body(...)):
-    sid = await _resolve_onboarding_session_id(
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        provided_session_id=body.session_id,
+        provided_onboarding_id=body.onboarding_id,
     )
 
     from app.db import get_pool
@@ -780,12 +778,12 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             """
             SELECT outcome, domain, task, scale_answers, rca_qa, crawl_run_id, crawl_cache_key
             FROM onboarding
-            WHERE session_id = $1
+            WHERE id = $1::uuid
             """,
-            sid,
+            onboarding_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         outcome = str(row.get("outcome") or "")
         domain = str(row.get("domain") or "")
@@ -798,7 +796,7 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             if isinstance(it, dict) and it.get("answer") not in (None, "")
         ]
         if not rca_history:
-            return StartOnboardingPrecisionResponse(session_id=sid, questions=[], available=False)
+            return StartOnboardingPrecisionResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         crawl_summary: dict[str, Any] = {}
         crawl_raw: dict[str, Any] = {}
@@ -857,11 +855,11 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
                     precision_status = 'complete',
                     precision_completed_at = NOW(),
                     updated_at = NOW()
-                WHERE session_id = $1
+                WHERE id = $1::uuid
                 """,
-                sid,
+                onboarding_id,
             )
-            return StartOnboardingPrecisionResponse(session_id=sid, questions=[], available=False)
+            return StartOnboardingPrecisionResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         cleaned = [
             {
@@ -881,13 +879,13 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
                 precision_status = 'awaiting_answers',
                 precision_completed_at = NULL,
                 updated_at = NOW()
-            WHERE session_id = $2
+            WHERE id = $2::uuid
             """,
             json.dumps(cleaned),
-            sid,
+            onboarding_id,
         )
         return StartOnboardingPrecisionResponse(
-            session_id=sid,
+            onboarding_id=onboarding_id,
             questions=[PrecisionQuestionItem(**q) for q in cleaned],
             available=len(cleaned) > 0,
         )
@@ -896,9 +894,9 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
 @router.post("/precision/answer", response_model=SubmitOnboardingPrecisionAnswerResponse)
 @limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
 async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPrecisionAnswerRequest = Body(...)):
-    sid = await _resolve_onboarding_session_id(
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        provided_session_id=body.session_id,
+        provided_onboarding_id=body.onboarding_id,
     )
     if body.question_index < 0:
         raise HTTPException(status_code=400, detail="question_index must be >= 0")
@@ -911,12 +909,12 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
             """
             SELECT id, precision_questions, precision_answers, questions_answers
             FROM onboarding
-            WHERE session_id = $1
+            WHERE id = $1::uuid
             """,
-            sid,
+            onboarding_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Onboarding session not found")
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
 
         precision_questions = _as_list(row.get("precision_questions"))
         if body.question_index >= len(precision_questions):
@@ -953,14 +951,14 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
                     precision_completed_at = NOW(),
                     questions_answers = $2::jsonb,
                     updated_at = NOW()
-                WHERE session_id = $3
+                WHERE id = $3::uuid
                 """,
                 json.dumps(precision_answers),
                 json.dumps(qa_log),
-                sid,
+                onboarding_id,
             )
             return SubmitOnboardingPrecisionAnswerResponse(
-                session_id=sid,
+                onboarding_id=onboarding_id,
                 all_answered=True,
                 precision_status="complete",
             )
@@ -972,15 +970,15 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
                 precision_status = 'awaiting_answers',
                 questions_answers = $2::jsonb,
                 updated_at = NOW()
-            WHERE session_id = $3
+            WHERE id = $3::uuid
             """,
             json.dumps(precision_answers),
             json.dumps(qa_log),
-            sid,
+            onboarding_id,
         )
         next_q = precision_questions[next_idx]
         return SubmitOnboardingPrecisionAnswerResponse(
-            session_id=sid,
+            onboarding_id=onboarding_id,
             next_question=PrecisionQuestionItem(**next_q),
             all_answered=False,
             precision_status="awaiting_answers",

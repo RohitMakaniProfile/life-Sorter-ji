@@ -4,15 +4,13 @@ import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 
-// Storage keys for onboarding session (must match useOnboardingSession.js)
-const STORAGE_SESSION_KEY = 'doable-claw-onboarding-session-id';
-const STORAGE_ROW_ID_KEY = 'doable-claw-onboarding-row-id';
+// Storage keys for onboarding state (must match useOnboardingSession.js)
+const STORAGE_SESSION_KEY = 'doable-claw-onboarding-id';
 
-export default function OtpModal({ sessionId, onVerified }) {
+export default function OtpModal({ onboardingId, onVerified }) {
   const [step, setStep] = useState('phone');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
-  const [otpSessionId, setOtpSessionId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
@@ -40,14 +38,13 @@ export default function OtpModal({ sessionId, onVerified }) {
     setLoading(true);
     try {
       const data = await apiPost(API_ROUTES.auth.sendOtp, {
-        onboarding_session_id: sessionId,
+        onboarding_id: onboardingId,
         phone_number: cleaned,
       });
       if (!data.success) {
         setError(data.message || data.detail || 'Failed to send OTP');
         return;
       }
-      setOtpSessionId(data.otp_session_id);
       setStep('otp');
       startResendTimer();
     } catch (e) {
@@ -66,8 +63,8 @@ export default function OtpModal({ sessionId, onVerified }) {
     setLoading(true);
     try {
       const data = await apiPost(API_ROUTES.auth.verifyOtp, {
-        onboarding_session_id: sessionId,
-        otp_session_id: otpSessionId,
+        onboarding_id: onboardingId,
+        phone_number: phone.replace(/\D/g, ''),
         otp_code: otp,
       });
       if (!data.success) {
@@ -84,7 +81,6 @@ export default function OtpModal({ sessionId, onVerified }) {
           window.localStorage.setItem(IKSHAN_AUTH_TOKEN_KEY, data.token);
           // Clear the onboarding session from localStorage since it's now linked to the user account
           window.localStorage.removeItem(STORAGE_SESSION_KEY);
-          window.localStorage.removeItem(STORAGE_ROW_ID_KEY);
         } catch {
           // ignore storage errors
         }

@@ -50,48 +50,46 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
     Onboarding-native playbook generator.
 
     Input payload:
-      - session_id: str (required)
+      - onboarding_id: str (required)
 
     Emits:
       - stage events
       - token events from Agent C
       - done with { playbook, website_audit, context_brief, icp_card }
     """
-    session_id = str(payload.get("session_id") or "").strip()
+    onboarding_id = str(payload.get("onboarding_id") or payload.get("session_id") or "").strip()
     user_id = str(payload.get("user_id") or "").strip()
-    onboarding_id = None
     playbook_run_id = None
 
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
-            if not session_id and user_id:
+            if not onboarding_id and user_id:
                 linked_sid = await conn.fetchval(
                     "SELECT onboarding_session_id FROM users WHERE id::text = $1 LIMIT 1",
                     user_id,
                 )
-                session_id = str(linked_sid or "").strip()
-            if not session_id:
-                raise ValueError("session_id or linked user_id is required for playbook/onboarding-generate")
+                onboarding_id = str(linked_sid or "").strip()
+            if not onboarding_id:
+                raise ValueError("onboarding_id or linked user_id is required for playbook/onboarding-generate")
 
             onboarding = await conn.fetchrow(
                 """
                 SELECT
-                  id, session_id, user_id,
+                  id, user_id,
                   outcome, domain, task,
                   website_url,
                   scale_answers, rca_qa, rca_summary, rca_handoff,
                   gap_answers,
                   web_summary
                 FROM onboarding
-                WHERE session_id = $1
+                WHERE id = $1::uuid
                 """,
-                session_id,
+                onboarding_id,
             )
             if not onboarding:
-                raise ValueError(f"Onboarding row not found for session_id={session_id}")
+                raise ValueError(f"Onboarding row not found for onboarding_id={onboarding_id}")
 
-            onboarding_id = onboarding.get("id")
             user_id = onboarding.get("user_id")
             outcome = str(onboarding.get("outcome") or "")
             domain = str(onboarding.get("domain") or "")
@@ -118,7 +116,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                 VALUES ($1, $2, 'running', $3::jsonb, $4::jsonb)
                 RETURNING id
                 """,
-                session_id,
+                onboarding_id,
                 user_id,
                 json.dumps(
                     {
@@ -232,19 +230,19 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                     playbook_completed_at = NOW(),
                     onboarding_completed_at = COALESCE(onboarding_completed_at, NOW()),
                     updated_at = NOW()
-                WHERE session_id = $1
+                WHERE id = $1::uuid
                 """,
-                session_id,
+                onboarding_id,
             )
 
         await asyncio.sleep(0)
-        logger.info("playbook/onboarding-generate done", session_id=session_id, playbook_run_id=str(playbook_run_id))
+        logger.info("playbook/onboarding-generate done", onboarding_id=onboarding_id, playbook_run_id=str(playbook_run_id))
         return result_payload
 
     except Exception as exc:
         # Update onboarding and playbook_runs to reflect error state
         error_message = str(exc)
-        logger.error("playbook/onboarding-generate failed", session_id=session_id, error=error_message)
+        logger.error("playbook/onboarding-generate failed", onboarding_id=onboarding_id, error=error_message)
         try:
             async with pool.acquire() as conn:
                 if playbook_run_id:
@@ -274,4 +272,3 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             logger.error("playbook/onboarding-generate error update failed", error=str(db_err))
         # Re-raise to let task stream service handle the error event
         raise
-

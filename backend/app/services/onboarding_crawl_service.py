@@ -1,17 +1,16 @@
 """
-Onboarding crawl service — single-page Playwright scrape + web summary + RCA questions.
+Onboarding crawl service — single-page Playwright scrape + web summary + business profile.
 
-Replaces crawl_service.py for the onboarding task stream. Responsibilities:
+Responsibilities:
   1. Run scrape-playwright skill (maxPages=1) and record in skill_calls table.
   2. Build a compact web_summary string from the page data.
-  3. Generate up to 3 RCA questions using the web_summary + onboarding context.
-  4. Persist web_summary and rca_qa back to the onboarding row.
+  3. Generate a business_profile markdown summary from the web_summary.
+  4. Persist web_summary and business_profile back to the onboarding row.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Any, Awaitable, Callable
 
@@ -195,137 +194,65 @@ def build_web_summary(page_data: dict[str, Any], url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Generate RCA questions
+# Generate business profile
 # ---------------------------------------------------------------------------
 
 # Fallback prompt if not found in database
-_RCA_SYSTEM_PROMPT_DEFAULT = """\
-You are a world-class business growth consultant doing a 3-minute intake call with a founder.
-You have just looked at their website. You know exactly what they want to achieve.
-Your job: ask the 3 sharpest questions that will unlock a personalised action plan for them.
+_BUSINESS_PROFILE_PROMPT_DEFAULT = """\
+You are a business analyst. Read the provided website summary and produce a concise business profile in markdown.
 
-Return ONLY a valid JSON array of 3 questions with options.
+Output only markdown. Keep it grounded in the provided evidence. If something is uncertain, say that clearly.
+
+Use short sections:
+- What They Do
+- Target Customer
+- Offer / Monetization
+- Signals From Website
+- Gaps / Unknowns
 """
 
 
-async def _get_rca_system_prompt() -> str:
-    """Fetch RCA system prompt from prompts repository (Redis cached, DB fallback)."""
+async def _get_business_profile_prompt() -> str:
+    """Fetch business-profile prompt from prompts repository (Redis cached, DB fallback)."""
     from app.services.prompts_service import get_prompt
-    return await get_prompt("rca-questions", default=_RCA_SYSTEM_PROMPT_DEFAULT)
+    return await get_prompt("business-profile", default=_BUSINESS_PROFILE_PROMPT_DEFAULT)
 
 
-async def generate_rca_questions(
-    *,
-    outcome: str,
-    domain: str,
-    task: str,
-    web_summary: str,
-    scale_answers: dict[str, Any] | None = None,
-    max_questions: int = 3,
-) -> list[dict[str, Any]]:
-    """
-    Call the LLM to generate up to max_questions RCA questions with options.
-    Returns an empty list on any failure so the task stream is not blocked.
-    """
-    user_content = (
-        f"GOAL CATEGORY: {outcome}\n"
-        f"THEIR EXACT TASK: {task}\n"
-        f"DOMAIN: {domain}\n\n"
-        f"ONBOARDING SCALE ANSWERS: {json.dumps(scale_answers or {}, ensure_ascii=False)}\n\n"
-        f"━━━ WEBSITE EVIDENCE (what I scraped from their site) ━━━\n"
-        f"{web_summary}\n\n"
-        f"━━━ YOUR JOB ━━━\n"
-        f"Generate exactly {max_questions} diagnostic questions.\n"
-        f"Each question must:\n"
-        f"1. Reference something specific from the website evidence above\n"
-        f"2. Target a different root cause blocking their task: '{task}'\n"
-        f"3. Have 4 options — 3 specific scenarios + 'Something else / not sure'\n\n"
-        f"Focus on: what is the #1 thing stopping them from achieving '{task}' right now?"
-    )
-
+async def generate_business_profile(*, web_summary: str) -> str:
+    """Generate a markdown/text business profile from the website summary."""
+    summary = str(web_summary or "").strip()
+    if not summary:
+        return ""
     try:
-        # Fetch prompt from DB/Redis (with fallback)
-        system_prompt = await _get_rca_system_prompt()
-
+        system_prompt = await _get_business_profile_prompt()
         result = await _ai.complete(
             model="anthropic/claude-sonnet-4-6",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": summary},
             ],
             temperature=0.3,
-            max_tokens=800,
+            max_tokens=700,
         )
-        raw = str(result.get("message") or "").strip()
-        questions = _parse_questions(raw, max_questions)
-        logger.info("generate_rca_questions success", count=len(questions), task=task)
-        return questions
+        profile = str(result.get("message") or "").strip()
+        logger.info("generate_business_profile success", chars=len(profile))
+        return profile
     except Exception as exc:
-        logger.warning("generate_rca_questions failed", error=str(exc))
-        return []
-
-
-def _parse_questions(raw: str, max_questions: int) -> list[dict[str, Any]]:
-    """Extract a JSON array of question objects from LLM output robustly."""
-    def _normalise(parsed: Any) -> list[dict[str, Any]]:
-        if not isinstance(parsed, list):
-            return []
-        out = []
-        for item in parsed:
-            if isinstance(item, str) and item.strip():
-                # Old format fallback: plain string question
-                out.append({"question": item.strip(), "options": []})
-            elif isinstance(item, dict) and item.get("question"):
-                q = str(item["question"]).strip()
-                opts = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
-                out.append({"question": q, "options": opts})
-        return out[:max_questions]
-
-    # Try direct parse
-    try:
-        parsed = json.loads(raw)
-        result = _normalise(parsed)
-        if result:
-            return result
-    except Exception:
-        pass
-
-    # Try fenced code block
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, re.IGNORECASE)
-    if fence:
-        try:
-            parsed = json.loads(fence.group(1).strip())
-            result = _normalise(parsed)
-            if result:
-                return result
-        except Exception:
-            pass
-
-    # Try extracting the first [...] array
-    arr_match = re.search(r"\[[\s\S]*\]", raw)
-    if arr_match:
-        try:
-            parsed = json.loads(arr_match.group(0))
-            result = _normalise(parsed)
-            if result:
-                return result
-        except Exception:
-            pass
-
-    return []
+        logger.warning("generate_business_profile failed", error=str(exc))
+        return ""
 
 
 # ---------------------------------------------------------------------------
 # Onboarding DB helpers
 # ---------------------------------------------------------------------------
 
-async def fetch_onboarding_context(session_id: str) -> dict[str, Any]:
-    """Return outcome, domain, task, scale_answers, web_summary from the onboarding row."""
+async def fetch_onboarding_context(onboarding_id: str) -> dict[str, Any]:
+    """Return onboarding context fields from the onboarding row."""
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT outcome, domain, task, scale_answers, web_summary FROM onboarding WHERE session_id = $1",
-            session_id,
+            "SELECT outcome, domain, task, scale_answers, web_summary, business_profile FROM onboarding WHERE id = $1::uuid",
+            onboarding_id,
         )
     if not row:
         return {}
@@ -344,37 +271,27 @@ async def fetch_onboarding_context(session_id: str) -> dict[str, Any]:
         "task": str(row["task"] or ""),
         "scale_answers": scale_answers,
         "web_summary": str(row["web_summary"] or ""),
+        "business_profile": str(row["business_profile"] or ""),
     }
 
 
-async def update_onboarding_web_summary(session_id: str, web_summary: str) -> None:
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE onboarding SET web_summary = $1, updated_at = NOW() WHERE session_id = $2",
-            web_summary,
-            session_id,
-        )
-
-
-async def update_onboarding_rca_questions(
-    session_id: str,
-    questions: list[dict[str, Any]],
+async def update_onboarding_crawl_outputs(
+    onboarding_id: str,
+    *,
+    web_summary: str,
+    business_profile: str,
 ) -> None:
-    """Store questions as [{question, options, answer}] in rca_qa."""
-    rca_qa = [
-        {
-            "question": q.get("question", ""),
-            "options": q.get("options") or [],
-            "answer": None,
-        }
-        for q in questions
-        if q.get("question")
-    ]
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE onboarding SET rca_qa = $1::jsonb, updated_at = NOW() WHERE session_id = $2",
-            json.dumps(rca_qa),
-            session_id,
+            """
+            UPDATE onboarding
+            SET web_summary = $1,
+                business_profile = $2,
+                updated_at = NOW()
+            WHERE id = $3::uuid
+            """,
+            web_summary,
+            business_profile,
+            onboarding_id,
         )

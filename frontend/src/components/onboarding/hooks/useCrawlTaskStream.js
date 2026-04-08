@@ -38,9 +38,9 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
   const startForSession = useCallback(
     async (sid, { websiteUrl } = {}) => {
-      const sessionId = sid || (await ensureSession());
+      const onboardingId = sid || (await ensureSession());
       const url = String(websiteUrl || '').trim();
-      if (!sessionId) return;
+      if (!onboardingId) return;
 
       safeSetItem(STORAGE_CRAWL_STEP_REACHED, '1');
       setCrawlStreaming(true);
@@ -54,7 +54,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
       let finished = false;
 
       await runResumableTaskStream(TASK_TYPE_CRAWL, {
-        sessionId,
+        onboardingId,
         payload: url && url !== '(resume)' ? { website_url: url } : {},
         maxRetries: 2,
         shouldStop: () => runIdRef.current !== myRunId,
@@ -62,8 +62,8 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
           onEvent: (e) => {
             if (runIdRef.current !== myRunId) return;
             if (!e || typeof e !== "object") return;
-            if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_CRAWL, streamId: String(e.stream_id), sessionId });
-            monitorTaskStreamEvent({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, sessionId, event: e });
+            if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_CRAWL, streamId: String(e.stream_id), onboardingId });
+            monitorTaskStreamEvent({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, onboardingId, event: e });
             if (e.type === 'stage') {
               if (e.stage) setCrawlStage(String(e.stage));
               if (e.label) setCrawlLabel(String(e.label));
@@ -85,7 +85,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
             setCrawlStage('done');
             setCrawlLabel('Done');
             setCrawlResult({ web_summary: e.web_summary, rca_questions: e.rca_questions ?? [] });
-            monitorTaskStreamDone({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, sessionId, event: e });
+            monitorTaskStreamDone({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, onboardingId, event: e });
           },
           onError: (e) => {
             if (runIdRef.current !== myRunId) return;
@@ -96,7 +96,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
             setCrawlLabel('Error');
             setCrawlResult(null);
             setError?.(e?.message || 'Crawl failed');
-            monitorTaskStreamError({ taskType: TASK_TYPE_CRAWL, streamId: e?.stream_id, sessionId, event: e });
+            monitorTaskStreamError({ taskType: TASK_TYPE_CRAWL, streamId: e?.stream_id, onboardingId, event: e });
           },
         },
       });
@@ -164,7 +164,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
         if (cancelled || !sid) return;
 
         autoResumeTriggeredRef.current = true;
-        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_CRAWL, { sessionId: sid, userId: null });
+        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_CRAWL, { onboardingId: sid, userId: null });
         if (!storedStreamId) return;
 
         // Auto-attach without status polling. If stale/expired, attach will error and we'll ignore it.

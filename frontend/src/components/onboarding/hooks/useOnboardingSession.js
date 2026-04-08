@@ -3,8 +3,7 @@ import { apiPost, apiGet } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { getUserIdFromJwt } from '../../../api/authSession';
 
-const STORAGE_SESSION_KEY = 'doable-claw-onboarding-session-id';
-const STORAGE_ROW_ID_KEY = 'doable-claw-onboarding-row-id';
+const STORAGE_SESSION_KEY = 'doable-claw-onboarding-id';
 
 function isAuthenticatedUser() {
   return Boolean(getUserIdFromJwt());
@@ -20,11 +19,11 @@ function readStoredSessionId() {
 }
 
 function persistSessionPayload(data, { persistToStorage = true } = {}) {
-  if (typeof window === 'undefined' || !data?.session_id) return;
+  const onboardingId = data?.onboarding_id || data?.id;
+  if (typeof window === 'undefined' || !onboardingId) return;
   if (!persistToStorage) return;
   try {
-    localStorage.setItem(STORAGE_SESSION_KEY, data.session_id);
-    if (data.id) localStorage.setItem(STORAGE_ROW_ID_KEY, data.id);
+    localStorage.setItem(STORAGE_SESSION_KEY, onboardingId);
   } catch {
     /* ignore quota / private mode */
   }
@@ -35,7 +34,7 @@ export function useOnboardingSession() {
   const sessionPromiseRef = useRef(null);
 
   /**
-   * Resolves session_id. On first create, optional `initialFields` (e.g. outcome, domain) are sent
+   * Resolves onboarding_id. On first create, optional `initialFields` (e.g. outcome, domain) are sent
    * with POST /onboarding so the new row is inserted with those columns set.
    */
   const ensureSession = useCallback(async (initialFields = {}) => {
@@ -52,9 +51,9 @@ export function useOnboardingSession() {
           // Authenticated users should resolve by user identity first; don't use local session storage.
           try {
             const state = await apiGet(API_ROUTES.onboarding.state(null, getUserIdFromJwt()));
-            if (state?.session_id) {
-              sessionIdRef.current = state.session_id;
-              return state.session_id;
+            if (state?.onboarding_id) {
+              sessionIdRef.current = state.onboarding_id;
+              return state.onboarding_id;
             }
           } catch {
             // no existing onboarding row for this user yet
@@ -66,9 +65,9 @@ export function useOnboardingSession() {
             ? initialFields
             : {};
         const data = await apiPost(API_ROUTES.onboarding.upsert, body ?? {});
-        sessionIdRef.current = data.session_id;
+        sessionIdRef.current = data.onboarding_id;
         persistSessionPayload(data, { persistToStorage: !isAuth });
-        return data.session_id;
+        return data.onboarding_id;
       })().catch((err) => {
         sessionPromiseRef.current = null;
         throw err;
@@ -79,7 +78,7 @@ export function useOnboardingSession() {
 
   /**
    * Update onboarding with the given fields. If the backend creates a new session
-   * (because the old one was complete), updates the stored session_id.
+   * (because the old row was complete), updates the stored onboarding_id.
    */
   const updateOnboarding = useCallback(async (fields) => {
     const isAuth = isAuthenticatedUser();
@@ -87,16 +86,16 @@ export function useOnboardingSession() {
 
     const data = await apiPost(
       API_ROUTES.onboarding.upsert,
-      sid ? { session_id: sid, ...fields } : { ...fields },
+      sid ? { onboarding_id: sid, ...fields } : { ...fields },
     );
-    if (data?.session_id) {
-      sessionIdRef.current = data.session_id;
+    if (data?.onboarding_id) {
+      sessionIdRef.current = data.onboarding_id;
       persistSessionPayload(data, { persistToStorage: !isAuth });
     }
 
-    // If backend created a new session (old one was complete), update our refs
-    if (data?.new_session && data?.session_id) {
-      sessionIdRef.current = data.session_id;
+    // If backend created a new row (old one was complete), update our refs.
+    if (data?.new_session && data?.onboarding_id) {
+      sessionIdRef.current = data.onboarding_id;
       sessionPromiseRef.current = null; // Clear the promise so ensureSession works fresh
       persistSessionPayload(data, { persistToStorage: !isAuth });
     }
@@ -106,7 +105,7 @@ export function useOnboardingSession() {
 
   /**
    * Fetch the current onboarding state from the backend for session restoration.
-   * Prefers user_id based lookup if authenticated, falls back to session_id.
+   * Prefers user_id based lookup if authenticated, falls back to onboarding_id.
    * Returns null if no stored session exists or the session is not found.
    */
   const getSessionState = useCallback(async () => {
@@ -115,21 +114,21 @@ export function useOnboardingSession() {
 
     console.log('[getSessionState] userId:', userId, 'storedId:', storedId);
 
-    // If neither user_id nor session_id is available, return null
+    // If neither user_id nor onboarding_id is available, return null
     if (!userId && !storedId) {
       console.log('[getSessionState] No userId or storedId, returning null');
       return null;
     }
 
     try {
-      // Backend will use user_id if provided, otherwise session_id
+      // Backend will use user_id if provided, otherwise onboarding_id.
       const url = API_ROUTES.onboarding.state(storedId, userId);
       console.log('[getSessionState] Fetching state from:', url);
       const state = await apiGet(url);
       console.log('[getSessionState] State received:', state);
       // Set sessionIdRef if we got a valid response
-      if (state?.session_id) {
-        sessionIdRef.current = state.session_id;
+      if (state?.onboarding_id) {
+        sessionIdRef.current = state.onboarding_id;
         // Persist only for guest users.
         persistSessionPayload(state, { persistToStorage: !userId });
       }
@@ -140,7 +139,6 @@ export function useOnboardingSession() {
       if (err?.status === 404) {
         try {
           localStorage.removeItem(STORAGE_SESSION_KEY);
-          localStorage.removeItem(STORAGE_ROW_ID_KEY);
         } catch {
           /* ignore */
         }
@@ -158,7 +156,6 @@ export function useOnboardingSession() {
     sessionPromiseRef.current = null;
     try {
       localStorage.removeItem(STORAGE_SESSION_KEY);
-      localStorage.removeItem(STORAGE_ROW_ID_KEY);
     } catch {
       /* ignore */
     }

@@ -10,7 +10,6 @@ type SendOtpResponse = {
   success: boolean;
   message?: string;
   detail?: string;
-  otp_session_id?: string;
 };
 
 type VerifyOtpResponse = {
@@ -55,7 +54,6 @@ export default function PhoneVerifyPage() {
   const [step, setStep] = useState('phone');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
-  const [otpSessionId, setOtpSessionId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
@@ -112,7 +110,6 @@ export default function PhoneVerifyPage() {
         setError(data.message || data.detail || 'Failed to send OTP');
         return;
       }
-      setOtpSessionId(data.otp_session_id);
       setStep('otp');
       startResendTimer();
     } catch (e) {
@@ -131,7 +128,7 @@ export default function PhoneVerifyPage() {
     setLoading(true);
     try {
       const body: Record<string, string> = {
-        otp_session_id: otpSessionId,
+        phone_number: phone.replace(/\D/g, ''),
         otp_code: otp,
       };
 
@@ -306,4 +303,3 @@ export default function PhoneVerifyPage() {
     </div>
   );
 }
-

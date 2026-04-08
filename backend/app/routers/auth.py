@@ -4,15 +4,13 @@ AUTH ROUTER — OTP-Based 2-Factor Authentication
 ═══════════════════════════════════════════════════════════════
 Endpoints:
   POST /api/v1/auth/send-otp      → Send OTP to phone number
-  POST /api/v1/auth/verify-otp    → Verify OTP and mark session
-  POST /api/v1/auth/google        → Save Google Sign-In to session
+  POST /api/v1/auth/verify-otp    → Verify OTP and issue auth token
+  POST /api/v1/auth/google        → Save Google Sign-In for onboarding
 """
 
 from __future__ import annotations
 
 import re
-import time
-import uuid
 from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, HTTPException, Header
 
@@ -39,8 +37,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 # ── Request / Response Models ─────────────────────────────────
 
 class SendOTPRequest(BaseModel):
-    session_id: str | None = None  # backward compatibility (legacy client field)
-    onboarding_session_id: str | None = None
+    onboarding_id: str | None = None
     phone_number: str
 
     @field_validator("phone_number")
@@ -56,13 +53,11 @@ class SendOTPRequest(BaseModel):
 class SendOTPResponse(BaseModel):
     success: bool
     message: str
-    otp_session_id: str = ""
 
 
 class VerifyOTPRequest(BaseModel):
-    session_id: str | None = None  # backward compatibility (legacy client field)
-    onboarding_session_id: str | None = None
-    otp_session_id: str
+    phone_number: str
+    onboarding_id: str | None = None
     otp_code: str
     # Set when Google was Step 1 of two-step verification
     google_email: str | None = None
@@ -78,6 +73,14 @@ class VerifyOTPRequest(BaseModel):
             raise ValueError("OTP must be 4-8 digits")
         return code
 
+    @field_validator("phone_number")
+    @classmethod
+    def validate_verify_phone(cls, v: str) -> str:
+        cleaned = re.sub(r"[\s\-\+]", "", v)
+        if not re.match(r"^(91)?\d{10}$", cleaned):
+            raise ValueError("Invalid phone number — provide a 10-digit Indian mobile number")
+        return cleaned
+
 
 class VerifyOTPResponse(BaseModel):
     success: bool
@@ -88,7 +91,8 @@ class VerifyOTPResponse(BaseModel):
 
 
 class GoogleAuthRequest(BaseModel):
-    session_id: str
+    session_id: str | None = None
+    onboarding_id: str
     google_id: str
     email: str
     name: str
@@ -97,6 +101,7 @@ class GoogleAuthRequest(BaseModel):
 
 class GoogleExchangeRequest(BaseModel):
     idToken: str
+    onboarding_id: str | None = None
     session_id: str | None = None
     # When set, links email to existing user instead of creating new
     link_to_user_id: str | None = None
@@ -335,15 +340,14 @@ async def _link_email_to_user(user_id: str, email: str, name: str | None = None)
 
 @router.post("/send-otp", response_model=SendOTPResponse)
 async def send_otp_endpoint(req: SendOTPRequest):
-    """Independent OTP send: stores OTP in Redis, optionally sends SMS via 2Factor."""
+    """Independent OTP send: stores OTP by phone number, optionally sends SMS via 2Factor."""
     flags = await _otp_runtime_flags()
     otp_bypass_enabled = bool(flags["otp_bypass_enabled"])
     otp_send_sms_enabled = bool(flags["otp_send_sms_enabled"])
     otp_expiry_seconds = int(flags["otp_expiry_seconds"])
     otp_bypass_code = str(flags["otp_bypass_code"])
 
-    onboarding_session_id = (req.onboarding_session_id or req.session_id or "").strip() or None
-    otp_session_id = str(uuid.uuid4())
+    onboarding_session_id = (req.onboarding_id or "").strip() or None
     sms_result = {"success": True, "session_id": "", "error": ""}
 
     if otp_bypass_enabled:
@@ -359,7 +363,6 @@ async def send_otp_endpoint(req: SendOTPRequest):
         otp_code = ""
 
     await store_otp_in_redis(
-        otp_session_id=otp_session_id,
         phone_number=req.phone_number,
         otp_code=otp_code,
         onboarding_session_id=onboarding_session_id,
@@ -367,19 +370,19 @@ async def send_otp_endpoint(req: SendOTPRequest):
         provider_session_id=str(sms_result.get("session_id") or ""),
     )
 
-    return SendOTPResponse(success=True, message="OTP sent successfully", otp_session_id=otp_session_id)
+    return SendOTPResponse(success=True, message="OTP sent successfully")
 
 
 @router.post("/verify-otp", response_model=VerifyOTPResponse)
 async def verify_otp_endpoint(req: VerifyOTPRequest):
-    """Verify OTP (Redis or Postgres otp_sessions), upsert user row, and issue JWT."""
+    """Verify OTP by phone number, upsert user row, and issue JWT."""
     flags = await _otp_runtime_flags()
     otp_bypass_enabled = bool(flags["otp_bypass_enabled"])
     otp_bypass_code = str(flags["otp_bypass_code"])
 
-    rec = await load_otp_from_redis(req.otp_session_id)
+    rec = await load_otp_from_redis(req.phone_number)
     if not rec:
-        return VerifyOTPResponse(success=False, verified=False, message="OTP expired or invalid session")
+        return VerifyOTPResponse(success=False, verified=False, message="OTP expired or invalid phone number")
 
     expected_code = str(rec.get("otp_code") or "")
     provided_code = str(req.otp_code or "").strip()
@@ -403,7 +406,11 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
     if not matched:
         return VerifyOTPResponse(success=True, verified=False, message="Incorrect OTP — please try again")
 
-    onboarding_session_id = (req.onboarding_session_id or req.session_id or rec.get("onboarding_session_id") or "").strip() or None
+    onboarding_session_id = (
+        req.onboarding_id
+        or rec.get("onboarding_session_id")
+        or ""
+    ).strip() or None
     phone_number = str(rec.get("phone_number") or "").strip()
 
     # If link_to_user_id is provided, link phone to existing user instead of creating new
@@ -430,13 +437,13 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
                     UPDATE onboarding
                     SET user_id = $1::uuid,
                         updated_at = NOW()
-                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
+                    WHERE id = $2::uuid AND (user_id IS NULL OR user_id = $1::uuid)
                     """,
                     user_id,
                     onboarding_session_id,
                 )
         except Exception as exc:
-            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, session_id=onboarding_session_id)
+            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, onboarding_id=onboarding_session_id)
 
     token = create_access_token(
         subject=user_id,
@@ -445,11 +452,12 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             "email": email,
             "name": name,
             "phone_number": phone_number,
+            "onboarding_id": onboarding_session_id,
             "onboarding_session_id": onboarding_session_id,
             **(await resolve_admin_flags(email, phone_number)),
         },
     )
-    await delete_otp_from_redis(req.otp_session_id)
+    await delete_otp_from_redis(phone_number)
 
     logger.info("OTP verified", user_id=user_id, has_onboarding_session=bool(onboarding_session_id))
 
@@ -464,6 +472,7 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             "email": email,
             "name": name,
             "phone_number": phone_number,
+            "onboarding_id": onboarding_session_id,
             "onboarding_session_id": onboarding_session_id,
         },
     )
@@ -483,7 +492,8 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
     if not email:
         raise HTTPException(status_code=400, detail="Missing email")
 
-    row = await _upsert_user_from_google(email=email, name=req.name, onboarding_session_id=req.session_id)
+    onboarding_id = (req.onboarding_id or req.session_id or "").strip()
+    row = await _upsert_user_from_google(email=email, name=req.name, onboarding_session_id=onboarding_id)
     user_id = str(row.get("id") or email)
     token = create_access_token(
         subject=user_id,
@@ -493,11 +503,12 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
             "name": req.name,
             "avatar_url": req.avatar_url,
             "google_sub": google_sub,
-            "onboarding_session_id": req.session_id,
+            "onboarding_id": onboarding_id,
+            "onboarding_session_id": onboarding_id,
         },
     )
 
-    logger.info("Google auth saved for session", session_id=req.session_id, email=req.email)
+    logger.info("Google auth saved for onboarding", onboarding_id=onboarding_id, email=req.email)
 
     return GoogleAuthResponse(
         success=True,
@@ -509,7 +520,8 @@ async def google_auth_endpoint(req: GoogleAuthRequest):
             "email": email,
             "name": req.name,
             "avatar_url": req.avatar_url,
-            "onboarding_session_id": req.session_id,
+            "onboarding_id": onboarding_id,
+            "onboarding_session_id": onboarding_id,
         },
     )
 
@@ -529,6 +541,7 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
     name = str(claims.get("name") or claims.get("display_name") or "").strip()
     avatar_url = str(claims.get("picture") or claims.get("photo_url") or "").strip()
     google_sub = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    onboarding_id = (req.onboarding_id or req.session_id or "").strip() or None
 
     # If link_to_user_id is provided, link email to existing user instead of creating new
     link_uid = (req.link_to_user_id or "").strip()
@@ -538,13 +551,13 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             raise HTTPException(status_code=400, detail="Failed to link email to user")
     else:
         # Independent auth path: create/update users row with onboarding_session_id reference.
-        row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=req.session_id)
+        row = await _upsert_user_from_google(email=email, name=name, onboarding_session_id=onboarding_id)
 
     user_id = str(row.get("id") or email)
     phone_number = row.get("phone_number") or ""
 
     # Link the onboarding row to the user if we have both user_id and session_id
-    if user_id and req.session_id:
+    if user_id and onboarding_id:
         try:
             pool = get_pool()
             async with pool.acquire() as conn:
@@ -553,13 +566,13 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
                     UPDATE onboarding
                     SET user_id = $1::uuid,
                         updated_at = NOW()
-                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
-                    """,
-                    user_id,
-                    req.session_id,
+                    WHERE id = $2::uuid AND (user_id IS NULL OR user_id = $1::uuid)
+                """,
+                user_id,
+                    onboarding_id,
                 )
         except Exception as exc:
-            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, session_id=req.session_id)
+            logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, onboarding_id=onboarding_id)
 
     token = create_access_token(
         subject=user_id,
@@ -570,12 +583,13 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "phone_number": phone_number,
             "avatar_url": avatar_url,
             "google_sub": google_sub,
-            "onboarding_session_id": req.session_id,
+            "onboarding_id": onboarding_id,
+            "onboarding_session_id": onboarding_id,
             **(await resolve_admin_flags(email, phone_number)),
         },
     )
 
-    logger.info("Google exchange successful", email=email, has_session=bool(req.session_id), linked_to_user=bool(link_uid))
+    logger.info("Google exchange successful", email=email, has_onboarding=bool(onboarding_id), linked_to_user=bool(link_uid))
 
     flags = await resolve_admin_flags(email, phone_number)
     return GoogleAuthResponse(
@@ -589,7 +603,8 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             "name": name,
             "phone_number": phone_number,
             "avatar_url": avatar_url,
-            "onboarding_session_id": req.session_id,
+            "onboarding_id": onboarding_id,
+            "onboarding_session_id": onboarding_id,
         },
         isAdmin=flags.get("admin", False),
         isSuperAdmin=flags.get("super", False),
@@ -644,7 +659,7 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
             "phone_number": phone_number,
             "name": user_row.get("name") or payload.get("name"),
             "avatar_url": payload.get("avatar_url"),
-            "session_id": payload.get("session_id"),
+            "onboarding_id": payload.get("onboarding_id") or user_row.get("onboarding_session_id") or payload.get("onboarding_session_id"),
             "onboarding_session_id": user_row.get("onboarding_session_id") or payload.get("onboarding_session_id"),
             "expires_in_seconds": expires_in_seconds,
             "token_ttl_hours": get_settings().JWT_ACCESS_TOKEN_EXPIRES_HOURS,

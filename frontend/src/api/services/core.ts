@@ -1,6 +1,6 @@
 import { API_ROUTES } from '../routes';
 import { apiPost, apiRequest } from '../http';
-import { getAuthActorFields } from '../authSession';
+import { getUserIdFromJwt } from '../authSession';
 import { getApiBaseRequired } from '../../config/apiBase';
 import type {
   AgentId,
@@ -45,9 +45,12 @@ function getApiBase(): string {
 }
 
 function withAuthActor<T extends Record<string, unknown>>(payload: T): T {
-  const actor = getAuthActorFields();
-  if (!actor.userId && !actor.sessionId) return payload;
-  return { ...payload, ...actor };
+  const userId = getUserIdFromJwt();
+  if (!userId) return payload;
+  return {
+    ...payload,
+    userId,
+  } as T;
 }
 
 async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -306,9 +309,8 @@ export async function getMessages(conversationId?: string): Promise<{
 }> {
   const params = new URLSearchParams();
   if (conversationId) params.set('conversationId', conversationId);
-  const actor = getAuthActorFields();
-  if (actor.userId) params.set('userId', actor.userId);
-  if (actor.sessionId) params.set('sessionId', actor.sessionId);
+  const userId = getUserIdFromJwt();
+  if (userId) params.set('userId', userId);
   const q = params.toString() ? `?${params}` : '';
   return apiJson<{
     messages: ChatMessage[];
@@ -321,9 +323,8 @@ export async function getMessages(conversationId?: string): Promise<{
 
 export async function getConversations(): Promise<{ conversations: ConversationSummary[] }> {
   const params = new URLSearchParams();
-  const actor = getAuthActorFields();
-  if (actor.userId) params.set('userId', actor.userId);
-  if (actor.sessionId) params.set('sessionId', actor.sessionId);
+  const userId = getUserIdFromJwt();
+  if (userId) params.set('userId', userId);
   const q = params.toString() ? `?${params}` : '';
   return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
 }
@@ -437,4 +438,3 @@ export async function subscribeToTaskStream(
     }
   }
 }
-
