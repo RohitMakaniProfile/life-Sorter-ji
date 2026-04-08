@@ -31,12 +31,14 @@ class AdminApiEntry(BaseModel):
 class SystemConfigEntry(BaseModel):
     key: str
     value: str
+    type: str = "string"
     description: str
     updatedAt: str
 
 
 class UpsertSystemConfigRequest(BaseModel):
     value: str = Field(..., description="New value for system_config.key")
+    type: str | None = Field(None, description="Value type: string, number, boolean, json, markdown")
     description: str = Field("", description="Human-friendly description (optional)")
 
 
@@ -442,7 +444,7 @@ async def list_system_config(request: Request):
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT key, value, description, updated_at FROM system_config ORDER BY key ASC"
+            "SELECT key, value, type, description, updated_at FROM system_config ORDER BY key ASC"
         )
     entries = []
     for r in rows:
@@ -451,6 +453,7 @@ async def list_system_config(request: Request):
             {
                 "key": str(r.get("key") or ""),
                 "value": str(r.get("value") or ""),
+                "type": str(r.get("type") or "string"),
                 "description": str(r.get("description") or ""),
                 "updatedAt": updated_at.isoformat() if updated_at else "",
             }
@@ -467,7 +470,7 @@ async def get_system_config_entry(request: Request, key: str):
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT key, value, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
+            "SELECT key, value, type, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
             k,
         )
     if not row:
@@ -477,6 +480,7 @@ async def get_system_config_entry(request: Request, key: str):
         "entry": {
             "key": str(row.get("key") or ""),
             "value": str(row.get("value") or ""),
+            "type": str(row.get("type") or "string"),
             "description": str(row.get("description") or ""),
             "updatedAt": updated_at.isoformat() if updated_at else "",
         }
@@ -484,29 +488,49 @@ async def get_system_config_entry(request: Request, key: str):
 
 
 @router.patch("/config/{key}", response_model=dict[str, Any])
-async def upsert_system_config_entry(request: Request, key: str, body: UpsertSystemConfigRequest):
+async def upsert_system_config_entry_route(request: Request, key: str, body: UpsertSystemConfigRequest):
     require_super_admin(request)
     k = str(key or "").strip()
     if not k:
         raise HTTPException(status_code=400, detail="key is required")
+    
+    # Import validation helper
+    from app.services.system_config_service import validate_value_for_type, VALID_TYPES
+    
     pool = get_pool()
     async with pool.acquire() as conn:
+        # Get existing type if not provided
+        config_type = body.type
+        if config_type and config_type not in VALID_TYPES:
+            raise HTTPException(status_code=400, detail=f"Invalid type: {config_type}. Must be one of: {', '.join(VALID_TYPES)}")
+        
+        if config_type is None:
+            existing = await conn.fetchval("SELECT type FROM system_config WHERE key = $1", k)
+            config_type = str(existing or "string")
+        
+        # Validate value against type
+        is_valid, err = validate_value_for_type(body.value, config_type)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=err)
+        
         await conn.execute(
             """
-            INSERT INTO system_config (key, value, description)
-            VALUES ($1, $2, $3)
+            INSERT INTO system_config (key, value, type, description)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (key)
             DO UPDATE SET
               value = EXCLUDED.value,
+              type = EXCLUDED.type,
               description = EXCLUDED.description
             """,
             k,
             body.value,
+            config_type,
             body.description,
         )
 
         row = await conn.fetchrow(
-            "SELECT key, value, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
+            "SELECT key, value, type, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
             k,
         )
 
@@ -515,8 +539,89 @@ async def upsert_system_config_entry(request: Request, key: str, body: UpsertSys
         "entry": {
             "key": str(row.get("key") or ""),
             "value": str(row.get("value") or ""),
+            "type": str(row.get("type") or "string"),
             "description": str(row.get("description") or ""),
             "updatedAt": updated_at.isoformat() if updated_at else "",
         }
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROMPTS MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class PromptEntry(BaseModel):
+    slug: str
+    name: str
+    content: str
+    description: str
+    category: str
+    createdAt: str
+    updatedAt: str
+
+
+class UpsertPromptRequest(BaseModel):
+    name: str = Field(..., description="Display name for the prompt")
+    content: str = Field(..., description="The prompt content (markdown)")
+    description: str = Field("", description="Human-friendly description")
+    category: str = Field("general", description="Category for grouping prompts")
+
+
+@router.get("/prompts", response_model=dict[str, Any])
+async def list_prompts(request: Request, category: str | None = None):
+    """List all prompts, optionally filtered by category."""
+    require_super_admin(request)
+
+    from app.services.prompts_service import list_prompts as list_prompts_svc
+
+    prompts = await list_prompts_svc(category)
+    return {"prompts": prompts}
+
+
+@router.get("/prompts/{slug}", response_model=dict[str, Any])
+async def get_prompt(request: Request, slug: str):
+    """Get a single prompt by slug."""
+    require_super_admin(request)
+
+    from app.services.prompts_service import get_prompt_full
+
+    prompt = await get_prompt_full(slug)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{slug}' not found")
+    return {"prompt": prompt}
+
+
+@router.put("/prompts/{slug}", response_model=dict[str, Any])
+async def upsert_prompt(request: Request, slug: str, body: UpsertPromptRequest):
+    """Create or update a prompt."""
+    require_super_admin(request)
+
+    from app.services.prompts_service import upsert_prompt as upsert_prompt_svc
+
+    try:
+        prompt = await upsert_prompt_svc(
+            slug=slug,
+            name=body.name,
+            content=body.content,
+            description=body.description,
+            category=body.category,
+        )
+        return {"prompt": prompt}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/prompts/{slug}", response_model=dict[str, Any])
+async def delete_prompt(request: Request, slug: str):
+    """Delete a prompt by slug."""
+    require_super_admin(request)
+
+    from app.services.prompts_service import delete_prompt as delete_prompt_svc
+
+    deleted = await delete_prompt_svc(slug)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Prompt '{slug}' not found")
+    return {"deleted": True, "slug": slug}
+
 

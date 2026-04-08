@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS onboarding (
     crawl_cache_key  TEXT,
     playbook_run_id  UUID,
 
+    -- Crawl summary (generated from crawl service)
+    web_summary      TEXT NOT NULL DEFAULT '',
+
     onboarding_completed_at TIMESTAMPTZ,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -552,8 +555,9 @@ COMMENT ON TABLE messages IS
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS skill_calls (
     id              BIGSERIAL   PRIMARY KEY,
-    conversation_id TEXT        NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-    message_id      TEXT        NOT NULL,
+    conversation_id TEXT        REFERENCES conversations (id) ON DELETE CASCADE,
+    message_id      TEXT,
+    onboarding_session_id TEXT,
     skill_id        TEXT        NOT NULL,
     run_id          TEXT        NOT NULL,
     input           JSONB       NOT NULL DEFAULT '{}'::JSONB,
@@ -567,17 +571,29 @@ CREATE TABLE IF NOT EXISTS skill_calls (
     ended_at        TIMESTAMPTZ,
     duration_ms     INTEGER,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Exactly one context must be set (conversation or onboarding)
+    CONSTRAINT skill_calls_context_check CHECK (
+        (conversation_id IS NOT NULL AND onboarding_session_id IS NULL) OR
+        (conversation_id IS NULL     AND onboarding_session_id IS NOT NULL)
+    )
 );
 
 ALTER TABLE skill_calls
     ADD COLUMN IF NOT EXISTS streamed_text TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE skill_calls
+    ADD COLUMN IF NOT EXISTS onboarding_session_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_skill_calls_message_id
     ON skill_calls (message_id);
 
 CREATE INDEX IF NOT EXISTS idx_skill_calls_conversation_id
     ON skill_calls (conversation_id);
+
+CREATE INDEX IF NOT EXISTS idx_skill_calls_onboarding_session_id
+    ON skill_calls (onboarding_session_id)
+    WHERE onboarding_session_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS trg_skill_calls_updated_at ON skill_calls;
 CREATE TRIGGER trg_skill_calls_updated_at
@@ -774,9 +790,28 @@ COMMENT ON TABLE user_plan_grants IS
 CREATE TABLE IF NOT EXISTS system_config (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL DEFAULT '',
+    type        TEXT NOT NULL DEFAULT 'string' CHECK (type IN ('string', 'number', 'boolean', 'json', 'markdown')),
     description TEXT NOT NULL DEFAULT '',
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Add type column if not exists (for existing databases)
+ALTER TABLE system_config ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'string';
+
+-- Add check constraint for type if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'system_config_type_check'
+          AND conrelid = 'public.system_config'::regclass
+    ) THEN
+        ALTER TABLE system_config ADD CONSTRAINT system_config_type_check
+            CHECK (type IN ('string', 'number', 'boolean', 'json', 'markdown'));
+    END IF;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
 DROP TRIGGER IF EXISTS trg_system_config_updated_at ON system_config;
 CREATE TRIGGER trg_system_config_updated_at
@@ -784,16 +819,16 @@ CREATE TRIGGER trg_system_config_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
-INSERT INTO system_config (key, value, description)
+INSERT INTO system_config (key, value, type, description)
 VALUES
-    ('auth.otp_expiry_seconds', '300', 'OTP expiry in seconds'),
-    ('auth.otp_bypass_code', '000000', 'Fixed OTP code used when bypass mode is enabled'),
-    ('auth.otp_bypass_enabled', 'false', 'Enable OTP bypass for local/dev testing'),
-    ('auth.otp_send_sms_enabled', 'true', 'If false, OTP is generated and stored but SMS send is skipped'),
-    ('auth.super_admin_emails', '[]', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
-    ('auth.admin_emails', '[]', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
-    ('auth.super_admin_phones', '[]', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
-    ('auth.admin_phones', '[]', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)')
+    ('auth.otp_expiry_seconds', '300', 'number', 'OTP expiry in seconds'),
+    ('auth.otp_bypass_code', '000000', 'string', 'Fixed OTP code used when bypass mode is enabled'),
+    ('auth.otp_bypass_enabled', 'false', 'boolean', 'Enable OTP bypass for local/dev testing'),
+    ('auth.otp_send_sms_enabled', 'true', 'boolean', 'If false, OTP is generated and stored but SMS send is skipped'),
+    ('auth.super_admin_emails', '[]', 'json', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
+    ('auth.admin_emails', '[]', 'json', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
+    ('auth.super_admin_phones', '[]', 'json', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
+    ('auth.admin_phones', '[]', 'json', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS otp_provider_logs (
@@ -912,6 +947,31 @@ CREATE INDEX IF NOT EXISTS idx_admin_subscription_grant_logs_admin
 COMMENT ON TABLE admin_subscription_grant_logs IS
     'Audit log for all admin subscription grant/revoke actions.';
 
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PROMPTS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS prompts (
+    slug            TEXT PRIMARY KEY,
+    name            TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    category        TEXT NOT NULL DEFAULT 'general',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_prompts_updated_at ON prompts;
+CREATE TRIGGER trg_prompts_updated_at
+    BEFORE UPDATE ON prompts
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts (category);
+
+COMMENT ON TABLE prompts IS
+    'System prompts used across backend services. Managed via admin UI.';
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- END OF SETUP

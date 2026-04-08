@@ -147,9 +147,12 @@ export interface UiAgent {
   finalOutputFormattingContext?: string;
 }
 
+export type ConfigValueType = 'string' | 'number' | 'boolean' | 'json' | 'markdown';
+
 export interface SystemConfigEntry {
   key: string;
   value: string;
+  type: ConfigValueType;
   description: string;
   updatedAt: string;
 }
@@ -244,5 +247,16 @@ export interface AdminSubscriptionUserSearchResult {
   phone_number: string;
   created_at: string | null;
   has_admin_grant: boolean;
+}
+
+// Prompts types
+export interface PromptEntry {
+  slug: string;
+  name: string;
+  content: string;
+  description: string;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
 }
 

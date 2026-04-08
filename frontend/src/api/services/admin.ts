@@ -3,12 +3,14 @@ import { apiGet, apiPost, apiRequest } from '../http';
 import type {
   ObservabilitySnapshot,
   SystemConfigEntry,
+  ConfigValueType,
   AdminSubscriptionGrant,
   AdminSubscriptionGrantAuditLog,
   AdminSubscriptionUserSearchResult,
   AdminUsersResponse,
   AdminSkillCallSummary,
   AdminSkillCallDetail,
+  PromptEntry,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -27,7 +29,7 @@ export async function getSystemConfigEntry(
 
 export async function upsertSystemConfigEntry(
   key: string,
-  body: { value: string; description: string },
+  body: { value: string; type?: ConfigValueType; description: string },
 ): Promise<{ entry: SystemConfigEntry }> {
   const res = await apiRequest(API_ROUTES.admin.management.configByKey(key), {
     method: 'PATCH',
@@ -119,5 +121,46 @@ export async function revokeAdminSubscription(
     API_ROUTES.admin.subscriptionGrants.revoke,
     { user_id: userId, reason },
   );
+}
+
+// Prompts API
+export async function listPrompts(category?: string): Promise<{ prompts: PromptEntry[] }> {
+  const url = category
+    ? `${API_ROUTES.admin.management.prompts}?category=${encodeURIComponent(category)}`
+    : API_ROUTES.admin.management.prompts;
+  return apiGet<{ prompts: PromptEntry[] }>(url);
+}
+
+export async function getPrompt(slug: string): Promise<{ prompt: PromptEntry }> {
+  return apiGet<{ prompt: PromptEntry }>(API_ROUTES.admin.management.promptBySlug(slug));
+}
+
+export async function upsertPrompt(
+  slug: string,
+  body: { name: string; content: string; description: string; category: string },
+): Promise<{ prompt: PromptEntry }> {
+  const res = await apiRequest(API_ROUTES.admin.management.promptBySlug(slug), {
+    method: 'PUT',
+    headers: new Headers({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as any)?.detail || (detail as any)?.message || `Request failed: ${res.status}`);
+  }
+  return (await res.json()) as { prompt: PromptEntry };
+}
+
+export async function deletePrompt(slug: string): Promise<{ deleted: boolean; slug: string }> {
+  const res = await apiRequest(API_ROUTES.admin.management.promptBySlug(slug), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as any)?.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
 }
 

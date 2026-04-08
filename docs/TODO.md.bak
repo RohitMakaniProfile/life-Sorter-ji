@@ -1,6 +1,6 @@
 # TODO
 
-> **Updated:** 2026-04-08
+> **Created:** April 8, 2026
 
 ---
 
@@ -12,11 +12,11 @@
   - Define queries in each table's respective file
 
 - [ ] API endpoint to fetch playbook content from DB (~2h) <!-- id:h2 -->
-  - `GET /api/v1/onboarding/playbook?session_id=xxx`
+  - `GET /api/v1/onboarding/playbook?session_id=xxx`c
   - Auth: JWT `user_id` if available, fallback to `session_id`
   - Query `playbook_runs`, return `{ content, status, playbookData }`
 
-- [x] Add `type` field to config values + validation (~1h) <!-- id:h3 -->
+- [ ] Add `type` field to config values + validation (~1h) <!-- id:h3 -->
   - Types: `string`, `number`, `boolean`, `json`, `markdown`
   - Backend validates value against type on save
 
@@ -28,11 +28,10 @@
   - Identify all hardcoded system prompts in backend services
   - Add config entries with `type: "markdown"` for prompts
 
-- [x] Create prompts repository service (~3h) <!-- id:h6 -->
+- [ ] Create prompts repository service (~3h) <!-- id:h6 -->
   - Backend functions can read any prompt via slug/key
   - Cache prompts in Redis with 1 hour TTL
   - Auto-refresh from DB when cache expires
-  - Admin CRUD APIs + Frontend prompts page with context editor
 
 ---
 

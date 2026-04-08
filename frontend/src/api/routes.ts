@@ -14,6 +14,8 @@ export const API_ROUTES = {
       observability: '/api/v1/admin/management/observability',
       config: '/api/v1/admin/management/config',
       configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
+      prompts: '/api/v1/admin/management/prompts',
+      promptBySlug: (slug: string) => `/api/v1/admin/management/prompts/${encodeURIComponent(slug)}`,
       deleteUser: (userId: string) => `/api/v1/admin/management/users/${encodeURIComponent(userId)}`,
       userSkillCalls: (userId: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
