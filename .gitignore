@@ -54,3 +54,5 @@ npm-debug.log*
 *.mov
 *.avi
 *.webm
+
+docs/todo-sync.gs
