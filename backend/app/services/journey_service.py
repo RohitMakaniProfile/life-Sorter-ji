@@ -261,9 +261,9 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
             domain=domain,
             task=task,
             rca_history=rca_history,
-            crawl_summary=None,
-            crawl_raw=None,
-            business_profile=scale_answers or None,
+            scale_answers=scale_answers or None,
+            web_summary="",
+            business_profile_text="",
         )
     except Exception:
         questions = []

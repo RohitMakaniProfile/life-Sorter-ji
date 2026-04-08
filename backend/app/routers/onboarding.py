@@ -778,7 +778,7 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT outcome, domain, task, scale_answers, rca_qa, crawl_run_id, crawl_cache_key
+            SELECT outcome, domain, task, scale_answers, rca_qa, web_summary, business_profile
             FROM onboarding
             WHERE id = $1::uuid
             """,
@@ -800,37 +800,6 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
         if not rca_history:
             return StartOnboardingPrecisionResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
-        crawl_summary: dict[str, Any] = {}
-        crawl_raw: dict[str, Any] = {}
-        try:
-            crawl_row = None
-            crawl_run_id = row.get("crawl_run_id")
-            crawl_cache_key = str(row.get("crawl_cache_key") or "").strip()
-            if crawl_run_id:
-                crawl_row = await conn.fetchrow(
-                    """
-                    SELECT cc.crawl_summary, cc.crawl_raw
-                    FROM crawl_runs cr
-                    JOIN crawl_cache cc ON cc.id = cr.crawl_cache_id
-                    WHERE cr.id = $1
-                    """,
-                    crawl_run_id,
-                )
-            elif crawl_cache_key:
-                crawl_row = await conn.fetchrow(
-                    """
-                    SELECT crawl_summary, crawl_raw
-                    FROM crawl_cache
-                    WHERE normalized_url = $1 AND crawler_version = 'v1'
-                    """,
-                    crawl_cache_key,
-                )
-            if crawl_row:
-                crawl_summary = _as_dict(crawl_row.get("crawl_summary"))
-                crawl_raw = _as_dict(crawl_row.get("crawl_raw"))
-        except Exception:
-            crawl_summary, crawl_raw = {}, {}
-
         outcome_label = {
             "lead-generation": "Lead Generation",
             "sales-retention": "Sales & Retention",
@@ -844,9 +813,9 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             domain=domain,
             task=task,
             rca_history=rca_history,
-            crawl_summary=crawl_summary or None,
-            crawl_raw=crawl_raw or None,
-            business_profile=scale_answers or None,
+            scale_answers=scale_answers or None,
+            web_summary=str(row.get("web_summary") or ""),
+            business_profile_text=str(row.get("business_profile") or ""),
         )
         if not generated:
             await conn.execute(
