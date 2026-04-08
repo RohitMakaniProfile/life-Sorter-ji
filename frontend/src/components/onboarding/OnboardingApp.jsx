@@ -719,6 +719,7 @@ export default function OnboardingApp() {
   };
 
   const handleDiagnosticAnswer = async (answer) => {
+    if (loading) return;
     setLoading(true);
     try {
       const sid = await ensureSession();
