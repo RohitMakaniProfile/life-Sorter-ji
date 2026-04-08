@@ -43,6 +43,33 @@ def _as_list(v: Any) -> list[dict[str, Any]]:
     return v if isinstance(v, list) else []
 
 
+def _coerce_gap_answers_text(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return text
+    if not isinstance(parsed, dict):
+        return text
+    rows: list[str] = []
+    for idx in sorted(parsed.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9):
+        v = parsed.get(idx)
+        if not isinstance(v, dict):
+            continue
+        qid = str(v.get("question_id") or f"Q{int(idx) + 1 if str(idx).isdigit() else idx}").strip()
+        answer_key = str(v.get("answer_key") or "").strip()
+        answer_text = str(v.get("answer_text") or "").strip()
+        if not answer_key:
+            continue
+        if answer_text:
+            rows.append(f"{qid}-{answer_key}) {answer_text}")
+        else:
+            rows.append(f"{qid}-{answer_key}")
+    return "\n".join(rows).strip()
+
+
 
 @register_task_stream("playbook/onboarding-generate")
 async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> dict[str, Any]:
@@ -107,7 +134,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             ]
             rca_summary = str(onboarding.get("rca_summary") or "")
             rca_handoff = str(onboarding.get("rca_handoff") or "")
-            gap_answers = str(onboarding.get("gap_answers") or "")
+            gap_answers = _coerce_gap_answers_text(onboarding.get("gap_answers"))
 
             web_summary = str(onboarding.get("web_summary") or "")
 

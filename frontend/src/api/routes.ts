@@ -14,6 +14,39 @@ export const API_ROUTES = {
       observability: '/api/v1/admin/management/observability',
       config: '/api/v1/admin/management/config',
       configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
+      tokenUsageSummary: (from?: string, to?: string) => {
+        const params = new URLSearchParams();
+        if (from) params.set('from_', from);
+        if (to) params.set('to', to);
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/summary${qs ? `?${qs}` : ''}`;
+      },
+      tokenUsageUsers: (q?: string, from?: string, to?: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (q) params.set('q', q);
+        if (from) params.set('from_', from);
+        if (to) params.set('to', to);
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/users${qs ? `?${qs}` : ''}`;
+      },
+      tokenUsageUserConversations: (userId: string, from?: string, to?: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (from) params.set('from_', from);
+        if (to) params.set('to', to);
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/users/${encodeURIComponent(userId)}/conversations${qs ? `?${qs}` : ''}`;
+      },
+      tokenUsageConversationCalls: (conversationId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/conversations/${encodeURIComponent(conversationId)}/calls${qs ? `?${qs}` : ''}`;
+      },
       deleteUser: (userId: string) => `/api/v1/admin/management/users/${encodeURIComponent(userId)}`,
       userSkillCalls: (userId: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
@@ -54,6 +87,7 @@ export const API_ROUTES = {
     precisionAnswer: '/api/v1/onboarding/precision/answer',
     playbookLaunch: '/api/v1/onboarding/playbook/launch',
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
+    playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
   },
   aiChat: {
     stream: '/api/v1/ai-chat/stream',

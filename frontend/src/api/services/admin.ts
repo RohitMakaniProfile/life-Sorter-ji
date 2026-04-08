@@ -9,6 +9,10 @@ import type {
   AdminUsersResponse,
   AdminSkillCallSummary,
   AdminSkillCallDetail,
+  AdminTokenUsageSummary,
+  AdminTokenUsageUsersResponse,
+  AdminTokenUsageConversationsResponse,
+  AdminTokenUsageCallsResponse,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -27,7 +31,7 @@ export async function getSystemConfigEntry(
 
 export async function upsertSystemConfigEntry(
   key: string,
-  body: { value: string; description: string },
+  body: { value: string; type?: string; description: string },
 ): Promise<{ entry: SystemConfigEntry }> {
   const res = await apiRequest(API_ROUTES.admin.management.configByKey(key), {
     method: 'PATCH',
@@ -40,6 +44,52 @@ export async function upsertSystemConfigEntry(
     throw new Error((detail as any)?.detail || (detail as any)?.message || `Request failed: ${res.status}`);
   }
   return (await res.json()) as { entry: SystemConfigEntry };
+}
+
+// ── Admin Token Usage / Spend Analytics ───────────────────────────────────────
+
+export async function getAdminTokenUsageSummary(opts?: { from?: string; to?: string }): Promise<AdminTokenUsageSummary> {
+  return apiGet<AdminTokenUsageSummary>(API_ROUTES.admin.management.tokenUsageSummary(opts?.from, opts?.to));
+}
+
+export async function listAdminTokenUsageUsers(opts?: {
+  q?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AdminTokenUsageUsersResponse> {
+  return apiGet<AdminTokenUsageUsersResponse>(
+    API_ROUTES.admin.management.tokenUsageUsers(opts?.q, opts?.from, opts?.to, opts?.limit, opts?.offset),
+  );
+}
+
+export async function listAdminTokenUsageUserConversations(opts: {
+  userId: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AdminTokenUsageConversationsResponse> {
+  return apiGet<AdminTokenUsageConversationsResponse>(
+    API_ROUTES.admin.management.tokenUsageUserConversations(
+      opts.userId,
+      opts.from,
+      opts.to,
+      opts.limit,
+      opts.offset,
+    ),
+  );
+}
+
+export async function listAdminTokenUsageConversationCalls(opts: {
+  conversationId: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AdminTokenUsageCallsResponse> {
+  return apiGet<AdminTokenUsageCallsResponse>(
+    API_ROUTES.admin.management.tokenUsageConversationCalls(opts.conversationId, opts.limit, opts.offset),
+  );
 }
 
 // Admin Users API

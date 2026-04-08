@@ -112,25 +112,40 @@ export default function GoogleLoginPage() {
     try {
       window.google.accounts.id.initialize({
         client_id: clientId,
-        use_fedcm_for_prompt: true,
+        // FedCM can get stuck in some browser/account setups; use classic popup flow.
+        use_fedcm_for_prompt: false,
+        ux_mode: 'popup',
+        cancel_on_tap_outside: true,
         callback: async (response: any) => {
           setLoading(true);
           try {
             const idToken = String(response?.credential || '').trim();
             if (!idToken) throw new Error('Missing credential from Google');
 
-            // Build request body
+            // Build request body. In link mode, attempt link first.
             const body: Record<string, string> = { idToken };
             if (isLinkMode && currentUserId) {
               body.link_to_user_id = currentUserId;
             }
 
-            const data = (await apiPost(API_ROUTES.auth.googleExchange, body)) as {
+            let data: {
               token?: string;
               detail?: string;
               isAdmin?: boolean;
               isSuperAdmin?: boolean;
             };
+            try {
+              data = (await apiPost(API_ROUTES.auth.googleExchange, body)) as typeof data;
+            } catch (err: any) {
+              const msg = String(err?.message || '');
+              // If selected email is already linked elsewhere, don't dead-end the user.
+              // Fallback to regular Google exchange and sign in to the existing Google account.
+              if (isLinkMode && msg.includes('already linked')) {
+                data = (await apiPost(API_ROUTES.auth.googleExchange, { idToken })) as typeof data;
+              } else {
+                throw err;
+              }
+            }
 
             const token = String(data?.token || '').trim();
             if (!token) throw new Error('Backend did not return a token');

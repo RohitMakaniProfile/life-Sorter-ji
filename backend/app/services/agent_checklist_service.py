@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.services.ai_helper import ai_helper as _ai
+from app.services.report_sms_service import send_report_link_sms_if_enabled
 from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_MODEL
 from app.skills.service import first_skill_id, get_skill, run_skill
 from app.doable_claw_agent.agent.final_formatter import format_final_answer
@@ -1487,6 +1488,16 @@ async def execute_plan_approval_work(
         await save_stage_outputs(conv["id"], stage_outputs, None)
 
         await update_plan_run(plan_id, {"status": "done"})
+        # Best-effort post-completion SMS for deep-analysis report link.
+        # Never fail the completed report flow due to SMS issues.
+        try:
+            if str(resolved.get("agentId") or "") == "research-orchestrator":
+                await send_report_link_sms_if_enabled(
+                    conversation_id=str(conv.get("id") or ""),
+                    user_id=str(conv.get("userId") or ""),
+                )
+        except Exception:
+            pass
         token_usage = await get_token_usage(assistant_message_id)
         await emit(
             {

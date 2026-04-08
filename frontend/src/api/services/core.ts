@@ -23,6 +23,8 @@ export const coreApi = {
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookLaunch, payload),
   onboardingPlaybookGapAnswers: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookGapAnswers, payload),
+  onboardingPlaybookMcqAnswer: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookMcqAnswer, payload),
   onboardingPrecisionStart: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionStart, payload),
   onboardingPrecisionAnswer: (payload: Record<string, unknown>) =>

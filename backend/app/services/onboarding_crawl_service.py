@@ -224,79 +224,30 @@ def build_web_summary(page_data: dict[str, Any], url: str) -> str:
 # ---------------------------------------------------------------------------
 
 _RCA_SYSTEM_PROMPT = """\
-You are a world-class business growth consultant doing a 3-minute intake call with a founder.
-You have just looked at their website. You know exactly what they want to achieve.
-Your job: ask the 3 sharpest questions that will unlock a personalised action plan for them.
+You generate exactly 3 diagnostic questions to understand why a business isn't achieving their goal.
 
-━━━ YOUR CONTEXT ━━━
-You will receive:
-- GOAL = their outcome category (e.g. "Lead Generation") + their exact chosen task (e.g. "Generate cold outreach sequences")
-- DOMAIN = the business category they selected (e.g. "B2B Sales", "SEO & Organic Visibility")
-- WEBSITE EVIDENCE = what you scraped from their actual website (title, description, content, tech stack)
-
-━━━ YOUR DIAGNOSTIC MISSION ━━━
-Bridge the gap between:
-  → What their website shows right now
-  → What they need to achieve their specific TASK
-
-Ask questions that reveal WHY they haven't achieved this yet.
-Common root causes to probe (pick the ones most relevant given the website evidence):
-  • Missing clarity: they don't know WHO to target or WHAT to offer
-  • Missing proof: no testimonials, case studies, or trust signals visible on site
-  • Missing traffic: no way for their target customer to find them
-  • Missing conversion: site has traffic/leads but they don't convert
-  • Missing process: they don't have a system for follow-up, outreach, or fulfillment
-  • Missing tools: doing things manually that should be automated
-  • Wrong positioning: messaging on site doesn't match their ideal buyer
-
-━━━ WHAT MAKES A PERFECT QUESTION ━━━
-✅ References a SPECIFIC signal from their website (their actual headline, their CTA, their tech stack, what's missing)
-✅ Directly tied to THEIR task — not generic business advice
-✅ Short: max 12 words. Sounds like a smart friend, not a consultant survey.
-✅ Each option is a concrete realistic scenario for a founder in THEIR domain
-✅ A non-technical business owner answers it in under 15 seconds without confusion
-
-━━━ EXAMPLES: BAD vs GOOD ━━━
-
-BAD: "What is your monthly marketing budget?"
-GOOD (for a tutor with no testimonials trying to get leads): "Why aren't past students referring others to you?"
-
-BAD: "Who is your target audience?"
-GOOD (for a D2C brand with a weak CTA trying to boost sales): "What stops people from buying the first time they visit your site?"
-
-BAD: "How long have you been in business?"
-GOOD (for a SaaS with no pricing page trying to generate trials): "Why do visitors leave without signing up for a trial?"
-
-━━━ OPTION RULES ━━━
-- Exactly 4 options per question
-- Options A, B, C = distinct, specific scenarios for a founder in THEIR domain (not generic)
-- Option D = always "Something else / I'm not sure"
-- Max 8 words per option. No full sentences. No vague filler.
-- Options must be mutually exclusive — if someone picks A, they wouldn't also pick B
-
-━━━ CRITICAL RULES ━━━
-❌ NEVER ask: "What is your target audience?" / "What's your budget?" / "How long in business?" / "Describe your product"
-❌ NEVER ask something already answered by the website evidence
-❌ NEVER use corporate jargon — write like you're texting a founder
-❌ NEVER ask about things unrelated to their chosen TASK
-❌ ALL 3 questions must be about DIFFERENT root causes — no overlapping topics
-
-━━━ OUTPUT FORMAT (STRICT) ━━━
-Return ONLY a valid JSON array. No explanation. No preamble. No markdown. Just this:
+OUTPUT — return ONLY this JSON, nothing else:
 [
-  {
-    "question": "Your short question here?",
-    "options": ["Specific option A", "Specific option B", "Specific option C", "Something else / not sure"]
-  },
-  {
-    "question": "Second question?",
-    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
-  },
-  {
-    "question": "Third question?",
-    "options": ["Option A", "Option B", "Option C", "Something else / not sure"]
-  }
+  {"question": "Short question under 10 words?", "options": ["Option A", "Option B", "Option C", "Something else / not sure"]},
+  {"question": "Second question under 10 words?", "options": ["Option A", "Option B", "Option C", "Something else / not sure"]},
+  {"question": "Third question under 10 words?", "options": ["Option A", "Option B", "Option C", "Something else / not sure"]}
 ]
+
+EXAMPLE (for a cake shop trying to get more orders via Instagram):
+[
+  {"question": "How do customers currently find and order from you?", "options": ["Mostly walk-ins / word of mouth", "Instagram DMs but no system", "WhatsApp orders manually", "Something else / not sure"]},
+  {"question": "What's stopping you from posting consistently on Instagram?", "options": ["No time to create content", "Don't know what to post", "Have content but low reach", "Something else / not sure"]},
+  {"question": "Do you have a way to follow up with past customers?", "options": ["No follow-up system at all", "Manually message on WhatsApp", "Email list but rarely used", "Something else / not sure"]}
+]
+
+RULES:
+1. Question MUST be under 10 words — short, direct, conversational
+2. Each question targets a DIFFERENT root cause (traffic / conversion / process / proof / tools)
+3. Questions must reference what you see on their actual website — not generic
+4. Options A/B/C = specific realistic scenarios for their type of business (max 8 words each)
+5. Option D is always exactly: "Something else / not sure"
+6. 3 questions, 4 options each — no more, no less
+7. NO explanations, NO markdown, NO text outside the JSON array
 """
 
 
@@ -306,6 +257,7 @@ async def generate_rca_questions(
     domain: str,
     task: str,
     web_summary: str,
+    session_id: str | None = None,
     max_questions: int = 3,
 ) -> list[dict[str, Any]]:
     """
@@ -334,11 +286,30 @@ async def generate_rca_questions(
                 {"role": "system", "content": _RCA_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
-            temperature=0.3,
-            max_tokens=800,
+            temperature=0.2,
+            max_tokens=600,
         )
         raw = str(result.get("message") or "").strip()
         questions = _parse_questions(raw, max_questions)
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        if input_tokens > 0 or output_tokens > 0:
+            try:
+                from app.doable_claw_agent.stores import save_token_usage
+
+                synthetic_message_id = f"onboarding-rca:{(session_id or 'na').strip()}:{int(time.time() * 1000)}"
+                await save_token_usage(
+                    synthetic_message_id,
+                    "anthropic/claude-sonnet-4-6",
+                    input_tokens,
+                    output_tokens,
+                    stage="onboarding_rca",
+                    provider="openrouter",
+                    session_id=(session_id or "").strip() or None,
+                )
+            except Exception:
+                logger.warning("generate_rca_questions token usage save failed")
         logger.info("generate_rca_questions success", count=len(questions), task=task)
         return questions
     except Exception as exc:

@@ -42,6 +42,14 @@ const TASK_KEY_SEP = '|||';
 
 const toRectObj = (r) => ({ top: r.top, left: r.left, width: r.width, height: r.height });
 
+function firstUnansweredGapIndex(questions = [], answersMap = {}) {
+  if (!Array.isArray(questions) || !questions.length) return -1;
+  for (let i = 0; i < questions.length; i += 1) {
+    if (!answersMap?.[String(i)]) return i;
+  }
+  return -1;
+}
+
 export default function OnboardingApp() {
   const navigate = useNavigate();
 
@@ -92,7 +100,7 @@ export default function OnboardingApp() {
       cancelled = true;
     };
   }, [navigate]);
-  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState } = useOnboardingSession();
+  const { sessionIdRef, ensureSession, updateOnboarding, getSessionState, clearSession } = useOnboardingSession();
   const [selectedOutcome, setSelectedOutcome] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
@@ -133,6 +141,8 @@ export default function OnboardingApp() {
   const [gapQuestions, setGapQuestions] = useState([]);
   const [gapAnswers, setGapAnswers] = useState({});
   const [showGapQuestions, setShowGapQuestions] = useState(false);
+  const [gapCurrentIndex, setGapCurrentIndex] = useState(0);
+  const [gapSavingIndex, setGapSavingIndex] = useState(null);
 
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(() => Boolean(getUserIdFromJwt()));
@@ -149,6 +159,7 @@ export default function OnboardingApp() {
     stopStreaming,
     startForSession,
     clearStepReached,
+    clearResumeArtifacts,
   } = usePlaybookTaskStream({
     ensureSession,
     otpVerified,
@@ -177,6 +188,81 @@ export default function OnboardingApp() {
     setEarlyTools([]);
   };
 
+  const resetJourneyUiState = useCallback(() => {
+    // Hard reset in-memory UI state so "Start New Journey" works immediately
+    // even when we're already on the same route.
+    setSelectedOutcome(null);
+    setSelectedDomain(null);
+    setSelectedTask(null);
+    setShowUrlForm(false);
+    setUrlValue('');
+    setGbpValue('');
+    setUrlTab('website');
+    setShowDeeperDive(false);
+    setScaleQuestions([]);
+    setScaleAnswers({});
+    setScalePage(0);
+    setShowDiagnostic(false);
+    setCurrentQuestion(null);
+    setQuestionIndex(0);
+    setShowPrecision(false);
+    setPrecisionQuestions([]);
+    setPrecisionIndex(0);
+    setPrecisionAnswers({});
+    setShowComplete(false);
+    setShowPlaybook(false);
+    setGapQuestions([]);
+    setGapAnswers({});
+    setGapCurrentIndex(0);
+    setGapSavingIndex(null);
+    setEarlyTools([]);
+    setTaskNodeTransition(null);
+    pendingTaskNodeTransitionRef.current = null;
+    setError(null);
+    setLoading(false);
+    setShowOtpModal(false);
+  }, []);
+
+  const clearOnboardingClientStorage = useCallback(() => {
+    try {
+      const keepKeys = new Set(['ikshan-auth-token', 'luna_user_id']);
+      const keysToDelete = [];
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const k = localStorage.key(i);
+        if (!k || keepKeys.has(k)) continue;
+        if (k.startsWith('life-sorter') || k.startsWith('ikshan-taskstream')) {
+          keysToDelete.push(k);
+        }
+      }
+      keysToDelete.forEach((k) => localStorage.removeItem(k));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const startNewJourney = useCallback(() => {
+    // Clears local onboarding session + any playbook resume flags, then navigates to outcome selection.
+    try {
+      clearStepReached();
+    } catch {
+      /* ignore */
+    }
+    try {
+      // Clear stored onboarding session id + row id (guest + JWT users).
+      // This is the canonical app-level reset for the onboarding journey.
+      clearSession?.();
+    } catch {
+      /* ignore */
+    }
+    // Reset all active UI state first so we never remain stuck on playbook modal/screen.
+    resetJourneyUiState();
+    // Also clear local storage keys related to onboarding/task streams (but keep auth token).
+    clearOnboardingClientStorage();
+
+    // Use ?reset=1 so the onboarding restore effect does not pull old state back in.
+    navigate('/?reset=1', { replace: true });
+  }, [clearOnboardingClientStorage, clearSession, clearStepReached, navigate, resetJourneyUiState]);
+
   /**
    * Session restoration on mount: fetch saved state and restore UI to the appropriate stage.
    * Only runs once on mount.
@@ -191,6 +277,13 @@ export default function OnboardingApp() {
       // If ?reset=1 is in URL, skip restoration and start fresh
       const urlParams = new URLSearchParams(window.location.search);
       if (urlParams.get('reset') === '1') {
+        // Manual refresh/direct hit on /?reset=1 should also purge stale stream/session keys.
+        clearStepReached();
+        clearOnboardingClientStorage();
+        stopStreaming();
+        setShowGapQuestions(false);
+        setGapQuestions([]);
+        setGapAnswers({});
         try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
         return;
       }
@@ -200,6 +293,15 @@ export default function OnboardingApp() {
         if (!state) {
           console.log('[Onboarding Restore] No state to restore');
           return;
+        }
+        if (state.session_id) {
+          sessionIdRef.current = state.session_id;
+        }
+
+        // If backend says we are before playbook stage, purge stale playbook stream
+        // resume keys so refresh cannot wrongly force playbook context.
+        if (state.stage && state.stage !== 'playbook' && state.stage !== 'complete') {
+          clearResumeArtifacts(state.session_id);
         }
 
         // If onboarding is complete, show the completed playbook
@@ -274,30 +376,11 @@ export default function OnboardingApp() {
 
           case 'questions':
             // URL submitted, show scale questions
-            // But first check if scale_answers already exist - if so, we should move to diagnostic
+            // If scale answers already exist, backend has progressed beyond first questionnaire.
+            // Do not call rca-next-question during restore (mutates state and can create loops).
             if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
-              console.log('[Onboarding Restore] Scale answers exist, should be diagnostic stage');
               setScaleQuestions(STATIC_SCALE_QUESTIONS);
-              // Ensure sessionIdRef is set for subsequent API calls
-              if (state.session_id) {
-                sessionIdRef.current = state.session_id;
-              }
-              try {
-                const res = await rcaNextQuestion({ session_id: state.session_id });
-                console.log('[Onboarding Restore] rcaNextQuestion response:', res);
-                if (res?.status === 'question' && res?.question) {
-                  setCurrentQuestion(res.question);
-                  setQuestionIndex(0);
-                  setShowDiagnostic(true);
-                } else if (res?.status === 'complete') {
-                  setShowPlaybook(true);
-                } else {
-                  setShowDeeperDive(true);
-                }
-              } catch (err) {
-                console.warn('[Onboarding Restore] Failed to fetch RCA question:', err);
-                setShowDeeperDive(true);
-              }
+              setShowDeeperDive(true);
             } else {
               setScaleQuestions(STATIC_SCALE_QUESTIONS);
               setShowDeeperDive(true);
@@ -318,31 +401,9 @@ export default function OnboardingApp() {
               setQuestionIndex(answeredCount);
               setShowDiagnostic(true);
             } else {
-              // No current question stored - need to fetch the next RCA question
-              // This happens when all questions in rca_qa have been answered but RCA isn't complete yet
-              console.log('[Onboarding Restore] No current_rca_question, fetching next question for session:', state.session_id);
-              try {
-                const res = await rcaNextQuestion({ session_id: state.session_id });
-                console.log('[Onboarding Restore] rcaNextQuestion response:', res);
-                if (res?.status === 'question' && res?.question) {
-                  setCurrentQuestion(res.question);
-                  const answeredCount = state.rca_qa?.filter((qa) => qa.answer)?.length || 0;
-                  setQuestionIndex(answeredCount);
-                  setShowDiagnostic(true);
-                } else if (res?.status === 'complete') {
-                  // RCA complete, move to playbook
-                  console.log('[Onboarding Restore] RCA already complete, showing playbook');
-                  setShowPlaybook(true);
-                } else {
-                  // Unexpected response, fallback to showing deeper dive
-                  console.warn('[Onboarding Restore] Unexpected RCA response, falling back to scale questions');
-                  setShowDeeperDive(true);
-                }
-              } catch (err) {
-                console.warn('[Onboarding Restore] Failed to fetch RCA question:', err);
-                // Fallback: show deeper dive to let user retry
-                setShowDeeperDive(true);
-              }
+              // No unresolved RCA question to render. Avoid mutating RCA on refresh.
+              // Route user to playbook handoff instead of looping diagnostic calls.
+              setShowPlaybook(true);
             }
             break;
 
@@ -364,7 +425,25 @@ export default function OnboardingApp() {
             // Playbook stage - check if gap questions needed
             if (state.playbook_status === 'awaiting_gap_answers' && state.gap_questions?.length) {
               setGapQuestions(state.gap_questions);
-              setShowGapQuestions(true);
+              setGapAnswers(state.gap_answers_parsed || {});
+              const nextIdx = firstUnansweredGapIndex(state.gap_questions, state.gap_answers_parsed || {});
+              if (nextIdx >= 0) {
+                setGapCurrentIndex(nextIdx);
+                setShowGapQuestions(true);
+              } else {
+                // Answers are already complete; avoid bouncing back to gap UI on refresh.
+                setShowGapQuestions(false);
+                prepareStreaming();
+                try {
+                  const sid = state.session_id || sessionIdRef.current;
+                  if (sid) {
+                    await coreApi.onboardingPlaybookLaunch({ session_id: sid });
+                    await startForSession(sid, { fresh: false });
+                  }
+                } catch {
+                  markRetryNeeded();
+                }
+              }
             }
             setShowPlaybook(true);
             if (state.playbook_status === 'error') {
@@ -409,7 +488,7 @@ export default function OnboardingApp() {
     };
 
     restoreSession();
-  }, []); // Empty dependency array - only run once on mount
+  }, [clearOnboardingClientStorage, clearResumeArtifacts, clearStepReached, stopStreaming]); // run once in practice; deps kept explicit
 
   /** After layout/paint so wide journey content (domains/tasks) is measurable for scroll width. */
   const scheduleScrollToEnd = useCallback(() => {
@@ -628,9 +707,6 @@ export default function OnboardingApp() {
       setShowOtpModal(true);
       return;
     }
-    setShowPlaybook(true);
-    prepareStreaming();
-    setTimeout(scrollToEnd, 50);
     try {
       const sid = await ensureSession();
       await waitForCrawl();
@@ -638,10 +714,24 @@ export default function OnboardingApp() {
       const parsedGap = startData.gap_questions_parsed || startData.gap_questions || [];
       if (Array.isArray(parsedGap) && parsedGap.length) {
         setGapQuestions(parsedGap);
-        setShowGapQuestions(true);
-        stopStreaming();
-        return;
+        const answersMap = startData.gap_answers_parsed || {};
+        setGapAnswers(answersMap);
+        const nextIdx = firstUnansweredGapIndex(parsedGap, answersMap);
+        if (nextIdx >= 0) {
+          setShowPlaybook(true);
+          setGapCurrentIndex(nextIdx);
+          setShowGapQuestions(true);
+          stopStreaming();
+          setTimeout(scrollToEnd, 50);
+          return;
+        }
+        // Backend may briefly return gap_questions with all answers present during transitions.
+        // In that case continue directly to stream start (don't show gap UI again).
+        setShowGapQuestions(false);
       }
+      setShowPlaybook(true);
+      prepareStreaming();
+      setTimeout(scrollToEnd, 50);
       await startForSession(sid, { fresh: false });
     } catch {
       setError('Failed to start playbook.');
@@ -660,32 +750,50 @@ export default function OnboardingApp() {
     handleStartPlaybook({ forceVerified: true }).catch(() => {});
   }, [otpVerified]);
 
-  const handleGapSubmit = async () => {
+  const handleGapAnswer = async (questionIndex, answerKey, answerText = '') => {
     if (!otpVerified) {
       pendingPlaybookLaunchRef.current = true;
       setShowOtpModal(true);
       return;
     }
-    setShowGapQuestions(false);
-    prepareStreaming();
+    setGapAnswers((prev) => ({ ...prev, [questionIndex]: answerKey }));
+    setGapSavingIndex(questionIndex);
     try {
       const sid = await ensureSession();
-      const answersStr = gapQuestions
-        .map((q, i) => {
-          const qNum = typeof q === 'object' && q.id ? q.id : `Q${i + 1}`;
-          return `${qNum}-${gapAnswers[i] || ''}`;
-        })
-        .join(', ');
-      await coreApi.onboardingPlaybookGapAnswers({ session_id: sid, answers: answersStr });
-      await coreApi.onboardingPlaybookLaunch({ session_id: sid });
-      await startForSession(sid, { fresh: false });
+      const saveRes = await coreApi.onboardingPlaybookMcqAnswer({
+        session_id: sid,
+        question_index: questionIndex,
+        answer_key: answerKey,
+        answer_text: answerText,
+      });
+      setGapAnswers(saveRes.gap_answers_parsed || {});
+      if (saveRes.all_answered) {
+        setShowGapQuestions(false);
+        prepareStreaming();
+        await coreApi.onboardingPlaybookLaunch({ session_id: sid });
+        await startForSession(sid, { fresh: false });
+      } else {
+        const nextIdx = Number.isInteger(saveRes.next_question_index)
+          ? saveRes.next_question_index
+          : Math.min(questionIndex + 1, Math.max(0, gapQuestions.length - 1));
+        setGapCurrentIndex(nextIdx);
+      }
     } catch {
-      setError('Failed to submit answers.');
-      stopStreaming();
+      setError('Failed to save answer.');
+    } finally {
+      setGapSavingIndex(null);
     }
   };
 
+  useEffect(() => {
+    if (!showGapQuestions) return;
+    if (gapSavingIndex == null) return;
+    const t = setTimeout(() => setGapSavingIndex(null), 3000);
+    return () => clearTimeout(t);
+  }, [showGapQuestions, gapSavingIndex]);
+
   const handleScaleSubmit = async () => {
+    if (loading) return;
     setLoading(true);
     try {
       const sid = await ensureSession();
@@ -706,11 +814,30 @@ export default function OnboardingApp() {
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);
         setQuestionIndex(0);
-      } else {
-        throw new Error('No diagnostic question available');
+        setShowDiagnostic(true);
+        setTimeout(scrollToEnd, 50);
+        return;
       }
-      setShowDiagnostic(true);
-      setTimeout(scrollToEnd, 50);
+
+      // If no diagnostic question is available, continue the flow gracefully
+      // by moving to precision questions (if present) or directly to playbook.
+      if (res?.status === 'complete') {
+        const precData = await coreApi.onboardingPrecisionStart({ session_id: sid });
+        if (precData?.available && precData?.questions?.length) {
+          setPrecisionQuestions(precData.questions);
+          setPrecisionAnswers({});
+          setPrecisionIndex(0);
+          setCurrentQuestion(precData.questions[0]);
+          setShowPrecision(true);
+          setShowDiagnostic(true);
+          setTimeout(scrollToEnd, 50);
+          return;
+        }
+        handleStartPlaybook();
+        return;
+      }
+
+      throw new Error('No diagnostic question available');
     } catch {
       setError('Failed to start diagnostic.');
     } finally {
@@ -751,6 +878,7 @@ export default function OnboardingApp() {
     }
   };
   const handlePrecisionAnswer = async (answer) => {
+    if (loading) return;
     setLoading(true);
     try {
       const sid = await ensureSession();
@@ -779,6 +907,7 @@ export default function OnboardingApp() {
 
   const handleDeepAnalysis = async () => {
     const url = getWebsiteUrl();
+    const sid = await ensureSession().catch(() => null);
     try {
       if (url) sessionStorage.setItem(PAYMENT_CONTINUE_WEBSITE_URL_KEY, url);
       else sessionStorage.removeItem(PAYMENT_CONTINUE_WEBSITE_URL_KEY);
@@ -808,7 +937,15 @@ export default function OnboardingApp() {
       return;
     }
 
-    navigate('/payment', { state: { intent: 'deep-analysis', websiteUrl: url || undefined } });
+    navigate('/payment', {
+      state: {
+        intent: 'deep-analysis',
+        websiteUrl: url || undefined,
+        // Ensure Payment page "Back" returns user to onboarding/playbook flow.
+        returnTo: '/',
+        returnState: sid ? { resumePlaybook: true, onboardingSessionId: sid } : { resumePlaybook: true },
+      },
+    });
   };
 
   const handleBackToStep1 = () => {
@@ -836,32 +973,20 @@ export default function OnboardingApp() {
           showGapQuestions={showGapQuestions}
           gapQuestions={gapQuestions}
           gapAnswers={gapAnswers}
-          setGapAnswers={setGapAnswers}
-          onGapSubmit={handleGapSubmit}
+          gapCurrentIndex={gapCurrentIndex}
+          gapSavingIndex={gapSavingIndex}
+          onGapAnswer={handleGapAnswer}
           playbookStreaming={playbookStreaming}
           playbookText={playbookText}
           playbookDone={playbookDone}
           playbookResult={playbookResult}
           onDeepAnalysis={handleDeepAnalysis}
-          onGoHome={() => { window.location.href = '/?reset=1'; }}
+          onGoHome={startNewJourney}
           showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}
           retryLabel="Retry Playbook"
           onRetryPlaybook={() => handleStartPlaybook()}
-          onCancel={() => {
-            try {
-              const keepKeys = new Set(['ikshan-auth-token', 'luna_user_id']);
-              const keysToDelete = [];
-              for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (k && !keepKeys.has(k) && (k.startsWith('life-sorter') || k.startsWith('ikshan'))) {
-                  keysToDelete.push(k);
-                }
-              }
-              keysToDelete.forEach((k) => localStorage.removeItem(k));
-            } catch { /* ignore */ }
-            window.location.href = '/?reset=1';
-          }}
+          onCancel={startNewJourney}
         />
       </StageLayout>
     );

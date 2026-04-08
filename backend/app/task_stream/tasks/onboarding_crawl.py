@@ -100,6 +100,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
             domain=onboarding.get("domain", ""),
             task=onboarding.get("task", ""),
             web_summary=web_summary,
+            session_id=session_id,
             max_questions=3,
         )
         if rca_questions:

@@ -316,6 +316,9 @@ async def get_or_create_conversation(
 
     sid = (session_id or "").strip() or None
     uid = (user_id or "").strip() or None
+    # This app uses the onboarding session_id as the canonical "sessionId" actor key.
+    # Store it on the conversation so onboarding + chat history can be unified.
+    oid = sid
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -345,13 +348,14 @@ async def get_or_create_conversation(
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, onboarding_session_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             cid,
             selected_agent,
             sid,
             uid,
+            oid,
             now,
             now,
         )
@@ -372,6 +376,7 @@ async def create_new_conversation(
     *,
     session_id: str | None = None,
     user_id: str | None = None,
+    onboarding_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Always creates a brand-new conversation, never reuses an existing one."""
     selected_agent = (agent_id or "").strip()
@@ -382,19 +387,21 @@ async def create_new_conversation(
 
     sid = (session_id or "").strip() or None
     uid = (user_id or "").strip() or None
+    oid = (onboarding_session_id or "").strip() or None
     cid = str(uuid4())
     now = now_dt()
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO conversations (id, agent_id, session_id, user_id, onboarding_session_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             cid,
             selected_agent,
             sid,
             uid,
+            oid,
             now,
             now,
         )
@@ -462,6 +469,7 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
         "agentId": conv["agent_id"] or DEFAULT_AGENT_ID,
         "sessionId": conv["session_id"],
         "userId": conv["user_id"],
+        "onboardingSessionId": conv.get("onboarding_session_id"),
         "title": conv["title"] or None,
         "messages": [_message_from_row(m) for m in messages],
         "lastStageOutputs": {str(k): str(v) for k, v in stage_outputs.items() if isinstance(v, str)},
@@ -1348,6 +1356,43 @@ def _decode_token_usage_model(encoded: str) -> dict[str, str]:
     }
 
 
+USD_TO_INR: float = 94.0
+
+# USD per token (input/output). Unknown models => cost is NULL and excluded from spend totals.
+# Keep this intentionally small and extend as needed.
+MODEL_PRICING_USD_PER_TOKEN: dict[str, dict[str, float]] = {
+    "gpt-4.1": {"input": 5 / 1_000_000, "output": 15 / 1_000_000},
+    "gpt-4o-mini": {"input": 0.15 / 1_000_000, "output": 0.6 / 1_000_000},
+    "claude-opus-4-6": {"input": 15 / 1_000_000, "output": 75 / 1_000_000},
+    "claude-sonnet-4-6": {"input": 3 / 1_000_000, "output": 15 / 1_000_000},
+}
+
+
+def _pricing_for_model(model_name: str) -> dict[str, float] | None:
+    m = (model_name or "").strip()
+    if not m:
+        return None
+    if m in MODEL_PRICING_USD_PER_TOKEN:
+        return MODEL_PRICING_USD_PER_TOKEN[m]
+    lower = m.lower()
+    for key, rates in MODEL_PRICING_USD_PER_TOKEN.items():
+        k = key.lower()
+        if lower == k or k in lower:
+            return rates
+    return None
+
+
+def _compute_cost_usd_inr(*, model_name: str, input_tokens: int, output_tokens: int) -> tuple[float | None, float | None]:
+    rates = _pricing_for_model(model_name)
+    if not rates:
+        return None, None
+    in_t = max(int(input_tokens or 0), 0)
+    out_t = max(int(output_tokens or 0), 0)
+    usd = in_t * float(rates["input"]) + out_t * float(rates["output"])
+    inr = usd * USD_TO_INR
+    return usd, inr
+
+
 async def save_token_usage(
     message_id: str,
     model: str,
@@ -1360,17 +1405,96 @@ async def save_token_usage(
 ) -> None:
     pool = get_pool()
     encoded_model = _encode_token_usage_model(model, stage, provider)
+    decoded = _decode_token_usage_model(encoded_model)
+    stage_s = decoded["stage"]
+    provider_s = decoded["provider"]
+    model_name = decoded["model"]
+    cost_usd, cost_inr = _compute_cost_usd_inr(model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens)
     async with pool.acquire() as conn:
+        # Best-effort: attach conversation_id and user_id by looking up the messageId in `messages.message`.
+        # This lets admin spend analytics aggregate without requiring every callsite to pass conversation_id.
+        conv_id = None
+        user_id = None
+        try:
+            row = await conn.fetchrow(
+                """
+                SELECT m.conversation_id, c.user_id::text AS user_id
+                FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE (m.message->>'messageId') = $1
+                LIMIT 1
+                """,
+                message_id,
+            )
+            if row:
+                conv_id = str(row.get("conversation_id") or "").strip() or None
+                user_id = str(row.get("user_id") or "").strip() or None
+        except Exception:
+            conv_id = None
+            user_id = None
+        # Fallback for onboarding/task-stream flows where token row may be saved
+        # before/without a persisted chat message row for `message_id`.
+        # In these paths, `session_id` is the stable actor key.
+        if (not conv_id or not user_id) and (session_id or "").strip():
+            sid = str(session_id).strip()
+            try:
+                row2 = await conn.fetchrow(
+                    """
+                    SELECT c.id AS conversation_id, c.user_id::text AS user_id
+                    FROM conversations c
+                    WHERE c.session_id = $1 OR c.onboarding_session_id = $1
+                    ORDER BY c.updated_at DESC NULLS LAST, c.created_at DESC
+                    LIMIT 1
+                    """,
+                    sid,
+                )
+                if row2:
+                    if not conv_id:
+                        conv_id = str(row2.get("conversation_id") or "").strip() or None
+                    if not user_id:
+                        user_id = str(row2.get("user_id") or "").strip() or None
+            except Exception:
+                pass
+            # If conversation isn't present for this session yet, still attribute usage
+            # to authenticated onboarding user so admin spend dashboard can include it.
+            if not user_id:
+                try:
+                    row3 = await conn.fetchrow(
+                        """
+                        SELECT user_id::text AS user_id
+                        FROM onboarding
+                        WHERE session_id = $1
+                        LIMIT 1
+                        """,
+                        sid,
+                    )
+                    if row3:
+                        user_id = str(row3.get("user_id") or "").strip() or None
+                except Exception:
+                    pass
         await conn.execute(
             """
-            INSERT INTO token_usage (message_id, session_id, model, input_tokens, output_tokens)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO token_usage (
+                message_id, session_id, model,
+                conversation_id, user_id,
+                stage, provider, model_name,
+                input_tokens, output_tokens,
+                cost_usd, cost_inr
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             """,
             message_id,
             (session_id or "").strip() or None,
             encoded_model,
+            conv_id,
+            user_id,
+            stage_s,
+            provider_s,
+            model_name,
             input_tokens,
             output_tokens,
+            cost_usd,
+            cost_inr,
         )
 
 
@@ -1415,15 +1539,20 @@ async def get_token_usage(message_id: str) -> dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT model, input_tokens, output_tokens, created_at FROM token_usage WHERE message_id = $1 ORDER BY created_at ASC",
+            """
+            SELECT model, stage, provider, model_name, input_tokens, output_tokens, created_at
+            FROM token_usage
+            WHERE message_id = $1
+            ORDER BY created_at ASC
+            """,
             message_id,
         )
     entries = [
         (
             lambda decoded: {
-                "stage": decoded["stage"],
-                "provider": decoded["provider"],
-                "model": decoded["model"],
+                "stage": str(r["stage"] or decoded["stage"]),
+                "provider": str(r["provider"] or decoded["provider"]),
+                "model": str(r["model_name"] or decoded["model"]),
                 "inputTokens": r["input_tokens"],
                 "outputTokens": r["output_tokens"],
                 "createdAt": str(r["created_at"]),

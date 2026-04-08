@@ -633,8 +633,15 @@ CREATE TABLE IF NOT EXISTS token_usage (
     message_id      TEXT        NOT NULL,
     session_id      TEXT,
     model           TEXT        NOT NULL DEFAULT '',
+    conversation_id TEXT,
+    user_id         TEXT,
+    stage           TEXT        NOT NULL DEFAULT '',
+    provider        TEXT        NOT NULL DEFAULT '',
+    model_name      TEXT        NOT NULL DEFAULT '',
     input_tokens    INTEGER     NOT NULL DEFAULT 0,
     output_tokens   INTEGER     NOT NULL DEFAULT 0,
+    cost_usd        NUMERIC(12,6),
+    cost_inr        NUMERIC(12,2),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -646,6 +653,14 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_session_id
     ON token_usage (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id_created_at
+    ON token_usage (user_id, created_at DESC)
+    WHERE user_id IS NOT NULL AND BTRIM(user_id) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_conversation_id_created_at
+    ON token_usage (conversation_id, created_at DESC)
+    WHERE conversation_id IS NOT NULL AND BTRIM(conversation_id) <> '';
 
 COMMENT ON TABLE token_usage IS
     'LLM token usage per assistant message, one row per model call.';
@@ -793,7 +808,10 @@ VALUES
     ('auth.super_admin_emails', '[]', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
     ('auth.admin_emails', '[]', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
     ('auth.super_admin_phones', '[]', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
-    ('auth.admin_phones', '[]', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)')
+    ('auth.admin_phones', '[]', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)'),
+    ('sms.report_link_enabled', 'false', 'Enable sending deep-analysis report conversation link via SMS after completion'),
+    ('sms.report_link_sender_id', '', '2Factor transactional sender ID (required when sms.report_link_enabled=true)'),
+    ('sms.report_link_template_name', '', '2Factor template name for report link SMS. Uses VAR1 as conversation URL.')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS otp_provider_logs (
@@ -811,6 +829,34 @@ CREATE TABLE IF NOT EXISTS otp_provider_logs (
 
 CREATE INDEX IF NOT EXISTS idx_otp_provider_logs_created_at
     ON otp_provider_logs (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS report_link_sms_logs (
+    id                  BIGSERIAL PRIMARY KEY,
+    conversation_id     TEXT NOT NULL,
+    user_id             TEXT,
+    phone_masked        TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'sent', 'skipped', 'error')),
+    provider            TEXT NOT NULL DEFAULT '2factor',
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    error               TEXT NOT NULL DEFAULT '',
+    sent_at             TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT report_link_sms_logs_conversation_unique UNIQUE (conversation_id)
+);
+
+DROP TRIGGER IF EXISTS trg_report_link_sms_logs_updated_at ON report_link_sms_logs;
+CREATE TRIGGER trg_report_link_sms_logs_updated_at
+    BEFORE UPDATE ON report_link_sms_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_user_id
+    ON report_link_sms_logs (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_status
+    ON report_link_sms_logs (status, created_at DESC);
 
 -- ── Task stream (Postgres backend; TASKSTREAM_BACKEND=postgres) ───────────────
 CREATE TABLE IF NOT EXISTS task_stream_streams (

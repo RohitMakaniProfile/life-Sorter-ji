@@ -17,8 +17,10 @@ export default function DiagnosticStage({ currentQuestion, questionIndex, scaleA
               <button
                 key={i}
                 type="button"
+                disabled={loading}
                 className={clsx(
                   'flex shrink-0 cursor-pointer items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-left text-[13px] leading-snug transition-all',
+                  loading && 'cursor-not-allowed opacity-60',
                   scaleAnswers[questionIndex] === opt
                     ? 'border-[rgba(168,130,255,0.5)] bg-[rgba(168,130,255,0.2)] text-white'
                     : 'border-white/15 bg-white/[0.06] text-white/80 hover:border-white/25 hover:bg-white/[0.1]',
@@ -45,8 +47,10 @@ export default function DiagnosticStage({ currentQuestion, questionIndex, scaleA
             <input
               className="min-w-0 flex-1 border-none bg-transparent text-[13px] leading-snug text-white/80 outline-none placeholder:text-white/50"
               type="text"
+              disabled={loading}
               placeholder="Type your own"
               onKeyDown={(e) => {
+                if (loading) return;
                 if (e.key === 'Enter' && e.target.value.trim()) {
                   onAnswer(e.target.value.trim());
                   e.target.value = '';
@@ -55,8 +59,10 @@ export default function DiagnosticStage({ currentQuestion, questionIndex, scaleA
             />
             <button
               type="button"
+              disabled={loading}
               className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-white/10 text-white/60 transition-all hover:bg-white/20 hover:text-white"
               onClick={(e) => {
+                if (loading) return;
                 const input = e.currentTarget.previousElementSibling;
                 if (input.value.trim()) {
                   onAnswer(input.value.trim());
@@ -97,8 +103,10 @@ export default function DiagnosticStage({ currentQuestion, questionIndex, scaleA
         <input
           className="min-w-0 flex-1 border-none bg-transparent px-5 py-3.5 text-sm text-white outline-none placeholder:text-white/30"
           type="text"
+          disabled={loading}
           placeholder="Message Clawbot"
           onKeyDown={(e) => {
+            if (loading) return;
             if (e.key === 'Enter' && e.target.value.trim()) {
               onAnswer(e.target.value.trim());
               e.target.value = '';
@@ -107,8 +115,10 @@ export default function DiagnosticStage({ currentQuestion, questionIndex, scaleA
         />
         <button
           type="button"
+          disabled={loading}
           className="m-1 flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full border-none bg-gradient-to-br from-[#a882ff] to-[#7c4dff] text-white transition-[filter,transform] hover:scale-105 hover:brightness-110"
           onClick={(e) => {
+            if (loading) return;
             const input = e.currentTarget.previousElementSibling;
             if (input.value.trim()) {
               onAnswer(input.value.trim());

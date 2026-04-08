@@ -637,6 +637,10 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     agent_id = str(body.get("agentId") or "").strip() or None
     session_id = str(body.get("sessionId") or "").strip() or None
     user_id = str(body.get("userId") or "").strip() or None
+    onboarding_session_id = str(body.get("onboardingSessionId") or "").strip() or None
+    if not onboarding_session_id:
+        # In this app, sessionId is the onboarding session_id actor key.
+        onboarding_session_id = session_id
 
     if not agent_id:
         raise HTTPException(status_code=400, detail="agentId is required")
@@ -644,7 +648,12 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     # ── Plan access check ──
     await _enforce_agent_access(req, agent_id)
 
-    conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id)
+    conv = await create_new_conversation(
+        agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        onboarding_session_id=onboarding_session_id,
+    )
     conversation_id = conv["id"]
 
     initial = AGENT_INITIAL_MESSAGES.get(agent_id)

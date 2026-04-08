@@ -251,6 +251,8 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
   const { steps, checklist } = parsePlaybookSteps(playbookText);
   const playbookTitle = parsePlaybookTitle(playbookText);
   const oneLever = parsePlaybookOneLever(playbookText);
+  const hasVerdictData = overallScore !== null || scorecardRows.length > 0 || messagingGaps.length > 0 || Boolean(audit?.trim());
+  const quickWinFallbackSteps = steps.slice(0, 2);
 
   const toggleCheck = (k: string) => setChecks(p => ({ ...p, [k]: !p[k] }));
 
@@ -392,6 +394,32 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
             </div>
           )}
 
+          {!hasVerdictData && playbookText && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              padding: '1.1rem 1.25rem', marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+                Executive Verdict
+              </div>
+              {oneLever ? (
+                <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(oneLever)}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="playbook-markdown" style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.8 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {formatSectionMarkdown(
+                      quickWinFallbackSteps[0]
+                        ? quickWinFallbackSteps[0].subsections.map((s: any) => s.content).join('\n\n')
+                        : playbookText.slice(0, 800)
+                    )}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </div>
+          )}
+
           <button onClick={() => setPhase('quickwin')} style={{
             width: '100%', padding: '13px 24px',
             background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
@@ -424,20 +452,26 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(quickWinSection)}</ReactMarkdown>
               </div>
             </div>
-          ) : steps[0] && (
-            <div style={{
-              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
-              borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem', marginBottom: 10,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-            }}>
-              <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 6 }}>Start Here — Step 1</div>
-              <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 10 }}>{steps[0].title}</div>
-              {steps[0].subsections.map((sub: any, i: number) => (
-                <div key={i} style={{ marginBottom: 8 }}>
-                  {sub.label && <div style={{ fontSize: 9, color: sub.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{sub.icon} {sub.label}</div>}
-                  <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+          ) : quickWinFallbackSteps.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 10 }}>
+              {quickWinFallbackSteps.map((step: any, idx: number) => (
+                <div key={step.num} style={{
+                  background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+                  borderTop: '3px solid #7c3aed', padding: '1.1rem 1.4rem',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                }}>
+                  <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+                    {idx === 0 ? 'Start Here' : 'Next Best Move'} — Step {step.num}
                   </div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 10 }}>{step.title}</div>
+                  {step.subsections.slice(0, 2).map((sub: any, i: number) => (
+                    <div key={i} style={{ marginBottom: 8 }}>
+                      {sub.label && <div style={{ fontSize: 9, color: sub.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{sub.icon} {sub.label}</div>}
+                      <div className="playbook-markdown" style={{ fontSize: '0.845rem', color: '#374151', lineHeight: 1.75 }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatSectionMarkdown(sub.content)}</ReactMarkdown>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>

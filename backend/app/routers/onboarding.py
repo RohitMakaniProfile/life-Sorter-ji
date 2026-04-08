@@ -5,6 +5,7 @@ POST /api/v1/onboarding — create a new session + onboarding row, or patch onbo
 from typing import Any, Optional
 
 import json
+import time
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -69,6 +70,7 @@ class OnboardingStateResponse(BaseModel):
     playbook_error: Optional[str] = None
     gap_questions: Optional[list[dict[str, Any]]] = None
     gap_answers: Optional[str] = None
+    gap_answers_parsed: Optional[dict[str, str]] = None
 
 
 def _as_dict(v: Any) -> dict[str, Any]:
@@ -100,15 +102,15 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
     if onboarding_completed_at:
         return "complete"
 
-    # Check if playbook is complete or generating
-    playbook_status = str(row.get("playbook_status") or "")
-    if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers", "error"):
-        return "playbook"
-
     # Check if precision questions are in progress
     precision_status = str(row.get("precision_status") or "")
     if precision_status == "awaiting_answers":
         return "precision"
+
+    # Check if playbook is complete or generating
+    playbook_status = str(row.get("playbook_status") or "")
+    if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers", "error"):
+        return "playbook"
 
     # Parse rca_qa - handle both raw JSONB (dict/list) and JSON strings
     rca_qa_raw = row.get("rca_qa")
@@ -116,10 +118,16 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
 
     rca_summary = str(row.get("rca_summary") or "")
     if rca_qa and len(rca_qa) > 0:
-        # If there's no rca_summary, RCA is still in progress
-        if not rca_summary:
+        has_unanswered = any(
+            isinstance(qa, dict)
+            and str(qa.get("question") or "").strip()
+            and not str(qa.get("answer") or "").strip()
+            for qa in rca_qa
+        )
+        if has_unanswered:
             return "diagnostic"
-        # If RCA is complete, next is precision or playbook
+        # All RCA questions are answered. Even if summary text is not persisted yet,
+        # do not send the UI back to diagnostic (prevents repeat question loops).
         if precision_status:
             return "precision" if precision_status == "awaiting_answers" else "playbook"
         return "playbook"
@@ -174,8 +182,23 @@ async def get_onboarding_state(
     async with pool.acquire() as conn:
         row = None
 
-        # Prefer user_id lookup if available
-        if uid:
+        # Prefer explicit session_id lookup when provided (stable refresh/resume target).
+        if sid:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    session_id, outcome, domain, task, website_url, gbp_url,
+                    scale_answers, rca_qa, rca_summary, rca_handoff,
+                    precision_questions, precision_answers, precision_status,
+                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
+                FROM onboarding
+                WHERE session_id = $1
+                """,
+                sid,
+            )
+
+        # Fall back to user_id lookup if session_id didn't resolve
+        if not row and uid:
             row = await conn.fetchrow(
                 """
                 SELECT
@@ -189,21 +212,6 @@ async def get_onboarding_state(
                 LIMIT 1
                 """,
                 uid,
-            )
-
-        # Fall back to session_id lookup
-        if not row and sid:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    session_id, outcome, domain, task, website_url, gbp_url,
-                    scale_answers, rca_qa, rca_summary, rca_handoff,
-                    precision_questions, precision_answers, precision_status,
-                    playbook_status, playbook_error, gap_questions, gap_answers, onboarding_completed_at
-                FROM onboarding
-                WHERE session_id = $1
-                """,
-                sid,
             )
 
         if not row:
@@ -231,6 +239,13 @@ async def get_onboarding_state(
                     )
                     break
 
+        gap_answers_map = _parse_gap_answers_map(row_dict.get("gap_answers"))
+        gap_answers_parsed = {
+            k: str(v.get("answer_key") or "")
+            for k, v in gap_answers_map.items()
+            if str(v.get("answer_key") or "")
+        }
+
         return OnboardingStateResponse(
             session_id=str(row_dict.get("session_id") or ""),
             stage=stage,
@@ -249,6 +264,7 @@ async def get_onboarding_state(
             playbook_error=str(row_dict.get("playbook_error") or "") or None,
             gap_questions=gap_questions if gap_questions else None,
             gap_answers=str(row_dict.get("gap_answers") or "") or None,
+            gap_answers_parsed=gap_answers_parsed or None,
         )
 
 
@@ -374,6 +390,7 @@ class LaunchOnboardingPlaybookResponse(BaseModel):
     session_id: str
     stage: str  # gap_questions | started
     gap_questions_parsed: list[GapQuestion] = []
+    gap_answers_parsed: dict[str, str] = {}
     stream_id: str = ""
     stream_status: str = ""
     message: str = ""
@@ -382,6 +399,24 @@ class LaunchOnboardingPlaybookResponse(BaseModel):
 class SubmitOnboardingGapAnswersResponse(BaseModel):
     session_id: str
     stage: str  # ready
+    message: str = ""
+
+
+class SubmitOnboardingMcqAnswerRequest(BaseModel):
+    session_id: Optional[str] = None
+    question_index: int
+    answer_key: str
+    answer_text: str = ""
+
+
+class SubmitOnboardingMcqAnswerResponse(BaseModel):
+    session_id: str
+    stage: str  # awaiting_gap_answers | ready
+    all_answered: bool = False
+    answered_count: int = 0
+    total_questions: int = 0
+    next_question_index: Optional[int] = None
+    gap_answers_parsed: dict[str, str] = {}
     message: str = ""
 
 
@@ -476,6 +511,139 @@ def _parse_gap_questions(agent_output: str) -> list[dict[str, Any]]:
     return parsed
 
 
+def _fallback_mcq_questions(domain: str, task: str) -> list[dict[str, Any]]:
+    domain_label = domain.strip() or "your domain"
+    task_label = task.strip() or "your key goal"
+    return [
+        {
+            "id": "Q1",
+            "label": "Target Customer",
+            "question": f"For {task_label}, who is your primary customer segment in {domain_label}?",
+            "options": [
+                "A) Local businesses / SMB",
+                "B) Mid-market companies",
+                "C) Enterprise accounts",
+                "D) Mixed audience",
+            ],
+        },
+        {
+            "id": "Q2",
+            "label": "Urgent Pain",
+            "question": "Which pain point is the most urgent to solve right now?",
+            "options": [
+                "A) Low lead volume",
+                "B) Poor conversion quality",
+                "C) Slow sales cycle",
+                "D) Retention / repeat revenue",
+            ],
+        },
+        {
+            "id": "Q3",
+            "label": "Growth Channel",
+            "question": "Which channel drives the highest intent users today?",
+            "options": [
+                "A) Organic (SEO/content)",
+                "B) Paid ads",
+                "C) Outbound / direct outreach",
+                "D) Referrals / communities",
+            ],
+        },
+        {
+            "id": "Q4",
+            "label": "Execution Capacity",
+            "question": "How much execution bandwidth can you allocate weekly?",
+            "options": [
+                "A) <5 hours",
+                "B) 5-10 hours",
+                "C) 10-20 hours",
+                "D) Dedicated team capacity",
+            ],
+        },
+    ]
+
+
+def _normalize_mcq_questions(parsed: list[dict[str, Any]], domain: str, task: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for i, raw in enumerate(parsed):
+        if not isinstance(raw, dict):
+            continue
+        qid = str(raw.get("id") or f"Q{i + 1}").strip() or f"Q{i + 1}"
+        label = str(raw.get("label") or "").strip() or f"Question {i + 1}"
+        question = str(raw.get("question") or "").strip()
+        options_raw = raw.get("options") if isinstance(raw.get("options"), list) else []
+        options: list[str] = []
+        for oi, opt in enumerate(options_raw):
+            text = str(opt or "").strip()
+            if not text:
+                continue
+            if len(text) >= 2 and text[0] in "ABCDE" and text[1] == ")":
+                options.append(text)
+            else:
+                letter = chr(ord("A") + oi)
+                options.append(f"{letter}) {text}")
+        options = options[:4]
+        if question and len(options) >= 2:
+            normalized.append(
+                {
+                    "id": qid,
+                    "label": label,
+                    "question": question,
+                    "options": options,
+                }
+            )
+        if len(normalized) >= 4:
+            break
+    if len(normalized) < 3:
+        return _fallback_mcq_questions(domain=domain, task=task)
+    return normalized[:4]
+
+
+def _parse_gap_answers_map(raw: Any) -> dict[str, dict[str, str]]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for k, v in parsed.items():
+        if not isinstance(v, dict):
+            continue
+        key = str(k).strip()
+        if not key:
+            continue
+        out[key] = {
+            "answer_key": str(v.get("answer_key") or "").strip(),
+            "answer_text": str(v.get("answer_text") or "").strip(),
+            "question_id": str(v.get("question_id") or "").strip(),
+            "question": str(v.get("question") or "").strip(),
+        }
+    return out
+
+
+def _serialize_gap_answers_text(
+    questions: list[dict[str, Any]],
+    answers_map: dict[str, dict[str, str]],
+) -> str:
+    lines: list[str] = []
+    for i, q in enumerate(questions):
+        key = str(i)
+        ans = answers_map.get(key) or {}
+        if not str(ans.get("answer_key") or "").strip():
+            continue
+        qid = str(q.get("id") or f"Q{i + 1}").strip() or f"Q{i + 1}"
+        answer_key = str(ans.get("answer_key") or "").strip()
+        answer_text = str(ans.get("answer_text") or "").strip()
+        if answer_text:
+            lines.append(f"{qid}-{answer_key}) {answer_text}")
+        else:
+            lines.append(f"{qid}-{answer_key}")
+    return "\n".join(lines).strip()
+
+
 
 async def _resolve_onboarding_session_id(
     *,
@@ -528,7 +696,12 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, outcome, domain, task, scale_answers, rca_qa, rca_summary, rca_handoff, crawl_run_id, crawl_cache_key
+            SELECT
+                id, outcome, domain, task,
+                scale_answers, rca_qa, rca_summary, rca_handoff,
+                crawl_run_id, crawl_cache_key,
+                playbook_status, gap_questions, gap_answers,
+                precision_status, precision_questions, precision_answers
             FROM onboarding
             WHERE session_id = $1
             """,
@@ -550,6 +723,68 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
         ]
         rca_summary = str(row.get("rca_summary") or "")
         rca_handoff = str(row.get("rca_handoff") or "")
+        playbook_status = str(row.get("playbook_status") or "").strip()
+        existing_gap_questions = _as_list(row.get("gap_questions"))
+        existing_answers_map = _parse_gap_answers_map(row.get("gap_answers"))
+        precision_status = str(row.get("precision_status") or "").strip()
+        precision_questions = _as_list(row.get("precision_questions"))
+        precision_answers = _as_list(row.get("precision_answers"))
+
+        if precision_status == "awaiting_answers" and precision_questions:
+            answered = len([x for x in precision_answers if isinstance(x, dict) and str(x.get("answer") or "").strip()])
+            if answered < len(precision_questions):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Complete precision questions before starting playbook.",
+                )
+
+        if existing_gap_questions:
+            answered_count = sum(
+                1
+                for i in range(len(existing_gap_questions))
+                if str((existing_answers_map.get(str(i)) or {}).get("answer_key") or "").strip()
+            )
+            total_count = len(existing_gap_questions)
+            if answered_count >= total_count and total_count > 0:
+                await conn.execute(
+                    """
+                    UPDATE onboarding
+                    SET playbook_status = 'ready',
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    onboarding_id,
+                )
+                return StartOnboardingPlaybookResponse(
+                    session_id=sid,
+                    stage="ready",
+                    gap_questions_parsed=[],
+                    message="Ready to generate playbook.",
+                )
+
+            await conn.execute(
+                """
+                UPDATE onboarding
+                SET playbook_status = 'awaiting_gap_answers',
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                onboarding_id,
+            )
+            return StartOnboardingPlaybookResponse(
+                session_id=sid,
+                stage="gap_questions",
+                gap_questions_parsed=[GapQuestion(**g) for g in existing_gap_questions],
+                message="Answer these quick MCQs to personalize your playbook.",
+            )
+
+        if playbook_status in ("ready", "started", "generating", "complete"):
+            return StartOnboardingPlaybookResponse(
+                session_id=sid,
+                stage="ready",
+                gap_questions_parsed=[],
+                message="Ready to generate playbook.",
+            )
 
         outcome_label = {
             "lead-generation": "Lead Generation",
@@ -614,14 +849,34 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
             crawl_summary=crawl_summary,
             rca_handoff=rca_handoff,
         )
+        try:
+            from app.doable_claw_agent.stores import save_token_usage
+
+            usage = phase0.get("usage") if isinstance(phase0, dict) else {}
+            input_tokens = int((usage or {}).get("prompt_tokens") or 0)
+            output_tokens = int((usage or {}).get("completion_tokens") or 0)
+            if input_tokens > 0 or output_tokens > 0:
+                await save_token_usage(
+                    f"onboarding-gap:{sid}:{int(time.time() * 1000)}",
+                    "anthropic/claude-sonnet-4-6",
+                    input_tokens,
+                    output_tokens,
+                    stage="onboarding_gap",
+                    provider="openrouter",
+                    session_id=sid,
+                )
+        except Exception:
+            logger.warning("phase0 gap token usage save failed", session_id=sid)
         gap_text = str(phase0.get("gap_questions_text") or "")
-        parsed = _parse_gap_questions(gap_text) if gap_text else []
+        parsed_raw = _parse_gap_questions(gap_text) if gap_text else []
+        parsed = _normalize_mcq_questions(parsed_raw, domain=domain, task=task)
 
         if parsed:
             await conn.execute(
                 """
                 UPDATE onboarding
                 SET gap_questions = $1::jsonb,
+                    gap_answers = '',
                     playbook_status = 'awaiting_gap_answers',
                     updated_at = NOW()
                 WHERE id = $2
@@ -633,7 +888,7 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
                 session_id=sid,
                 stage="gap_questions",
                 gap_questions_parsed=[GapQuestion(**g) for g in parsed],
-                message="I need a few more details before building your playbook.",
+                message="Answer these quick MCQs to personalize your playbook.",
             )
 
         await conn.execute(
@@ -665,15 +920,33 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
     """
     require_request_user(request)
 
+    sid = await _resolve_onboarding_session_id(
+        request=request,
+        provided_session_id=body.session_id,
+    )
     prep = await _prepare_onboarding_playbook(
         request=request,
-        body=StartOnboardingPlaybookRequest(session_id=body.session_id),
+        body=StartOnboardingPlaybookRequest(session_id=sid),
     )
     if prep.stage == "gap_questions":
+        from app.db import get_pool
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT gap_answers FROM onboarding WHERE session_id = $1 LIMIT 1",
+                sid,
+            )
+        answers_map = _parse_gap_answers_map(row.get("gap_answers") if row else None)
+        gap_answers_parsed = {
+            k: str(v.get("answer_key") or "")
+            for k, v in answers_map.items()
+            if str(v.get("answer_key") or "")
+        }
         return LaunchOnboardingPlaybookResponse(
             session_id=prep.session_id,
             stage="gap_questions",
             gap_questions_parsed=prep.gap_questions_parsed,
+            gap_answers_parsed=gap_answers_parsed,
             message=prep.message,
         )
 
@@ -698,6 +971,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         session_id=prep.session_id,
         stage="started",
         gap_questions_parsed=[],
+        gap_answers_parsed={},
         stream_id=str(started.get("stream_id") or ""),
         stream_status=str(started.get("status") or ""),
         message="Playbook generation started.",
@@ -745,6 +1019,101 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
         )
 
     return SubmitOnboardingGapAnswersResponse(session_id=sid, stage="ready", message="Gap answers saved.")
+
+
+@router.post("/playbook/mcq-answer", response_model=SubmitOnboardingMcqAnswerResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def onboarding_playbook_mcq_answer(
+    request: Request,
+    body: SubmitOnboardingMcqAnswerRequest = Body(...),
+):
+    """
+    Save one MCQ answer at a time for playbook personalization.
+    """
+    from app.db import get_pool
+
+    require_request_user(request)
+    sid = await _resolve_onboarding_session_id(
+        request=request,
+        provided_session_id=body.session_id,
+    )
+    idx = int(body.question_index)
+    if idx < 0:
+        raise HTTPException(status_code=400, detail="question_index must be >= 0")
+    answer_key = str(body.answer_key or "").strip().upper()
+    if answer_key not in {"A", "B", "C", "D", "E"}:
+        raise HTTPException(status_code=400, detail="answer_key must be one of A,B,C,D,E")
+    answer_text = str(body.answer_text or "").strip()
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, gap_questions, gap_answers
+            FROM onboarding
+            WHERE session_id = $1
+            LIMIT 1
+            """,
+            sid,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Onboarding session not found")
+
+        gap_questions = _as_list(row.get("gap_questions"))
+        if not gap_questions:
+            raise HTTPException(status_code=400, detail="No MCQ questions available for this session")
+        if idx >= len(gap_questions):
+            raise HTTPException(status_code=400, detail="Invalid question_index")
+
+        q = gap_questions[idx] if isinstance(gap_questions[idx], dict) else {}
+        answers_map = _parse_gap_answers_map(row.get("gap_answers"))
+        answers_map[str(idx)] = {
+            "answer_key": answer_key,
+            "answer_text": answer_text,
+            "question_id": str(q.get("id") or f"Q{idx + 1}"),
+            "question": str(q.get("question") or ""),
+        }
+
+        answered_count = sum(
+            1
+            for i in range(len(gap_questions))
+            if str((answers_map.get(str(i)) or {}).get("answer_key") or "").strip()
+        )
+        total_questions = len(gap_questions)
+        all_answered = answered_count >= total_questions and total_questions > 0
+        stage = "ready" if all_answered else "awaiting_gap_answers"
+        next_question_index = None if all_answered else answered_count
+        serialized_map = json.dumps(answers_map)
+        serialized_text = _serialize_gap_answers_text(gap_questions, answers_map)
+
+        await conn.execute(
+            """
+            UPDATE onboarding
+            SET gap_answers = $1,
+                playbook_status = $2,
+                updated_at = NOW()
+            WHERE id = $3
+            """,
+            serialized_map if serialized_map else serialized_text,
+            stage,
+            row.get("id"),
+        )
+
+    simple_map = {
+        k: str(v.get("answer_key") or "")
+        for k, v in answers_map.items()
+        if str(v.get("answer_key") or "")
+    }
+    return SubmitOnboardingMcqAnswerResponse(
+        session_id=sid,
+        stage=stage,
+        all_answered=all_answered,
+        answered_count=answered_count,
+        total_questions=total_questions,
+        next_question_index=next_question_index,
+        gap_answers_parsed=simple_map,
+        message="MCQ answer saved.",
+    )
 
 
 @router.post("/precision/start", response_model=StartOnboardingPrecisionResponse)

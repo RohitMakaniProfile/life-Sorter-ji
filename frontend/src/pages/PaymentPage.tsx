@@ -337,7 +337,13 @@ export default function PaymentPage() {
       <header className="relative z-10 flex items-center justify-between px-6 py-5 sm:px-10">
         <button
           type="button"
-          onClick={() => navigate(-1)}
+          onClick={() => {
+            if (state.returnTo) {
+              navigate(state.returnTo, { replace: false, state: state.returnState ?? {} });
+              return;
+            }
+            navigate(-1);
+          }}
           className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 backdrop-blur-md transition hover:bg-white/[0.08] hover:text-white"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">

@@ -150,6 +150,7 @@ export interface UiAgent {
 export interface SystemConfigEntry {
   key: string;
   value: string;
+  type?: 'string' | 'number' | 'boolean' | 'json' | 'markdown' | string;
   description: string;
   updatedAt: string;
 }
@@ -219,6 +220,72 @@ export interface AdminSkillCallDetail extends AdminSkillCallSummary {
   output: unknown[];
   error: string;
   created_at: string;
+}
+
+// ── Admin Token Usage / Spend Analytics ───────────────────────────────────────
+
+export interface AdminTokenUsageSummary {
+  from: string;
+  to: string;
+  inputTokens: number;
+  outputTokens: number;
+  spendInrPriced: number;
+  unknownPricingCalls: number;
+  users: number;
+}
+
+export interface AdminTokenUsageUserRow {
+  user_id: string;
+  email: string;
+  phone_number: string;
+  name: string;
+  spendInrPriced: number;
+  inputTokens: number;
+  outputTokens: number;
+  unknownPricingCalls: number;
+  lastAt: string;
+}
+
+export interface AdminTokenUsageUsersResponse {
+  users: AdminTokenUsageUserRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminTokenUsageConversationRow {
+  conversation_id: string;
+  title: string;
+  spendInrPriced: number;
+  inputTokens: number;
+  outputTokens: number;
+  unknownPricingCalls: number;
+  lastAt: string;
+}
+
+export interface AdminTokenUsageConversationsResponse {
+  conversations: AdminTokenUsageConversationRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminTokenUsageCallRow {
+  message_id: string;
+  stage: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  costInr: number | null;
+  createdAt: string;
+}
+
+export interface AdminTokenUsageCallsResponse {
+  calls: AdminTokenUsageCallRow[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface AdminUser {

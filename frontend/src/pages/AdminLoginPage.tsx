@@ -89,8 +89,10 @@ export default function AdminLoginPage() {
     try {
       window.google.accounts.id.initialize({
         client_id: clientId,
-        // Opt-in to FedCM (Google is migrating One Tap / prompts).
-        use_fedcm_for_prompt: true,
+        // FedCM can get stuck in some browser/account setups; use classic popup flow.
+        use_fedcm_for_prompt: false,
+        ux_mode: 'popup',
+        cancel_on_tap_outside: true,
         callback: async (response: any) => {
           setLoading(true);
           try {

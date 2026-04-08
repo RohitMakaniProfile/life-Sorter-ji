@@ -428,9 +428,9 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
                 await conn.execute(
                     """
                     UPDATE onboarding
-                    SET user_id = $1::uuid,
+                    SET user_id = $1,
                         updated_at = NOW()
-                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
+                    WHERE session_id = $2 AND (user_id IS NULL OR user_id::text = $1)
                     """,
                     user_id,
                     onboarding_session_id,
@@ -551,9 +551,9 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
                 await conn.execute(
                     """
                     UPDATE onboarding
-                    SET user_id = $1::uuid,
+                    SET user_id = $1,
                         updated_at = NOW()
-                    WHERE session_id = $2 AND (user_id IS NULL OR user_id = $1::uuid)
+                    WHERE session_id = $2 AND (user_id IS NULL OR user_id::text = $1)
                     """,
                     user_id,
                     req.session_id,

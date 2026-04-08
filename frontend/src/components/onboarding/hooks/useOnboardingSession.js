@@ -5,11 +5,12 @@ import { getUserIdFromJwt } from '../../../api/authSession';
 
 const STORAGE_SESSION_KEY = 'life-sorter-onboarding-session-id';
 const STORAGE_ROW_ID_KEY = 'life-sorter-onboarding-row-id';
+const SESSION_STORAGE_SESSION_KEY = 'life-sorter-onboarding-session-id:volatile';
 
 function readStoredSessionId() {
   if (typeof window === 'undefined') return null;
   try {
-    return localStorage.getItem(STORAGE_SESSION_KEY);
+    return localStorage.getItem(STORAGE_SESSION_KEY) || sessionStorage.getItem(SESSION_STORAGE_SESSION_KEY);
   } catch {
     return null;
   }
@@ -19,6 +20,7 @@ function persistSessionPayload(data) {
   if (typeof window === 'undefined' || !data?.session_id) return;
   try {
     localStorage.setItem(STORAGE_SESSION_KEY, data.session_id);
+    sessionStorage.setItem(SESSION_STORAGE_SESSION_KEY, data.session_id);
     if (data.id) localStorage.setItem(STORAGE_ROW_ID_KEY, data.id);
   } catch {
     /* ignore quota / private mode */
@@ -118,6 +120,7 @@ export function useOnboardingSession() {
         try {
           localStorage.removeItem(STORAGE_SESSION_KEY);
           localStorage.removeItem(STORAGE_ROW_ID_KEY);
+          sessionStorage.removeItem(SESSION_STORAGE_SESSION_KEY);
         } catch {
           /* ignore */
         }
@@ -136,6 +139,7 @@ export function useOnboardingSession() {
     try {
       localStorage.removeItem(STORAGE_SESSION_KEY);
       localStorage.removeItem(STORAGE_ROW_ID_KEY);
+      sessionStorage.removeItem(SESSION_STORAGE_SESSION_KEY);
     } catch {
       /* ignore */
     }
