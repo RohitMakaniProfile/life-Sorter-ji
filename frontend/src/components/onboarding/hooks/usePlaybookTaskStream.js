@@ -82,7 +82,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
   }, []);
 
   const startForSession = useCallback(
-    async (sid, { fresh = true } = {}) => {
+    async (sid, { fresh = true, forceFresh = false } = {}) => {
       const onboardingId = sid;
       if (!onboardingId) return;
 
@@ -156,6 +156,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         onboardingId,
         payload: { onboarding_id: onboardingId },
         maxRetries: 4,
+        forceFresh,
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks,
       });

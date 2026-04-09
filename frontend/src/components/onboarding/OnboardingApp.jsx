@@ -707,7 +707,7 @@ export default function OnboardingApp() {
       // Launch playbook immediately (parallel execution)
       try {
         await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
-        await startForSession(sid, { fresh: false });
+        await startForSession(sid, { fresh: true, forceFresh: true });
       } catch (launchErr) {
         console.error('Playbook launch error:', launchErr);
         setError('Failed to start playbook generation.');

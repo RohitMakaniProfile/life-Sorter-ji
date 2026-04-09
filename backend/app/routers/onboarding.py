@@ -884,7 +884,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         payload={"onboarding_id": onboarding_id},
         onboarding_id=onboarding_id,
         user_id=None,
-        resume_if_exists=True,
+        force_fresh=True,
     )
     return LaunchOnboardingPlaybookResponse(
         onboarding_id=onboarding_id,

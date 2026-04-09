@@ -254,7 +254,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
                   if (last?.role === 'assistant') {
-                    updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token } as any;
+                    updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') } as any;
                   }
                   return updated;
                 });
@@ -376,7 +376,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                           const updated = [...prev];
                           const last = updated[updated.length - 1];
                           if (last?.role === 'assistant') {
-                            updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                            updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') };
                           }
                           return updated;
                         });
@@ -564,7 +564,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
               if (last?.role === 'assistant') {
                 updated[updated.length - 1] = {
                   ...last,
-                  content: (last.content ?? '') + token,
+                  content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, ''),
                 } as any;
               }
               return updated;
@@ -607,7 +607,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                       const updated = [...prev];
                       const last = updated[updated.length - 1];
                       if (last?.role === 'assistant') {
-                        updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token } as any;
+                        updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') } as any;
                       }
                       return updated;
                     });
@@ -810,7 +810,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
                   if (last?.role === 'assistant') {
-                    updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                    updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') };
                   }
                   return updated;
                 });
@@ -941,7 +941,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                       if (last?.role === 'assistant') {
                         updated[updated.length - 1] = {
                           ...last,
-                          content: (last.content ?? '') + token,
+                          content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, ''),
                         } as any;
                       }
                       return updated;
@@ -1036,7 +1036,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
                 if (last?.role === 'assistant') {
-                  updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                  updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') };
                 }
                 return updated;
               });
@@ -1190,7 +1190,7 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
                 if (last?.role === 'assistant') {
-                  updated[updated.length - 1] = { ...last, content: (last.content ?? '') + token };
+                  updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') };
                 }
                 return updated;
               });
