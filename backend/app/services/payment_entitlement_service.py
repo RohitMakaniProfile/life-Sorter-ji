@@ -11,14 +11,21 @@ from uuid import UUID
 
 import asyncpg
 import structlog
+from pypika import Order, Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.sql_builder import build_query
 from app.services import juspay_service
 from app.services import admin_subscription_grant_service
 
 logger = structlog.get_logger()
 
 CAPABILITY_KEYS = ("deep_analysis_report", "execute_report_actions")
+plans_t = Table("plans")
+user_plan_grants_t = Table("user_plan_grants")
+payment_checkout_context_t = Table("payment_checkout_context")
 
 # ── Agent → required capability mapping ──────────────────────────────────────
 # Agents listed here require the user to have an active plan grant whose
@@ -53,16 +60,22 @@ async def check_agent_access(*, user_id: str, agent_id: str) -> dict[str, Any]:
     uid = _as_uuid(user_id)
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT g.id, p.slug AS plan_slug, p.name AS plan_name, g.credits_remaining, p.features
-            FROM user_plan_grants g
-            JOIN plans p ON p.id = g.plan_id AND p.active = TRUE
-            WHERE g.user_id = $1
-            ORDER BY g.granted_at DESC
-            """,
-            uid,
+        grants_q = build_query(
+            PostgreSQLQuery.from_(user_plan_grants_t)
+            .join(plans_t)
+            .on((plans_t.id == user_plan_grants_t.plan_id) & (plans_t.active == True))
+            .select(
+                user_plan_grants_t.id,
+                plans_t.slug.as_("plan_slug"),
+                plans_t.name.as_("plan_name"),
+                user_plan_grants_t.credits_remaining,
+                plans_t.features,
+            )
+            .where(user_plan_grants_t.user_id == Parameter("%s"))
+            .orderby(user_plan_grants_t.granted_at, order=Order.desc),
+            [uid],
         )
+        rows = await conn.fetch(grants_q.sql, *grants_q.params)
 
     if not rows:
         # No grants at all — find which plan they need
@@ -97,14 +110,13 @@ async def _find_plan_for_capability(capability: str) -> dict[str, Any]:
     """Find the cheapest active plan that grants the given capability."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT slug, name, price_inr, features
-            FROM plans
-            WHERE active = TRUE
-            ORDER BY price_inr ASC
-            """
+        plans_for_cap_q = build_query(
+            PostgreSQLQuery.from_(plans_t)
+            .select(plans_t.slug, plans_t.name, plans_t.price_inr, plans_t.features)
+            .where(plans_t.active == True)
+            .orderby(plans_t.price_inr, order=Order.asc)
         )
+        rows = await conn.fetch(plans_for_cap_q.sql, *plans_for_cap_q.params)
     for r in rows:
         row_dict = dict(r)
         feats = _normalize_features(row_dict.get("features", {}))
@@ -146,19 +158,22 @@ async def save_checkout_context(*, order_id: str, user_id: str, plan_id: str) ->
     pool = get_pool()
     uid = _as_uuid(user_id)
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO payment_checkout_context (order_id, user_id, plan_id)
-            VALUES ($1, $2, $3::uuid)
-            ON CONFLICT (order_id) DO UPDATE SET
-                user_id = EXCLUDED.user_id,
-                plan_id = EXCLUDED.plan_id,
-                created_at = NOW()
-            """,
-            order_id.strip(),
-            uid,
-            plan_id,
+        save_checkout_q = build_query(
+            PostgreSQLQuery.into(payment_checkout_context_t)
+            .columns(
+                payment_checkout_context_t.order_id,
+                payment_checkout_context_t.user_id,
+                payment_checkout_context_t.plan_id,
+                payment_checkout_context_t.created_at,
+            )
+            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s").cast("uuid"), fn.Now())
+            .on_conflict(payment_checkout_context_t.order_id)
+            .do_update(payment_checkout_context_t.user_id)
+            .do_update(payment_checkout_context_t.plan_id)
+            .do_update(payment_checkout_context_t.created_at),
+            [order_id.strip(), uid, plan_id],
         )
+        await conn.execute(save_checkout_q.sql, *save_checkout_q.params)
 
 
 async def complete_plan_purchase(*, user_id: str, order_id: str) -> Tuple[bool, Optional[str]]:
@@ -172,42 +187,56 @@ async def complete_plan_purchase(*, user_id: str, order_id: str) -> Tuple[bool, 
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        ctx = await conn.fetchrow(
-            """
-            SELECT plan_id, user_id
-            FROM payment_checkout_context
-            WHERE order_id = $1 AND user_id = $2
-            """,
-            oid,
-            uid,
+        checkout_ctx_q = build_query(
+            PostgreSQLQuery.from_(payment_checkout_context_t)
+            .select(payment_checkout_context_t.plan_id, payment_checkout_context_t.user_id)
+            .where(payment_checkout_context_t.order_id == Parameter("%s"))
+            .where(payment_checkout_context_t.user_id == Parameter("%s")),
+            [oid, uid],
         )
+        ctx = await conn.fetchrow(checkout_ctx_q.sql, *checkout_ctx_q.params)
 
-        existing = await conn.fetchrow(
-            """
-            SELECT user_id, plan_id, credits_remaining
-            FROM user_plan_grants
-            WHERE order_id = $1
-            """,
-            oid,
+        existing_grant_q = build_query(
+            PostgreSQLQuery.from_(user_plan_grants_t)
+            .select(
+                user_plan_grants_t.user_id,
+                user_plan_grants_t.plan_id,
+                user_plan_grants_t.credits_remaining,
+            )
+            .where(user_plan_grants_t.order_id == Parameter("%s")),
+            [oid],
         )
+        existing = await conn.fetchrow(existing_grant_q.sql, *existing_grant_q.params)
 
         if existing:
             if existing["user_id"] != uid:
                 return False, "This payment was already applied to another account."
-            await conn.execute("DELETE FROM payment_checkout_context WHERE order_id = $1", oid)
+            delete_checkout_ctx_q = build_query(
+                PostgreSQLQuery.from_(payment_checkout_context_t)
+                .delete()
+                .where(payment_checkout_context_t.order_id == Parameter("%s")),
+                [oid],
+            )
+            await conn.execute(delete_checkout_ctx_q.sql, *delete_checkout_ctx_q.params)
             return True, None
 
         if not ctx:
             return False, "No pending checkout for this order. Start checkout again while signed in."
 
-        plan_row = await conn.fetchrow(
-            """
-            SELECT id, slug, price_inr, credits_allocation, features
-            FROM plans
-            WHERE id = $1 AND active = TRUE
-            """,
-            ctx["plan_id"],
+        active_plan_q = build_query(
+            PostgreSQLQuery.from_(plans_t)
+            .select(
+                plans_t.id,
+                plans_t.slug,
+                plans_t.price_inr,
+                plans_t.credits_allocation,
+                plans_t.features,
+            )
+            .where(plans_t.id == Parameter("%s"))
+            .where(plans_t.active == True),
+            [ctx["plan_id"]],
         )
+        plan_row = await conn.fetchrow(active_plan_q.sql, *active_plan_q.params)
         if not plan_row:
             return False, "Plan is no longer available."
 
@@ -222,23 +251,39 @@ async def complete_plan_purchase(*, user_id: str, order_id: str) -> Tuple[bool, 
 
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO user_plan_grants (user_id, plan_id, order_id, credits_remaining)
-                VALUES ($1, $2::uuid, $3, $4)
-                """,
-                uid,
-                str(plan_row["id"]),
-                oid,
-                credits_alloc,
+            insert_grant_q = build_query(
+                PostgreSQLQuery.into(user_plan_grants_t)
+                .columns(
+                    user_plan_grants_t.user_id,
+                    user_plan_grants_t.plan_id,
+                    user_plan_grants_t.order_id,
+                    user_plan_grants_t.credits_remaining,
+                )
+                .insert(
+                    Parameter("%s"),
+                    Parameter("%s").cast("uuid"),
+                    Parameter("%s"),
+                    Parameter("%s"),
+                ),
+                [uid, str(plan_row["id"]), oid, credits_alloc],
             )
-            await conn.execute("DELETE FROM payment_checkout_context WHERE order_id = $1", oid)
+            await conn.execute(insert_grant_q.sql, *insert_grant_q.params)
+            delete_checkout_ctx_q = build_query(
+                PostgreSQLQuery.from_(payment_checkout_context_t)
+                .delete()
+                .where(payment_checkout_context_t.order_id == Parameter("%s")),
+                [oid],
+            )
+            await conn.execute(delete_checkout_ctx_q.sql, *delete_checkout_ctx_q.params)
     except asyncpg.exceptions.UniqueViolationError:
         async with pool.acquire() as conn2:
-            g = await conn2.fetchrow(
-                "SELECT user_id FROM user_plan_grants WHERE order_id = $1",
-                oid,
+            existing_owner_q = build_query(
+                PostgreSQLQuery.from_(user_plan_grants_t)
+                .select(user_plan_grants_t.user_id)
+                .where(user_plan_grants_t.order_id == Parameter("%s")),
+                [oid],
             )
+            g = await conn2.fetchrow(existing_owner_q.sql, *existing_owner_q.params)
         if g and g["user_id"] == uid:
             return True, None
         return False, "This payment was already applied."
@@ -272,26 +317,27 @@ async def get_user_entitlements(*, user_id: str) -> dict[str, Any]:
     admin_grant = await admin_subscription_grant_service.get_admin_subscription_grant(user_id)
 
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                g.id,
-                g.user_id,
-                g.order_id,
-                g.credits_remaining,
-                g.granted_at,
-                p.slug AS plan_slug,
-                p.name AS plan_name,
-                p.price_inr,
-                p.credits_allocation,
-                p.features
-            FROM user_plan_grants g
-            JOIN plans p ON p.id = g.plan_id
-            WHERE g.user_id = $1
-            ORDER BY g.granted_at DESC
-            """,
-            uid,
+        entitlements_q = build_query(
+            PostgreSQLQuery.from_(user_plan_grants_t)
+            .join(plans_t)
+            .on(plans_t.id == user_plan_grants_t.plan_id)
+            .select(
+                user_plan_grants_t.id,
+                user_plan_grants_t.user_id,
+                user_plan_grants_t.order_id,
+                user_plan_grants_t.credits_remaining,
+                user_plan_grants_t.granted_at,
+                plans_t.slug.as_("plan_slug"),
+                plans_t.name.as_("plan_name"),
+                plans_t.price_inr,
+                plans_t.credits_allocation,
+                plans_t.features,
+            )
+            .where(user_plan_grants_t.user_id == Parameter("%s"))
+            .orderby(user_plan_grants_t.granted_at, order=Order.desc),
+            [uid],
         )
+        rows = await conn.fetch(entitlements_q.sql, *entitlements_q.params)
 
     grant_rows: list[dict[str, Any]] = []
     for r in rows:

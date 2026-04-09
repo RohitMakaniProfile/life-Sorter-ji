@@ -8,12 +8,49 @@ import traceback
 from urllib.parse import urlparse
 
 from asyncpg import UniqueViolationError
+from pypika import Order, Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.repositories.core_tables import (
+    SQL_ADD_PLAN_RUN_ERROR_MESSAGE_COLUMN,
+    SQL_ADD_PLAN_RUN_EXECUTION_MESSAGE_COLUMN,
+    SQL_ADD_STREAMED_TEXT_COLUMN,
+    SQL_ADVISORY_CONVERSATION_LOCK,
+    SQL_APPEND_STREAMED_TEXT,
+    SQL_CLAIM_PLAN_RUN_FOR_EXECUTION,
+    SQL_CLEANUP_STALE_EXECUTING_PLANS,
+    SQL_INSERT_AGENT,
+    SQL_INSERT_AGENT_RETURNING,
+    SQL_INSERT_MESSAGE,
+    SQL_INSERT_PLAN_RUN_RETURNING,
+    SQL_INSERT_SESSION_USER_LINK,
+    SQL_INSERT_SKILL_CALL_RETURNING_ID,
+    SQL_PROMOTE_SESSION_CONVERSATIONS,
+    SQL_RELINK_SKILL_CALL_MESSAGE,
+    SQL_RESET_SKILL_CALL_FOR_RETRY,
+    SQL_SELECT_DURATION_MS_FROM_STARTED_AT,
+    SQL_SELECT_FORM_MESSAGES,
+    SQL_SELECT_MESSAGE_BY_MESSAGE_ID,
+    SQL_SELECT_SKILL_OUTPUT_BY_ID,
+    SQL_SELECT_SKILL_TIMING_AND_OUTPUT,
+    SQL_UPDATE_MESSAGE_CONTENT,
+    SQL_UPDATE_MESSAGE_META,
+    SQL_UPDATE_SKILL_CALL_RESULT,
+    SQL_UPDATE_STAGE_OUTPUTS,
+)
+from app.sql_builder import build_query
 from app.services import form_flow_service
 
 
 DEFAULT_AGENT_ID = "research-orchestrator"
+agents_t = Table("agents")
+conversations_t = Table("conversations")
+messages_t = Table("messages")
+skill_calls_t = Table("skill_calls")
+plan_runs_t = Table("plan_runs")
+token_usage_t = Table("token_usage")
 
 DEFAULT_AGENTS = [
     {
@@ -119,14 +156,7 @@ async def ensure_default_agents() -> None:
         now = now_dt()
         for a in DEFAULT_AGENTS:
             await conn.execute(
-                """
-                INSERT INTO agents (
-                    id, name, emoji, description,
-                    allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-                    created_at, updated_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                ON CONFLICT (id) DO NOTHING
-                """,
+                SQL_INSERT_AGENT,
                 a["id"],
                 a["name"],
                 a["emoji"],
@@ -143,7 +173,10 @@ async def list_agents() -> list[dict[str, Any]]:
     await ensure_default_agents()
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM agents ORDER BY updated_at DESC")
+        list_agents_q = build_query(
+            PostgreSQLQuery.from_(agents_t).select("*").orderby(agents_t.updated_at, order=Order.desc)
+        )
+        rows = await conn.fetch(list_agents_q.sql, *list_agents_q.params)
     out: list[dict[str, Any]] = []
     for r in rows:
         out.append(
@@ -163,7 +196,11 @@ async def list_agents() -> list[dict[str, Any]]:
 async def get_agent(agent_id: str) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
+        get_agent_q = build_query(
+            PostgreSQLQuery.from_(agents_t).select("*").where(agents_t.id == Parameter("%s")),
+            [agent_id],
+        )
+        r = await conn.fetchrow(get_agent_q.sql, *get_agent_q.params)
     if not r:
         return None
     return {
@@ -183,14 +220,7 @@ async def create_agent(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                INSERT INTO agents (
-                    id, name, emoji, description,
-                    allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-                    created_at, updated_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                RETURNING *
-                """,
+                SQL_INSERT_AGENT_RETURNING,
                 payload["id"],
                 payload["name"],
                 payload.get("emoji") or "🤖",
@@ -282,17 +312,20 @@ async def delete_agent(agent_id: str) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
         # First, reassign any conversations that reference this agent to the default agent
-        await conn.execute(
-            """
-            UPDATE conversations
-            SET agent_id = $2, updated_at = NOW()
-            WHERE agent_id = $1
-            """,
-            agent_id,
-            DEFAULT_AGENT_ID,
+        reassign_q = build_query(
+            PostgreSQLQuery.update(conversations_t)
+            .set(conversations_t.agent_id, Parameter("%s"))
+            .set(conversations_t.updated_at, fn.Now())
+            .where(conversations_t.agent_id == Parameter("%s")),
+            [DEFAULT_AGENT_ID, agent_id],
         )
+        await conn.execute(reassign_q.sql, *reassign_q.params)
         # Now delete the agent
-        result = await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
+        delete_agent_q = build_query(
+            PostgreSQLQuery.from_(agents_t).delete().where(agents_t.id == Parameter("%s")),
+            [agent_id],
+        )
+        result = await conn.execute(delete_agent_q.sql, *delete_agent_q.params)
     return result.endswith("1")
 
 
@@ -320,22 +353,29 @@ async def get_or_create_conversation(
     pool = get_pool()
     async with pool.acquire() as conn:
         if uid:
-            existing_for_user = await conn.fetchrow(
-                "SELECT id FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
-                uid,
+            existing_for_user_q = build_query(
+                PostgreSQLQuery.from_(conversations_t)
+                .select(conversations_t.id)
+                .where(conversations_t.user_id == Parameter("%s"))
+                .orderby(conversations_t.updated_at, order=Order.desc)
+                .limit(1),
+                [uid],
             )
+            existing_for_user = await conn.fetchrow(existing_for_user_q.sql, *existing_for_user_q.params)
             if existing_for_user:
                 return await get_conversation(str(existing_for_user["id"])) or {}
         elif sid:
+            existing_for_session_q = build_query(
+                PostgreSQLQuery.from_(conversations_t)
+                .select(conversations_t.id)
+                .where(conversations_t.session_id == Parameter("%s"))
+                .where(conversations_t.user_id.isnull())
+                .orderby(conversations_t.updated_at, order=Order.desc)
+                .limit(1),
+                [sid],
+            )
             existing_for_session = await conn.fetchrow(
-                """
-                SELECT id
-                FROM conversations
-                WHERE session_id = $1 AND user_id IS NULL
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                sid,
+                existing_for_session_q.sql, *existing_for_session_q.params
             )
             if existing_for_session:
                 return await get_conversation(str(existing_for_session["id"])) or {}
@@ -343,18 +383,27 @@ async def get_or_create_conversation(
     cid = str(uuid4())
     now = now_dt()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            cid,
-            selected_agent,
-            sid,
-            uid,
-            now,
-            now,
+        create_conversation_q = build_query(
+            PostgreSQLQuery.into(conversations_t)
+            .columns(
+                conversations_t.id,
+                conversations_t.agent_id,
+                conversations_t.session_id,
+                conversations_t.user_id,
+                conversations_t.created_at,
+                conversations_t.updated_at,
+            )
+            .insert(
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+            ),
+            [cid, selected_agent, sid, uid, now, now],
         )
+        await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
@@ -386,18 +435,27 @@ async def create_new_conversation(
     now = now_dt()
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO conversations (id, agent_id, session_id, user_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            cid,
-            selected_agent,
-            sid,
-            uid,
-            now,
-            now,
+        create_conversation_q = build_query(
+            PostgreSQLQuery.into(conversations_t)
+            .columns(
+                conversations_t.id,
+                conversations_t.agent_id,
+                conversations_t.session_id,
+                conversations_t.user_id,
+                conversations_t.created_at,
+                conversations_t.updated_at,
+            )
+            .insert(
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+            ),
+            [cid, selected_agent, sid, uid, now, now],
         )
+        await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
@@ -446,13 +504,21 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
         return None
     pool = get_pool()
     async with pool.acquire() as conn:
-        conv = await conn.fetchrow("SELECT * FROM conversations WHERE id = $1", conversation_id)
+        conv_q = build_query(
+            PostgreSQLQuery.from_(conversations_t).select("*").where(conversations_t.id == Parameter("%s")),
+            [conversation_id],
+        )
+        conv = await conn.fetchrow(conv_q.sql, *conv_q.params)
         if not conv:
             return None
-        messages = await conn.fetch(
-            "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY message_index ASC",
-            conversation_id,
+        messages_q = build_query(
+            PostgreSQLQuery.from_(messages_t)
+            .select("*")
+            .where(messages_t.conversation_id == Parameter("%s"))
+            .orderby(messages_t.message_index, order=Order.asc),
+            [conversation_id],
         )
+        messages = await conn.fetch(messages_q.sql, *messages_q.params)
 
     stage_outputs = _to_obj(conv["last_stage_outputs"], {})
     stage_outputs = stage_outputs if isinstance(stage_outputs, dict) else {}
@@ -475,17 +541,17 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", conversation_id)
-            next_index = await conn.fetchval(
-                "SELECT COALESCE(MAX(message_index), -1) + 1 FROM messages WHERE conversation_id = $1",
-                conversation_id,
+            # Keep raw SQL: advisory lock helper uses Postgres-specific hashtext/pg_advisory_xact_lock.
+            await conn.execute(SQL_ADVISORY_CONVERSATION_LOCK, conversation_id)
+            next_index_q = build_query(
+                PostgreSQLQuery.from_(messages_t)
+                .select(fn.Coalesce(fn.Max(messages_t.message_index), -1) + 1)
+                .where(messages_t.conversation_id == Parameter("%s")),
+                [conversation_id],
             )
+            next_index = await conn.fetchval(next_index_q.sql, *next_index_q.params)
             await conn.execute(
-                """
-                INSERT INTO messages (
-                    conversation_id, message_index, role, content, created_at, output_file, message
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
-                """,
+                SQL_INSERT_MESSAGE,
                 conversation_id,
                 int(next_index),
                 message["role"],
@@ -494,26 +560,27 @@ async def _insert_message(conversation_id: str, message: dict[str, Any]) -> None
                 message.get("outputFile"),
                 _json_dumps(message),
             )
-            await conn.execute(
-                "UPDATE conversations SET updated_at = $2 WHERE id = $1",
-                conversation_id,
-                now_dt(),
+            touch_conversation_q = build_query(
+                PostgreSQLQuery.update(conversations_t)
+                .set(conversations_t.updated_at, Parameter("%s"))
+                .where(conversations_t.id == Parameter("%s")),
+                [now_dt(), conversation_id],
             )
+            await conn.execute(touch_conversation_q.sql, *touch_conversation_q.params)
 
 
 async def _get_active_form_id(conversation_id: str) -> str | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT message
-            FROM messages
-            WHERE conversation_id = $1
-            ORDER BY message_index DESC
-            LIMIT 1
-            """,
-            conversation_id,
+        active_form_q = build_query(
+            PostgreSQLQuery.from_(messages_t)
+            .select(messages_t.message)
+            .where(messages_t.conversation_id == Parameter("%s"))
+            .orderby(messages_t.message_index, order=Order.desc)
+            .limit(1),
+            [conversation_id],
         )
+        row = await conn.fetchrow(active_form_q.sql, *active_form_q.params)
     if not row:
         return None
     payload = _to_obj(row["message"], {})
@@ -525,17 +592,7 @@ async def _get_active_form_id(conversation_id: str) -> str | None:
 async def _get_form_messages(conversation_id: str, form_id: str) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT *
-            FROM messages
-            WHERE conversation_id = $1
-              AND (message->>'formId') = $2
-            ORDER BY message_index ASC
-            """,
-            conversation_id,
-            form_id,
-        )
+        rows = await conn.fetch(SQL_SELECT_FORM_MESSAGES, conversation_id, form_id)
     return [_message_from_row(r) for r in rows]
 
 
@@ -583,13 +640,21 @@ async def append_message(conversation_id: str, role: str, content: str, **extra:
     if role == "user":
         pool = get_pool()
         async with pool.acquire() as conn:
-            title = await conn.fetchval("SELECT title FROM conversations WHERE id = $1", conversation_id)
+            title_q = build_query(
+                PostgreSQLQuery.from_(conversations_t)
+                .select(conversations_t.title)
+                .where(conversations_t.id == Parameter("%s")),
+                [conversation_id],
+            )
+            title = await conn.fetchval(title_q.sql, *title_q.params)
             if not title:
-                await conn.execute(
-                    "UPDATE conversations SET title = $2 WHERE id = $1",
-                    conversation_id,
-                    content[:60],
+                update_title_q = build_query(
+                    PostgreSQLQuery.update(conversations_t)
+                    .set(conversations_t.title, Parameter("%s"))
+                    .where(conversations_t.id == Parameter("%s")),
+                    [content[:60], conversation_id],
                 )
+                await conn.execute(update_title_q.sql, *update_title_q.params)
 
     if active_form_id and form_flow_service.should_end_form(
         conversation_id=conversation_id,
@@ -620,16 +685,7 @@ async def update_message_content(
 ) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT message_index, message
-            FROM messages
-            WHERE conversation_id = $1 AND (message->>'messageId') = $2
-            LIMIT 1
-            """,
-            conversation_id,
-            message_id,
-        )
+        row = await conn.fetchrow(SQL_SELECT_MESSAGE_BY_MESSAGE_ID, conversation_id, message_id)
         if not row:
             return False
 
@@ -643,31 +699,27 @@ async def update_message_content(
             payload["skillsCount"] = skills_count
 
         await conn.execute(
-            """
-            UPDATE messages
-            SET content = $3,
-                output_file = COALESCE($4, output_file),
-                message = $5::jsonb
-            WHERE conversation_id = $1 AND message_index = $2
-            """,
+            SQL_UPDATE_MESSAGE_CONTENT,
             conversation_id,
             row["message_index"],
             content,
             output_file,
             _json_dumps(payload),
         )
-        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
+        touch_conversation_q = build_query(
+            PostgreSQLQuery.update(conversations_t)
+            .set(conversations_t.updated_at, Parameter("%s"))
+            .where(conversations_t.id == Parameter("%s")),
+            [now_dt(), conversation_id],
+        )
+        await conn.execute(touch_conversation_q.sql, *touch_conversation_q.params)
     return True
 
 
 async def update_message_meta(conversation_id: str, message_id: str, kind: str | None, plan_id: str | None) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT message_index, message FROM messages WHERE conversation_id = $1 AND (message->>'messageId') = $2 LIMIT 1",
-            conversation_id,
-            message_id,
-        )
+        row = await conn.fetchrow(SQL_SELECT_MESSAGE_BY_MESSAGE_ID, conversation_id, message_id)
         if not row:
             return False
         payload = _to_obj(row["message"], {})
@@ -679,12 +731,18 @@ async def update_message_meta(conversation_id: str, message_id: str, kind: str |
             payload["planId"] = plan_id
 
         await conn.execute(
-            "UPDATE messages SET message = $3::jsonb WHERE conversation_id = $1 AND message_index = $2",
+            SQL_UPDATE_MESSAGE_META,
             conversation_id,
             row["message_index"],
             _json_dumps(payload),
         )
-        await conn.execute("UPDATE conversations SET updated_at = $2 WHERE id = $1", conversation_id, now_dt())
+        touch_conversation_q = build_query(
+            PostgreSQLQuery.update(conversations_t)
+            .set(conversations_t.updated_at, Parameter("%s"))
+            .where(conversations_t.id == Parameter("%s")),
+            [now_dt(), conversation_id],
+        )
+        await conn.execute(touch_conversation_q.sql, *touch_conversation_q.params)
     return True
 
 
@@ -692,7 +750,7 @@ async def save_stage_outputs(conversation_id: str, stage_outputs: dict[str, str]
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE conversations SET last_stage_outputs = $2::jsonb, last_output_file = $3, updated_at = $4 WHERE id = $1",
+            SQL_UPDATE_STAGE_OUTPUTS,
             conversation_id,
             _json_dumps(stage_outputs or {}),
             output_file,
@@ -703,7 +761,13 @@ async def save_stage_outputs(conversation_id: str, stage_outputs: dict[str, str]
 async def get_stage_outputs(conversation_id: str) -> dict[str, str]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT last_stage_outputs FROM conversations WHERE id = $1", conversation_id)
+        stage_outputs_q = build_query(
+            PostgreSQLQuery.from_(conversations_t)
+            .select(conversations_t.last_stage_outputs)
+            .where(conversations_t.id == Parameter("%s")),
+            [conversation_id],
+        )
+        row = await conn.fetchrow(stage_outputs_q.sql, *stage_outputs_q.params)
     if not row:
         return {}
     obj = _to_obj(row["last_stage_outputs"], {})
@@ -722,27 +786,43 @@ async def list_conversations(
     uid = (user_id or "").strip()
     async with pool.acquire() as conn:
         if uid:
-            rows = await conn.fetch(
-                "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
-                uid,
+            conversations_q = build_query(
+                PostgreSQLQuery.from_(conversations_t)
+                .select("*")
+                .where(conversations_t.user_id == Parameter("%s"))
+                .orderby(conversations_t.updated_at, order=Order.desc),
+                [uid],
             )
+            rows = await conn.fetch(conversations_q.sql, *conversations_q.params)
         elif sid:
-            rows = await conn.fetch(
-                """
-                SELECT *
-                FROM conversations
-                WHERE session_id = $1 OR (session_id = $1 AND user_id IS NULL)
-                ORDER BY updated_at DESC
-                """,
-                sid,
+            # Keep equivalent predicate shape for behavior parity.
+            conversations_q = build_query(
+                PostgreSQLQuery.from_(conversations_t)
+                .select("*")
+                .where(
+                    (conversations_t.session_id == Parameter("%s"))
+                    | ((conversations_t.session_id == Parameter("%s")) & conversations_t.user_id.isnull())
+                )
+                .orderby(conversations_t.updated_at, order=Order.desc),
+                [sid, sid],
             )
+            rows = await conn.fetch(conversations_q.sql, *conversations_q.params)
         else:
-            rows = await conn.fetch("SELECT * FROM conversations ORDER BY updated_at DESC")
+            conversations_q = build_query(
+                PostgreSQLQuery.from_(conversations_t).select("*").orderby(conversations_t.updated_at, order=Order.desc)
+            )
+            rows = await conn.fetch(conversations_q.sql, *conversations_q.params)
     out: list[dict[str, Any]] = []
     for r in rows:
         count = 0
         async with pool.acquire() as conn:
-            count = int(await conn.fetchval("SELECT COUNT(*) FROM messages WHERE conversation_id = $1", r["id"]))
+            message_count_q = build_query(
+                PostgreSQLQuery.from_(messages_t)
+                .select(fn.Count("*"))
+                .where(messages_t.conversation_id == Parameter("%s")),
+                [r["id"]],
+            )
+            count = int(await conn.fetchval(message_count_q.sql, *message_count_q.params))
         out.append(
             {
                 "id": r["id"],
@@ -761,7 +841,11 @@ async def list_conversations(
 async def delete_conversation(conversation_id: str) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
+        delete_conversation_q = build_query(
+            PostgreSQLQuery.from_(conversations_t).delete().where(conversations_t.id == Parameter("%s")),
+            [conversation_id],
+        )
+        result = await conn.execute(delete_conversation_q.sql, *delete_conversation_q.params)
     return result.endswith("1")
 
 
@@ -776,13 +860,7 @@ async def create_skill_call(
     started_at = now_dt()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            INSERT INTO skill_calls (
-                conversation_id, message_id, skill_id, run_id,
-                input, state, output, started_at, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5::jsonb,'running',$6::jsonb,$7,NOW(),NOW())
-            RETURNING id
-            """,
+            SQL_INSERT_SKILL_CALL_RETURNING_ID,
             conversation_id,
             message_id,
             skill_id,
@@ -809,26 +887,7 @@ async def reset_skill_call_for_retry(
     """
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE skill_calls
-            SET state       = 'running',
-                error       = NULL,
-                ended_at    = NULL,
-                duration_ms = NULL,
-                output      = '[]'::jsonb,
-                run_id      = $2,
-                message_id  = $3,
-                input       = $4::jsonb,
-                started_at  = NOW(),
-                updated_at  = NOW()
-            WHERE id = $1::bigint
-            """,
-            int(skill_call_id),
-            run_id,
-            new_message_id,
-            _json_dumps(input_payload or {}),
-        )
+        await conn.execute(SQL_RESET_SKILL_CALL_FOR_RETRY, int(skill_call_id), run_id, new_message_id, _json_dumps(input_payload or {}))
     return skill_call_id
 
 
@@ -836,21 +895,14 @@ async def relink_skill_call_message(skill_call_id: str, new_message_id: str) -> 
     """Re-point an existing skill_call row to a different message_id (e.g. retry execution message)."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE skill_calls SET message_id = $2, updated_at = NOW() WHERE id = $1::bigint",
-            int(skill_call_id),
-            new_message_id,
-        )
+        await conn.execute(SQL_RELINK_SKILL_CALL_MESSAGE, int(skill_call_id), new_message_id)
 
 
 async def fetch_skill_call_output(skill_call_id: str) -> list[dict[str, Any]]:
     """Return skill_calls.output JSON array for one row (for scrape resume / checkpoint)."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT output FROM skill_calls WHERE id = $1::bigint",
-            int(skill_call_id),
-        )
+        row = await conn.fetchrow(SQL_SELECT_SKILL_OUTPUT_BY_ID, int(skill_call_id))
     if not row:
         return []
     out = _to_obj(row["output"], [])
@@ -881,17 +933,15 @@ async def find_latest_scrape_cache_by_url(url: str, *, limit: int = 250) -> dict
         return None
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, input, output, updated_at
-            FROM skill_calls
-            WHERE skill_id = 'scrape-playwright'
-              AND state = 'done'
-            ORDER BY updated_at DESC
-            LIMIT $1
-            """,
-            int(max(1, limit)),
+        scrape_cache_q = build_query(
+            PostgreSQLQuery.from_(skill_calls_t)
+            .select(skill_calls_t.id, skill_calls_t.input, skill_calls_t.output, skill_calls_t.updated_at)
+            .where(skill_calls_t.skill_id == "scrape-playwright")
+            .where(skill_calls_t.state == "done")
+            .orderby(skill_calls_t.updated_at, order=Order.desc)
+            .limit(int(max(1, limit))),
         )
+        rows = await conn.fetch(scrape_cache_q.sql, *scrape_cache_q.params)
     for r in rows:
         in_obj = _to_obj(r["input"], {})
         args = in_obj.get("args") if isinstance(in_obj, dict) and isinstance(in_obj.get("args"), dict) else {}
@@ -952,17 +1002,15 @@ async def find_scraped_pages_for_base_url(base_url: str, *, limit_calls: int = 3
         return []
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT input, output, updated_at
-            FROM skill_calls
-            WHERE skill_id = 'scrape-playwright'
-              AND state = 'done'
-            ORDER BY updated_at DESC
-            LIMIT $1
-            """,
-            int(max(1, limit_calls)),
+        scraped_pages_q = build_query(
+            PostgreSQLQuery.from_(skill_calls_t)
+            .select(skill_calls_t.input, skill_calls_t.output, skill_calls_t.updated_at)
+            .where(skill_calls_t.skill_id == "scrape-playwright")
+            .where(skill_calls_t.state == "done")
+            .orderby(skill_calls_t.updated_at, order=Order.desc)
+            .limit(int(max(1, limit_calls))),
         )
+        rows = await conn.fetch(scraped_pages_q.sql, *scraped_pages_q.params)
     seen: set[str] = set()
     pages: list[dict[str, Any]] = []
     for r in rows:
@@ -988,7 +1036,13 @@ async def find_scraped_pages_for_base_url(base_url: str, *, limit_calls: int = 3
 async def push_skill_output(skill_call_id: str, entry: dict[str, Any]) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT output FROM skill_calls WHERE id = $1::bigint", int(skill_call_id))
+        skill_output_q = build_query(
+            PostgreSQLQuery.from_(skill_calls_t)
+            .select(skill_calls_t.output)
+            .where(skill_calls_t.id == Parameter("%s")),
+            [int(skill_call_id)],
+        )
+        row = await conn.fetchrow(skill_output_q.sql, *skill_output_q.params)
         if not row:
             return
         output = _to_obj(row["output"], [])
@@ -997,11 +1051,14 @@ async def push_skill_output(skill_call_id: str, entry: dict[str, Any]) -> None:
         payload = dict(entry)
         payload.setdefault("at", now_iso())
         output.append(payload)
-        await conn.execute(
-            "UPDATE skill_calls SET output = $2::jsonb, updated_at = NOW() WHERE id = $1::bigint",
-            int(skill_call_id),
-            _json_dumps(output),
+        update_skill_output_q = build_query(
+            PostgreSQLQuery.update(skill_calls_t)
+            .set(skill_calls_t.output, Parameter("%s"))
+            .set(skill_calls_t.updated_at, fn.Now())
+            .where(skill_calls_t.id == Parameter("%s")),
+            [output, int(skill_call_id)],
         )
+        await conn.execute(update_skill_output_q.sql, *update_skill_output_q.params)
 
 
 async def append_skill_streamed_text(skill_call_id: str, text_chunk: str) -> None:
@@ -1011,39 +1068,16 @@ async def append_skill_streamed_text(skill_call_id: str, text_chunk: str) -> Non
     pool = get_pool()
     async with pool.acquire() as conn:
         try:
-            await conn.execute(
-                """
-                UPDATE skill_calls
-                SET streamed_text = COALESCE(streamed_text, '') || $2,
-                    updated_at = NOW()
-                WHERE id = $1::bigint
-                """,
-                int(skill_call_id),
-                chunk,
-            )
+            await conn.execute(SQL_APPEND_STREAMED_TEXT, int(skill_call_id), chunk)
         except Exception:
-            await conn.execute(
-                "ALTER TABLE skill_calls ADD COLUMN IF NOT EXISTS streamed_text TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                """
-                UPDATE skill_calls
-                SET streamed_text = COALESCE(streamed_text, '') || $2,
-                    updated_at = NOW()
-                WHERE id = $1::bigint
-                """,
-                int(skill_call_id),
-                chunk,
-            )
+            await conn.execute(SQL_ADD_STREAMED_TEXT_COLUMN)
+            await conn.execute(SQL_APPEND_STREAMED_TEXT, int(skill_call_id), chunk)
 
 
 async def set_skill_call_result(skill_call_id: str, state: str, text: str | None, data: Any, error: str | None) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT started_at, output FROM skill_calls WHERE id = $1::bigint",
-            int(skill_call_id),
-        )
+        row = await conn.fetchrow(SQL_SELECT_SKILL_TIMING_AND_OUTPUT, int(skill_call_id))
         if not row:
             return
         output = _to_obj(row["output"], [])
@@ -1073,7 +1107,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         try:
             started_at_dt = datetime.fromisoformat(str(started_at))
             duration_row = await conn.fetchrow(
-                "SELECT (EXTRACT(EPOCH FROM (NOW() - $1)) * 1000)::int AS ms",
+                SQL_SELECT_DURATION_MS_FROM_STARTED_AT,
                 started_at_dt,
             )
             duration_ms = int(duration_row["ms"]) if duration_row and duration_row["ms"] is not None else None
@@ -1081,16 +1115,7 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
             duration_ms = None
 
         await conn.execute(
-            """
-            UPDATE skill_calls
-            SET state = $2,
-                error = $3,
-                ended_at = $4,
-                duration_ms = $5,
-                output = $6::jsonb,
-                updated_at = NOW()
-            WHERE id = $1::bigint
-            """,
+            SQL_UPDATE_SKILL_CALL_RESULT,
             int(skill_call_id),
             state,
             error,
@@ -1148,10 +1173,14 @@ async def get_skill_calls_by_message_id_full(message_id: str) -> list[dict[str, 
     pool = get_pool()
     async with pool.acquire() as conn:
         await auto_timeout_stale_skill_calls(conn, message_id=message_id)
-        rows = await conn.fetch(
-            "SELECT * FROM skill_calls WHERE message_id = $1 ORDER BY created_at ASC",
-            message_id,
+        skill_calls_by_msg_q = build_query(
+            PostgreSQLQuery.from_(skill_calls_t)
+            .select("*")
+            .where(skill_calls_t.message_id == Parameter("%s"))
+            .orderby(skill_calls_t.created_at, order=Order.asc),
+            [message_id],
         )
+        rows = await conn.fetch(skill_calls_by_msg_q.sql, *skill_calls_by_msg_q.params)
     out: list[dict[str, Any]] = []
     for r in rows:
         output = _to_obj(r["output"], [])
@@ -1218,13 +1247,7 @@ async def create_plan_run(
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            INSERT INTO plan_runs (
-                id, conversation_id, user_message_id, plan_message_id,
-                status, plan_markdown, plan_json, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,'draft',$5,$6::jsonb,$7,$8)
-            RETURNING *
-            """,
+            SQL_INSERT_PLAN_RUN_RETURNING,
             pid,
             conversation_id,
             user_message_id,
@@ -1251,7 +1274,11 @@ async def create_plan_run(
 async def get_plan_run(plan_id: str) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM plan_runs WHERE id = $1", plan_id)
+        plan_run_q = build_query(
+            PostgreSQLQuery.from_(plan_runs_t).select("*").where(plan_runs_t.id == Parameter("%s")),
+            [plan_id],
+        )
+        row = await conn.fetchrow(plan_run_q.sql, *plan_run_q.params)
     if not row:
         return None
     return {
@@ -1274,13 +1301,7 @@ async def claim_plan_run_for_execution(plan_id: str) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            UPDATE plan_runs
-            SET status = 'executing', updated_at = $2
-            WHERE id = $1
-              AND status IN ('draft', 'approved')
-            RETURNING id
-            """,
+            SQL_CLAIM_PLAN_RUN_FOR_EXECUTION,
             plan_id,
             now_dt(),
         )
@@ -1315,12 +1336,12 @@ async def update_plan_run(plan_id: str, patch: dict[str, Any]) -> None:
     async with pool.acquire() as conn:
         if "executionMessageId" in patch:
             try:
-                await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS execution_message_id TEXT")
+                await conn.execute(SQL_ADD_PLAN_RUN_EXECUTION_MESSAGE_COLUMN)
             except Exception:
                 pass
         if "errorMessage" in patch:
             try:
-                await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS error_message TEXT")
+                await conn.execute(SQL_ADD_PLAN_RUN_ERROR_MESSAGE_COLUMN)
             except Exception:
                 pass
         await conn.execute(q, *values)
@@ -1361,17 +1382,31 @@ async def save_token_usage(
     pool = get_pool()
     encoded_model = _encode_token_usage_model(model, stage, provider)
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO token_usage (message_id, session_id, model, input_tokens, output_tokens)
-            VALUES ($1, $2, $3, $4, $5)
-            """,
-            message_id,
-            (session_id or "").strip() or None,
-            encoded_model,
-            input_tokens,
-            output_tokens,
+        insert_token_usage_q = build_query(
+            PostgreSQLQuery.into(token_usage_t)
+            .columns(
+                token_usage_t.message_id,
+                token_usage_t.session_id,
+                token_usage_t.model,
+                token_usage_t.input_tokens,
+                token_usage_t.output_tokens,
+            )
+            .insert(
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+            ),
+            [
+                message_id,
+                (session_id or "").strip() or None,
+                encoded_model,
+                input_tokens,
+                output_tokens,
+            ],
         )
+        await conn.execute(insert_token_usage_q.sql, *insert_token_usage_q.params)
 
 
 async def promote_session_conversations(session_id: str, user_id: str) -> dict[str, Any]:
@@ -1385,25 +1420,8 @@ async def promote_session_conversations(session_id: str, user_id: str) -> dict[s
         async with conn.transaction():
             # Do not use `user_id = ''`: if user_id is UUID, Postgres coerces '' and raises
             # InvalidTextRepresentationError. Treat "unset" via text cast + NULLIF.
-            updated = await conn.execute(
-                """
-                UPDATE conversations
-                SET user_id = $2, updated_at = NOW()
-                WHERE session_id = $1
-                  AND (user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL)
-                """,
-                sid,
-                uid,
-            )
-            await conn.execute(
-                """
-                INSERT INTO session_user_links (session_id, user_id, linked_at)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (session_id, user_id) DO NOTHING
-                """,
-                sid,
-                uid,
-            )
+            updated = await conn.execute(SQL_PROMOTE_SESSION_CONVERSATIONS, sid, uid)
+            await conn.execute(SQL_INSERT_SESSION_USER_LINK, sid, uid)
     try:
         count = int((updated or "UPDATE 0").split()[-1])
     except Exception:
@@ -1414,10 +1432,19 @@ async def promote_session_conversations(session_id: str, user_id: str) -> dict[s
 async def get_token_usage(message_id: str) -> dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT model, input_tokens, output_tokens, created_at FROM token_usage WHERE message_id = $1 ORDER BY created_at ASC",
-            message_id,
+        token_usage_q = build_query(
+            PostgreSQLQuery.from_(token_usage_t)
+            .select(
+                token_usage_t.model,
+                token_usage_t.input_tokens,
+                token_usage_t.output_tokens,
+                token_usage_t.created_at,
+            )
+            .where(token_usage_t.message_id == Parameter("%s"))
+            .orderby(token_usage_t.created_at, order=Order.asc),
+            [message_id],
         )
+        rows = await conn.fetch(token_usage_q.sql, *token_usage_q.params)
     entries = [
         (
             lambda decoded: {
@@ -1451,18 +1478,10 @@ async def cleanup_stale_executing_plans() -> int:
     pool = get_pool()
     async with pool.acquire() as conn:
         try:
-            await conn.execute("ALTER TABLE plan_runs ADD COLUMN IF NOT EXISTS error_message TEXT")
+            await conn.execute(SQL_ADD_PLAN_RUN_ERROR_MESSAGE_COLUMN)
         except Exception:
             pass
-        result = await conn.execute(
-            """
-            UPDATE plan_runs
-            SET status = 'interrupted',
-                error_message = 'Process interrupted (backend restart). You can retry this plan.',
-                updated_at = NOW()
-            WHERE status = 'executing'
-            """
-        )
+        result = await conn.execute(SQL_CLEANUP_STALE_EXECUTING_PLANS)
         # Result format: "UPDATE N"
         count = int(result.split()[-1]) if result else 0
         return count
@@ -1472,14 +1491,13 @@ async def mark_plan_as_interrupted(plan_id: str, error_message: str = "Process i
     """Mark a specific plan as interrupted (e.g., when detecting a stale task)."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE plan_runs
-            SET status = 'interrupted',
-                error_message = $1,
-                updated_at = NOW()
-            WHERE id = $2 AND status = 'executing'
-            """,
-            error_message,
-            plan_id,
+        mark_interrupted_q = build_query(
+            PostgreSQLQuery.update(plan_runs_t)
+            .set(plan_runs_t.status, "interrupted")
+            .set(plan_runs_t.error_message, Parameter("%s"))
+            .set(plan_runs_t.updated_at, fn.Now())
+            .where(plan_runs_t.id == Parameter("%s"))
+            .where(plan_runs_t.status == "executing"),
+            [error_message, plan_id],
         )
+        await conn.execute(mark_interrupted_q.sql, *mark_interrupted_q.params)

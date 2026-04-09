@@ -7,12 +7,21 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
 
 from asyncpg import UniqueViolationError
+from pypika import Order, Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.config import REDIS_TASKSTREAM_MAX_BACKLOG, REDIS_TASKSTREAM_TTL_SECONDS
 from app.db import get_pool
+from app.repositories.task_stream_table import cleanup_stale_running_streams_sql
+from app.sql_builder import build_query
 from app.task_stream.events import TaskStreamEvent
 
 _PG_CURSOR_PREFIX = "pg:"
+task_stream_spawn_locks_t = Table("task_stream_spawn_locks")
+task_stream_maps_t = Table("task_stream_maps")
+task_stream_streams_t = Table("task_stream_streams")
+task_stream_events_t = Table("task_stream_events")
 
 
 def _expires_at() -> datetime:
@@ -44,17 +53,20 @@ class PostgresTaskStreamStore:
     async def try_acquire_spawn_lock(self, lock_key: str) -> bool:
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM task_stream_spawn_locks WHERE expires_at < NOW()",
+            delete_expired_q = build_query(
+                PostgreSQLQuery.from_(task_stream_spawn_locks_t)
+                .delete()
+                .where(task_stream_spawn_locks_t.expires_at < fn.Now())
             )
+            await conn.execute(delete_expired_q.sql, *delete_expired_q.params)
             try:
-                await conn.execute(
-                    """
-                    INSERT INTO task_stream_spawn_locks (lock_key, expires_at)
-                    VALUES ($1, NOW() + INTERVAL '10 seconds')
-                    """,
-                    lock_key,
+                insert_lock_q = build_query(
+                    PostgreSQLQuery.into(task_stream_spawn_locks_t)
+                    .columns(task_stream_spawn_locks_t.lock_key, task_stream_spawn_locks_t.expires_at)
+                    .insert(Parameter("%s"), Parameter("%s")),
+                    [lock_key, datetime.utcnow() + timedelta(seconds=10)],
                 )
+                await conn.execute(insert_lock_q.sql, *insert_lock_q.params)
                 return True
             except UniqueViolationError:
                 return False
@@ -62,7 +74,13 @@ class PostgresTaskStreamStore:
     async def release_spawn_lock(self, lock_key: str) -> None:
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute("DELETE FROM task_stream_spawn_locks WHERE lock_key = $1", lock_key)
+            delete_lock_q = build_query(
+                PostgreSQLQuery.from_(task_stream_spawn_locks_t)
+                .delete()
+                .where(task_stream_spawn_locks_t.lock_key == Parameter("%s")),
+                [lock_key],
+            )
+            await conn.execute(delete_lock_q.sql, *delete_lock_q.params)
 
     async def resolve_stream_id(
         self,
@@ -76,42 +94,40 @@ class PostgresTaskStreamStore:
             if onboarding_id:
                 oid = (onboarding_id or "").strip()
                 if oid:
-                    row = await conn.fetchrow(
-                        """
-                        SELECT m.stream_id
-                        FROM task_stream_maps m
-                        JOIN task_stream_streams s ON s.stream_id = m.stream_id
-                        WHERE m.task_type = $1
-                          AND m.map_kind = 'session'
-                          AND m.map_key = $2
-                          AND m.expires_at > NOW()
-                          AND s.expires_at > NOW()
-                        LIMIT 1
-                        """,
-                        task_type,
-                        oid,
+                    stream_q = build_query(
+                        PostgreSQLQuery.from_(task_stream_maps_t)
+                        .join(task_stream_streams_t)
+                        .on(task_stream_streams_t.stream_id == task_stream_maps_t.stream_id)
+                        .select(task_stream_maps_t.stream_id)
+                        .where(task_stream_maps_t.task_type == Parameter("%s"))
+                        .where(task_stream_maps_t.map_kind == "session")
+                        .where(task_stream_maps_t.map_key == Parameter("%s"))
+                        .where(task_stream_maps_t.expires_at > fn.Now())
+                        .where(task_stream_streams_t.expires_at > fn.Now())
+                        .limit(1),
+                        [task_type, oid],
                     )
+                    row = await conn.fetchrow(stream_q.sql, *stream_q.params)
                     if row:
                         return str(row["stream_id"])
 
             if user_id:
                 uid = (user_id or "").strip()
                 if uid:
-                    row = await conn.fetchrow(
-                        """
-                        SELECT m.stream_id
-                        FROM task_stream_maps m
-                        JOIN task_stream_streams s ON s.stream_id = m.stream_id
-                        WHERE m.task_type = $1
-                          AND m.map_kind = 'user'
-                          AND m.map_key = $2
-                          AND m.expires_at > NOW()
-                          AND s.expires_at > NOW()
-                        LIMIT 1
-                        """,
-                        task_type,
-                        uid,
+                    stream_q = build_query(
+                        PostgreSQLQuery.from_(task_stream_maps_t)
+                        .join(task_stream_streams_t)
+                        .on(task_stream_streams_t.stream_id == task_stream_maps_t.stream_id)
+                        .select(task_stream_maps_t.stream_id)
+                        .where(task_stream_maps_t.task_type == Parameter("%s"))
+                        .where(task_stream_maps_t.map_kind == "user")
+                        .where(task_stream_maps_t.map_key == Parameter("%s"))
+                        .where(task_stream_maps_t.expires_at > fn.Now())
+                        .where(task_stream_streams_t.expires_at > fn.Now())
+                        .limit(1),
+                        [task_type, uid],
                     )
+                    row = await conn.fetchrow(stream_q.sql, *stream_q.params)
                     if row:
                         return str(row["stream_id"])
         return None
@@ -128,59 +144,79 @@ class PostgresTaskStreamStore:
         exp = _expires_at()
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO task_stream_streams (
-                    stream_id, task_type, session_id, user_id, status,
-                    last_seq, last_event_id, created_at, expires_at
+            create_q = build_query(
+                PostgreSQLQuery.into(task_stream_streams_t)
+                .columns(
+                    "stream_id",
+                    "task_type",
+                    "session_id",
+                    "user_id",
+                    "status",
+                    "last_seq",
+                    "last_event_id",
+                    "created_at",
+                    "expires_at",
                 )
-                VALUES ($1, $2, $3, $4, $5, 0, NULL, NOW(), $6)
-                """,
-                stream_id,
-                task_type,
-                (onboarding_id or "").strip(),
-                (user_id or "").strip(),
-                status,
-                exp,
+                .insert(
+                    Parameter("%s"),
+                    Parameter("%s"),
+                    Parameter("%s"),
+                    Parameter("%s"),
+                    Parameter("%s"),
+                    0,
+                    None,
+                    fn.Now(),
+                    Parameter("%s"),
+                ),
+                [stream_id, task_type, (onboarding_id or "").strip(), (user_id or "").strip(), status, exp],
             )
+            await conn.execute(create_q.sql, *create_q.params)
 
     async def set_status(self, stream_id: str, status: str) -> None:
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE task_stream_streams
-                SET status = $2, expires_at = $3
-                WHERE stream_id = $1
-                """,
-                stream_id,
-                status,
-                _expires_at(),
+            set_status_q = build_query(
+                PostgreSQLQuery.update(task_stream_streams_t)
+                .set(task_stream_streams_t.status, Parameter("%s"))
+                .set(task_stream_streams_t.expires_at, Parameter("%s"))
+                .where(task_stream_streams_t.stream_id == Parameter("%s")),
+                [status, _expires_at(), stream_id],
             )
+            await conn.execute(set_status_q.sql, *set_status_q.params)
 
     async def get_status(self, stream_id: str) -> str:
         pool = get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT status FROM task_stream_streams
-                WHERE stream_id = $1 AND expires_at > NOW()
-                """,
-                stream_id,
+            get_status_q = build_query(
+                PostgreSQLQuery.from_(task_stream_streams_t)
+                .select(task_stream_streams_t.status)
+                .where(task_stream_streams_t.stream_id == Parameter("%s"))
+                .where(task_stream_streams_t.expires_at > fn.Now()),
+                [stream_id],
             )
+            row = await conn.fetchrow(get_status_q.sql, *get_status_q.params)
             return str(row["status"]) if row else ""
 
     async def get_meta(self, stream_id: str) -> dict[str, Any]:
         pool = get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT stream_id, task_type, session_id, user_id, status, last_seq, created_at, expires_at
-                FROM task_stream_streams
-                WHERE stream_id = $1 AND expires_at > NOW()
-                """,
-                stream_id,
+            get_meta_q = build_query(
+                PostgreSQLQuery.from_(task_stream_streams_t)
+                .select(
+                    task_stream_streams_t.stream_id,
+                    task_stream_streams_t.task_type,
+                    task_stream_streams_t.session_id,
+                    task_stream_streams_t.user_id,
+                    task_stream_streams_t.status,
+                    task_stream_streams_t.last_seq,
+                    task_stream_streams_t.created_at,
+                    task_stream_streams_t.expires_at,
+                )
+                .where(task_stream_streams_t.stream_id == Parameter("%s"))
+                .where(task_stream_streams_t.expires_at > fn.Now()),
+                [stream_id],
             )
+            row = await conn.fetchrow(get_meta_q.sql, *get_meta_q.params)
         if not row:
             return {"stream_id": stream_id}
         d = dict(row)
@@ -207,35 +243,49 @@ class PostgresTaskStreamStore:
             if onboarding_id:
                 oid = (onboarding_id or "").strip()
                 if oid:
-                    await conn.execute(
-                        """
-                        INSERT INTO task_stream_maps (task_type, map_kind, map_key, stream_id, expires_at)
-                        VALUES ($1, 'session', $2, $3, $4)
-                        ON CONFLICT (task_type, map_kind, map_key) DO UPDATE
-                        SET stream_id = EXCLUDED.stream_id,
-                            expires_at = EXCLUDED.expires_at
-                        """,
-                        task_type,
-                        oid,
-                        stream_id,
-                        exp,
+                    upsert_session_q = build_query(
+                        PostgreSQLQuery.into(task_stream_maps_t)
+                        .columns(
+                            task_stream_maps_t.task_type,
+                            task_stream_maps_t.map_kind,
+                            task_stream_maps_t.map_key,
+                            task_stream_maps_t.stream_id,
+                            task_stream_maps_t.expires_at,
+                        )
+                        .insert(Parameter("%s"), "session", Parameter("%s"), Parameter("%s"), Parameter("%s"))
+                        .on_conflict(
+                            task_stream_maps_t.task_type,
+                            task_stream_maps_t.map_kind,
+                            task_stream_maps_t.map_key,
+                        )
+                        .do_update(task_stream_maps_t.stream_id)
+                        .do_update(task_stream_maps_t.expires_at),
+                        [task_type, oid, stream_id, exp],
                     )
+                    await conn.execute(upsert_session_q.sql, *upsert_session_q.params)
             if user_id:
                 uid = (user_id or "").strip()
                 if uid:
-                    await conn.execute(
-                        """
-                        INSERT INTO task_stream_maps (task_type, map_kind, map_key, stream_id, expires_at)
-                        VALUES ($1, 'user', $2, $3, $4)
-                        ON CONFLICT (task_type, map_kind, map_key) DO UPDATE
-                        SET stream_id = EXCLUDED.stream_id,
-                            expires_at = EXCLUDED.expires_at
-                        """,
-                        task_type,
-                        uid,
-                        stream_id,
-                        exp,
+                    upsert_user_q = build_query(
+                        PostgreSQLQuery.into(task_stream_maps_t)
+                        .columns(
+                            task_stream_maps_t.task_type,
+                            task_stream_maps_t.map_kind,
+                            task_stream_maps_t.map_key,
+                            task_stream_maps_t.stream_id,
+                            task_stream_maps_t.expires_at,
+                        )
+                        .insert(Parameter("%s"), "user", Parameter("%s"), Parameter("%s"), Parameter("%s"))
+                        .on_conflict(
+                            task_stream_maps_t.task_type,
+                            task_stream_maps_t.map_kind,
+                            task_stream_maps_t.map_key,
+                        )
+                        .do_update(task_stream_maps_t.stream_id)
+                        .do_update(task_stream_maps_t.expires_at),
+                        [task_type, uid, stream_id, exp],
                     )
+                    await conn.execute(upsert_user_q.sql, *upsert_user_q.params)
 
     async def clear_actor_mapping(
         self,
@@ -250,25 +300,27 @@ class PostgresTaskStreamStore:
             if onboarding_id:
                 oid = (onboarding_id or "").strip()
                 if oid:
-                    await conn.execute(
-                        """
-                        DELETE FROM task_stream_maps
-                        WHERE task_type = $1 AND map_kind = 'session' AND map_key = $2
-                        """,
-                        task_type,
-                        oid,
+                    clear_session_q = build_query(
+                        PostgreSQLQuery.from_(task_stream_maps_t)
+                        .delete()
+                        .where(task_stream_maps_t.task_type == Parameter("%s"))
+                        .where(task_stream_maps_t.map_kind == "session")
+                        .where(task_stream_maps_t.map_key == Parameter("%s")),
+                        [task_type, oid],
                     )
+                    await conn.execute(clear_session_q.sql, *clear_session_q.params)
             if user_id:
                 uid = (user_id or "").strip()
                 if uid:
-                    await conn.execute(
-                        """
-                        DELETE FROM task_stream_maps
-                        WHERE task_type = $1 AND map_kind = 'user' AND map_key = $2
-                        """,
-                        task_type,
-                        uid,
+                    clear_user_q = build_query(
+                        PostgreSQLQuery.from_(task_stream_maps_t)
+                        .delete()
+                        .where(task_stream_maps_t.task_type == Parameter("%s"))
+                        .where(task_stream_maps_t.map_kind == "user")
+                        .where(task_stream_maps_t.map_key == Parameter("%s")),
+                        [task_type, uid],
                     )
+                    await conn.execute(clear_user_q.sql, *clear_user_q.params)
 
     async def xadd_event(self, stream_id: str, event_type: str, data: dict[str, Any]) -> TaskStreamEvent:
         event_obj = {"type": event_type, **data}
@@ -276,38 +328,35 @@ class PostgresTaskStreamStore:
         pool = get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                seq = await conn.fetchval(
-                    """
-                    UPDATE task_stream_streams
-                    SET last_seq = last_seq + 1,
-                        expires_at = $2
-                    WHERE stream_id = $1 AND expires_at > NOW()
-                    RETURNING last_seq
-                    """,
-                    stream_id,
-                    _expires_at(),
+                bump_seq_q = build_query(
+                    PostgreSQLQuery.update(task_stream_streams_t)
+                    .set(task_stream_streams_t.last_seq, task_stream_streams_t.last_seq + 1)
+                    .set(task_stream_streams_t.expires_at, Parameter("%s"))
+                    .where(task_stream_streams_t.stream_id == Parameter("%s"))
+                    .where(task_stream_streams_t.expires_at > fn.Now())
+                    .returning(task_stream_streams_t.last_seq),
+                    [_expires_at(), stream_id],
                 )
+                seq = await conn.fetchval(bump_seq_q.sql, *bump_seq_q.params)
                 if seq is None:
                     raise RuntimeError(f"task stream not found or expired: {stream_id}")
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO task_stream_events (stream_id, seq, event)
-                    VALUES ($1, $2, $3::jsonb)
-                    RETURNING id
-                    """,
-                    stream_id,
-                    int(seq),
-                    event_json,
+                insert_event_q = build_query(
+                    PostgreSQLQuery.into(task_stream_events_t)
+                    .columns("stream_id", "seq", "event")
+                    .insert(Parameter("%s"), Parameter("%s"), Parameter("%s").cast("jsonb"))
+                    .returning(task_stream_events_t.id),
+                    [stream_id, int(seq), event_json],
                 )
+                row = await conn.fetchrow(insert_event_q.sql, *insert_event_q.params)
                 eid = int(row["id"])
-                await conn.execute(
-                    """
-                    UPDATE task_stream_streams SET last_event_id = $2, expires_at = $3 WHERE stream_id = $1
-                    """,
-                    stream_id,
-                    eid,
-                    _expires_at(),
+                set_last_event_q = build_query(
+                    PostgreSQLQuery.update(task_stream_streams_t)
+                    .set(task_stream_streams_t.last_event_id, Parameter("%s"))
+                    .set(task_stream_streams_t.expires_at, Parameter("%s"))
+                    .where(task_stream_streams_t.stream_id == Parameter("%s")),
+                    [eid, _expires_at(), stream_id],
                 )
+                await conn.execute(set_last_event_q.sql, *set_last_event_q.params)
         cursor = _cursor_from_row_id(eid)
         return TaskStreamEvent(cursor=cursor, seq=int(seq), type=event_type, data=data)
 
@@ -319,17 +368,15 @@ class PostgresTaskStreamStore:
     ) -> list[TaskStreamEvent]:
         pool = get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, seq, event
-                FROM task_stream_events
-                WHERE stream_id = $1
-                ORDER BY id DESC
-                LIMIT $2
-                """,
-                stream_id,
-                max(1, int(max_backlog)),
+            backlog_q = build_query(
+                PostgreSQLQuery.from_(task_stream_events_t)
+                .select(task_stream_events_t.id, task_stream_events_t.seq, task_stream_events_t.event)
+                .where(task_stream_events_t.stream_id == Parameter("%s"))
+                .orderby(task_stream_events_t.id, order=Order.desc)
+                .limit(Parameter("%s")),
+                [stream_id, max(1, int(max_backlog))],
             )
+            rows = await conn.fetch(backlog_q.sql, *backlog_q.params)
         rows = list(reversed(rows))
         out: list[TaskStreamEvent] = []
         for r in rows:
@@ -363,18 +410,16 @@ class PostgresTaskStreamStore:
         pool = get_pool()
         while True:
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, seq, event
-                    FROM task_stream_events
-                    WHERE stream_id = $1 AND id > $2
-                    ORDER BY id ASC
-                    LIMIT $3
-                    """,
-                    stream_id,
-                    last_id,
-                    max(1, int(count)),
+                new_events_q = build_query(
+                    PostgreSQLQuery.from_(task_stream_events_t)
+                    .select(task_stream_events_t.id, task_stream_events_t.seq, task_stream_events_t.event)
+                    .where(task_stream_events_t.stream_id == Parameter("%s"))
+                    .where(task_stream_events_t.id > Parameter("%s"))
+                    .orderby(task_stream_events_t.id, order=Order.asc)
+                    .limit(Parameter("%s")),
+                    [stream_id, last_id, max(1, int(count))],
                 )
+                rows = await conn.fetch(new_events_q.sql, *new_events_q.params)
             if rows:
                 events: list[TaskStreamEvent] = []
                 for r in rows:
@@ -450,15 +495,8 @@ class PostgresTaskStreamStore:
         """
         pool = get_pool()
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE task_stream_streams
-                SET status = 'error',
-                    expires_at = NOW() + INTERVAL '1 hour'
-                WHERE status = 'running'
-                  AND created_at < NOW() - INTERVAL '%s minutes'
-                """ % int(max_age_minutes)
-            )
+            # Keep raw SQL: dynamic INTERVAL parameterization is awkward in PyPika for this predicate.
+            result = await conn.execute(cleanup_stale_running_streams_sql(), int(max_age_minutes))
             # Result format: "UPDATE N"
             count = int(result.split()[-1]) if result else 0
             return count

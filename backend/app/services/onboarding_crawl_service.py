@@ -15,12 +15,18 @@ import time
 from typing import Any, Awaitable, Callable
 
 import structlog
+from pypika import Table
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
 from app.skills.service import run_skill
+from app.sql_builder import build_query
 
 logger = structlog.get_logger()
+skill_calls_t = Table("skill_calls")
+onboarding_t = Table("onboarding")
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -37,17 +43,20 @@ async def create_onboarding_skill_call(
     """INSERT a running skill_call row scoped to an onboarding session. Returns the row id."""
     pool = get_pool()
     async with pool.acquire() as conn:
+        insert_skill_call_sql = """
+        INSERT INTO skill_calls
+            (onboarding_session_id, skill_id, run_id, input, state)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
+        RETURNING id
+        """
+        # Keep minimal raw SQL: INSERT ... RETURNING with jsonb cast is Postgres-specific.
         row_id = await conn.fetchval(
-            """
-            INSERT INTO skill_calls
-                (onboarding_session_id, skill_id, run_id, input, state)
-            VALUES ($1, $2, $3, $4::jsonb, 'running')
-            RETURNING id
-            """,
+            insert_skill_call_sql,
             onboarding_session_id,
             skill_id,
             f"{skill_id}-onboarding-{int(time.time() * 1000)}",
             json.dumps(input),
+            "running",
         )
     return int(row_id)
 
@@ -64,22 +73,17 @@ async def finish_onboarding_skill_call(
     duration_ms = int((time.time() - started_at_ms) * 1000)
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE skill_calls
-            SET state        = $1,
-                output       = $2::jsonb,
-                error        = $3,
-                ended_at     = NOW(),
-                duration_ms  = $4
-            WHERE id = $5
-            """,
-            state,
-            json.dumps(output if output is not None else []),
-            error,
-            duration_ms,
-            skill_call_id,
+        finish_skill_q = build_query(
+            PostgreSQLQuery.update(skill_calls_t)
+            .set(skill_calls_t.state, Parameter("%s"))
+            .set(skill_calls_t.output, Parameter("%s").cast("jsonb"))
+            .set(skill_calls_t.error, Parameter("%s"))
+            .set(skill_calls_t.ended_at, PostgreSQLQuery.now())
+            .set(skill_calls_t.duration_ms, Parameter("%s"))
+            .where(skill_calls_t.id == Parameter("%s")),
+            [state, json.dumps(output if output is not None else []), error, duration_ms, skill_call_id],
         )
+        await conn.execute(finish_skill_q.sql, *finish_skill_q.params)
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +348,20 @@ async def fetch_onboarding_context(onboarding_id: str) -> dict[str, Any]:
     """Return onboarding context fields from the onboarding row."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT outcome, domain, task, scale_answers, web_summary, business_profile FROM onboarding WHERE id = $1::uuid",
-            onboarding_id,
+        fetch_context_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(
+                onboarding_t.outcome,
+                onboarding_t.domain,
+                onboarding_t.task,
+                onboarding_t.scale_answers,
+                onboarding_t.web_summary,
+                onboarding_t.business_profile,
+            )
+            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            [onboarding_id],
         )
+        row = await conn.fetchrow(fetch_context_q.sql, *fetch_context_q.params)
     if not row:
         return {}
     scale_answers_raw = row["scale_answers"]
@@ -377,15 +391,12 @@ async def update_onboarding_crawl_outputs(
 ) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE onboarding
-            SET web_summary = $1,
-                business_profile = $2,
-                updated_at = NOW()
-            WHERE id = $3::uuid
-            """,
-            web_summary,
-            business_profile,
-            onboarding_id,
+        update_outputs_q = build_query(
+            PostgreSQLQuery.update(onboarding_t)
+            .set(onboarding_t.web_summary, Parameter("%s"))
+            .set(onboarding_t.business_profile, Parameter("%s"))
+            .set(onboarding_t.updated_at, PostgreSQLQuery.now())
+            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            [web_summary, business_profile, onboarding_id],
         )
+        await conn.execute(update_outputs_q.sql, *update_outputs_q.params)

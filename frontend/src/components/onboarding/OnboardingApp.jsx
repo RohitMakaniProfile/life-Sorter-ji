@@ -60,7 +60,7 @@ export default function OnboardingApp() {
     const stripPaymentQuery = () => {
       try {
         window.history.replaceState({}, '', window.location.pathname);
-      } catch (_) {
+      } catch {
         /* ignore */
       }
     };
@@ -123,7 +123,7 @@ export default function OnboardingApp() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [showPrecision, setShowPrecision] = useState(false);
-  const [precisionQuestions, setPrecisionQuestions] = useState([]);
+  const [_precisionQuestions, setPrecisionQuestions] = useState([]);
   const [precisionIndex, setPrecisionIndex] = useState(0);
   const [precisionAnswers, setPrecisionAnswers] = useState({});
 

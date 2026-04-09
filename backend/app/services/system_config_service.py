@@ -3,16 +3,28 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from pypika import Table
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
+
 from app.db import get_pool
+from app.sql_builder import build_query
 
 ConfigType = Literal["string", "number", "boolean", "json", "markdown"]
 VALID_TYPES: set[str] = {"string", "number", "boolean", "json", "markdown"}
+system_config_t = Table("system_config")
 
 
 async def get_config_value(key: str, default: str = "") -> str:
     pool = get_pool()
     async with pool.acquire() as conn:
-        v = await conn.fetchval("SELECT value FROM system_config WHERE key = $1", key)
+        get_value_q = build_query(
+            PostgreSQLQuery.from_(system_config_t)
+            .select(system_config_t.value)
+            .where(system_config_t.key == Parameter("%s")),
+            [key],
+        )
+        v = await conn.fetchval(get_value_q.sql, *get_value_q.params)
     if v is None:
         return default
     return str(v)
@@ -22,9 +34,13 @@ async def get_config_with_type(key: str) -> tuple[str, str] | None:
     """Return (value, type) tuple or None if not found."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT value, type FROM system_config WHERE key = $1", key
+        get_config_q = build_query(
+            PostgreSQLQuery.from_(system_config_t)
+            .select(system_config_t.value, system_config_t.type)
+            .where(system_config_t.key == Parameter("%s")),
+            [key],
         )
+        row = await conn.fetchrow(get_config_q.sql, *get_config_q.params)
     if row is None:
         return None
     return (str(row.get("value") or ""), str(row.get("type") or "string"))
@@ -91,26 +107,31 @@ async def upsert_system_config_entry(
             if not is_valid:
                 raise ValueError(err)
 
-            await conn.execute(
-                """
-                INSERT INTO system_config (key, value, type, description)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (key)
-                DO UPDATE SET
-                  value = EXCLUDED.value,
-                  type = EXCLUDED.type,
-                  description = EXCLUDED.description
-                """,
-                k,
-                v,
-                t,
-                d,
+            upsert_typed_q = build_query(
+                PostgreSQLQuery.into(system_config_t)
+                .columns(
+                    system_config_t.key,
+                    system_config_t.value,
+                    system_config_t.type,
+                    system_config_t.description,
+                )
+                .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"))
+                .on_conflict(system_config_t.key)
+                .do_update(system_config_t.value)
+                .do_update(system_config_t.type)
+                .do_update(system_config_t.description),
+                [k, v, t, d],
             )
+            await conn.execute(upsert_typed_q.sql, *upsert_typed_q.params)
         else:
             # Keep existing type, or default to 'string'
-            existing = await conn.fetchval(
-                "SELECT type FROM system_config WHERE key = $1", k
+            existing_type_q = build_query(
+                PostgreSQLQuery.from_(system_config_t)
+                .select(system_config_t.type)
+                .where(system_config_t.key == Parameter("%s")),
+                [k],
             )
+            existing = await conn.fetchval(existing_type_q.sql, *existing_type_q.params)
             existing_type = str(existing or "string")
 
             # Validate value against existing/default type
@@ -118,19 +139,20 @@ async def upsert_system_config_entry(
             if not is_valid:
                 raise ValueError(err)
 
-            await conn.execute(
-                """
-                INSERT INTO system_config (key, value, description)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (key)
-                DO UPDATE SET
-                  value = EXCLUDED.value,
-                  description = EXCLUDED.description
-                """,
-                k,
-                v,
-                d,
+            upsert_untyped_q = build_query(
+                PostgreSQLQuery.into(system_config_t)
+                .columns(
+                    system_config_t.key,
+                    system_config_t.value,
+                    system_config_t.description,
+                )
+                .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"))
+                .on_conflict(system_config_t.key)
+                .do_update(system_config_t.value)
+                .do_update(system_config_t.description),
+                [k, v, d],
             )
+            await conn.execute(upsert_untyped_q.sql, *upsert_untyped_q.params)
 
 
 def parse_bool(value: str | None, default: bool = False) -> bool:

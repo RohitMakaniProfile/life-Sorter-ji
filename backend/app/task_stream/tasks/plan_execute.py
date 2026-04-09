@@ -9,8 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
+from pypika import Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.sql_builder import build_query
 from app.services.agent_checklist_service import (
     prepare_plan_approval,
     execute_plan_approval_work,
@@ -22,6 +26,7 @@ from app.doable_claw_agent.stores import (
 from app.task_stream.registry import register_task_stream
 
 logger = structlog.get_logger()
+plan_runs_t = Table("plan_runs")
 
 
 @register_task_stream("plan/execute")
@@ -111,15 +116,15 @@ async def plan_execute_task(send, payload: dict[str, Any]) -> dict[str, Any]:
         # Update plan status to error
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE plan_runs
-                SET status = 'error', error_message = $1, updated_at = NOW()
-                WHERE id = $2
-                """,
-                str(exc),
-                plan_id,
+            set_error_q = build_query(
+                PostgreSQLQuery.update(plan_runs_t)
+                .set(plan_runs_t.status, "error")
+                .set(plan_runs_t.error_message, Parameter("%s"))
+                .set(plan_runs_t.updated_at, fn.Now())
+                .where(plan_runs_t.id == Parameter("%s")),
+                [str(exc), plan_id],
             )
+            await conn.execute(set_error_q.sql, *set_error_q.params)
         raise
 
     # Get final plan state

@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from pypika import Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
+
+from app.sql_builder import build_query
 
 _DATA_PATH = Path(__file__).parent.parent / "data" / "business_problem_journey.json"
 _SCALE_PATH = Path(__file__).parent.parent / "data" / "scale_questions.json"
@@ -36,6 +41,7 @@ JOURNEY_STEP_PRECISION  = "precision"
 JOURNEY_STEP_GAP        = "gap"
 JOURNEY_STEP_PLAYBOOK   = "playbook"
 JOURNEY_STEP_COMPLETE   = "complete"
+onboarding_t = Table("onboarding")
 
 
 # ── small utils ────────────────────────────────────────────────────────────────
@@ -226,13 +232,19 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT outcome, domain, task, scale_answers, rca_qa
-            FROM onboarding WHERE session_id = $1
-            """,
-            sid,
+        load_precision_ctx_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(
+                onboarding_t.outcome,
+                onboarding_t.domain,
+                onboarding_t.task,
+                onboarding_t.scale_answers,
+                onboarding_t.rca_qa,
+            )
+            .where(onboarding_t.session_id == Parameter("%s")),
+            [sid],
         )
+        row = await conn.fetchrow(load_precision_ctx_q.sql, *load_precision_ctx_q.params)
 
     if not row:
         return _complete_message(acc)
@@ -271,18 +283,17 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
     if not questions:
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE onboarding
-                SET precision_questions = '[]'::jsonb,
-                    precision_answers = '[]'::jsonb,
-                    precision_status = 'complete',
-                    precision_completed_at = NOW(),
-                    updated_at = NOW()
-                WHERE session_id = $1
-                """,
-                sid,
+            mark_precision_empty_q = build_query(
+                PostgreSQLQuery.update(onboarding_t)
+                .set(onboarding_t.precision_questions, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.precision_status, "complete")
+                .set(onboarding_t.precision_completed_at, fn.Now())
+                .set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.session_id == Parameter("%s")),
+                [json.dumps([]), json.dumps([]), sid],
             )
+            await conn.execute(mark_precision_empty_q.sql, *mark_precision_empty_q.params)
         return await _gap_start(acc)
 
     cleaned = [
@@ -298,19 +309,17 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE onboarding
-            SET precision_questions = $1::jsonb,
-                precision_answers = '[]'::jsonb,
-                precision_status = 'awaiting_answers',
-                precision_completed_at = NULL,
-                updated_at = NOW()
-            WHERE session_id = $2
-            """,
-            json.dumps(cleaned),
-            sid,
+        save_precision_questions_q = build_query(
+            PostgreSQLQuery.update(onboarding_t)
+            .set(onboarding_t.precision_questions, Parameter("%s").cast("jsonb"))
+            .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+            .set(onboarding_t.precision_status, "awaiting_answers")
+            .set(onboarding_t.precision_completed_at, None)
+            .set(onboarding_t.updated_at, fn.Now())
+            .where(onboarding_t.session_id == Parameter("%s")),
+            [json.dumps(cleaned), json.dumps([]), sid],
         )
+        await conn.execute(save_precision_questions_q.sql, *save_precision_questions_q.params)
 
     return _precision_question_message(cleaned[0], 0, len(cleaned), acc)
 
@@ -328,13 +337,22 @@ async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, outcome, domain, task, scale_answers, rca_qa, rca_summary, rca_handoff
-            FROM onboarding WHERE session_id = $1
-            """,
-            sid,
+        load_gap_ctx_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(
+                onboarding_t.id,
+                onboarding_t.outcome,
+                onboarding_t.domain,
+                onboarding_t.task,
+                onboarding_t.scale_answers,
+                onboarding_t.rca_qa,
+                onboarding_t.rca_summary,
+                onboarding_t.rca_handoff,
+            )
+            .where(onboarding_t.session_id == Parameter("%s")),
+            [sid],
         )
+        row = await conn.fetchrow(load_gap_ctx_q.sql, *load_gap_ctx_q.params)
 
     if not row:
         return await _playbook_start(acc)
@@ -356,17 +374,16 @@ async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE onboarding
-            SET playbook_status = 'starting',
-                playbook_started_at = COALESCE(playbook_started_at, NOW()),
-                playbook_error = '',
-                updated_at = NOW()
-            WHERE id = $1
-            """,
-            onboarding_id,
+        set_playbook_starting_q = build_query(
+            PostgreSQLQuery.update(onboarding_t)
+            .set(onboarding_t.playbook_status, "starting")
+            .set(onboarding_t.playbook_started_at, fn.Coalesce(onboarding_t.playbook_started_at, fn.Now()))
+            .set(onboarding_t.playbook_error, "")
+            .set(onboarding_t.updated_at, fn.Now())
+            .where(onboarding_t.id == Parameter("%s")),
+            [onboarding_id],
         )
+        await conn.execute(set_playbook_starting_q.sql, *set_playbook_starting_q.params)
 
     try:
         phase0 = await run_phase0_gap_questions(
@@ -389,30 +406,27 @@ async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
     pool = get_pool()
     if parsed:
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE onboarding
-                SET gap_questions = $1::jsonb,
-                    playbook_status = 'awaiting_gap_answers',
-                    updated_at = NOW()
-                WHERE id = $2
-                """,
-                json.dumps(parsed),
-                onboarding_id,
+            set_gap_questions_q = build_query(
+                PostgreSQLQuery.update(onboarding_t)
+                .set(onboarding_t.gap_questions, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.playbook_status, "awaiting_gap_answers")
+                .set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.id == Parameter("%s")),
+                [json.dumps(parsed), onboarding_id],
             )
+            await conn.execute(set_gap_questions_q.sql, *set_gap_questions_q.params)
         return _gap_question_message(parsed[0], 0, parsed, acc)
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE onboarding
-            SET gap_questions = '[]'::jsonb,
-                playbook_status = 'ready',
-                updated_at = NOW()
-            WHERE id = $1
-            """,
-            onboarding_id,
+        clear_gap_questions_q = build_query(
+            PostgreSQLQuery.update(onboarding_t)
+            .set(onboarding_t.gap_questions, Parameter("%s").cast("jsonb"))
+            .set(onboarding_t.playbook_status, "ready")
+            .set(onboarding_t.updated_at, fn.Now())
+            .where(onboarding_t.id == Parameter("%s")),
+            [json.dumps([]), onboarding_id],
         )
+        await conn.execute(clear_gap_questions_q.sql, *clear_gap_questions_q.params)
     return await _playbook_start(acc)
 
 
@@ -599,13 +613,18 @@ async def next_step(
 
         pool = get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, precision_questions, precision_answers, questions_answers
-                FROM onboarding WHERE session_id = $1
-                """,
-                sid,
+            load_precision_state_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t)
+                .select(
+                    onboarding_t.id,
+                    onboarding_t.precision_questions,
+                    onboarding_t.precision_answers,
+                    onboarding_t.questions_answers,
+                )
+                .where(onboarding_t.session_id == Parameter("%s")),
+                [sid],
             )
+            row = await conn.fetchrow(load_precision_state_q.sql, *load_precision_state_q.params)
 
         if not row:
             return await _gap_start(prev)
@@ -638,34 +657,28 @@ async def next_step(
         pool = get_pool()
         async with pool.acquire() as conn:
             if all_answered:
-                await conn.execute(
-                    """
-                    UPDATE onboarding
-                    SET precision_answers = $1::jsonb,
-                        precision_status = 'complete',
-                        precision_completed_at = NOW(),
-                        questions_answers = $2::jsonb,
-                        updated_at = NOW()
-                    WHERE session_id = $3
-                    """,
-                    json.dumps(precision_answers),
-                    json.dumps(qa_log),
-                    sid,
+                persist_precision_complete_q = build_query(
+                    PostgreSQLQuery.update(onboarding_t)
+                    .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.precision_status, "complete")
+                    .set(onboarding_t.precision_completed_at, fn.Now())
+                    .set(onboarding_t.questions_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.updated_at, fn.Now())
+                    .where(onboarding_t.session_id == Parameter("%s")),
+                    [json.dumps(precision_answers), json.dumps(qa_log), sid],
                 )
+                await conn.execute(persist_precision_complete_q.sql, *persist_precision_complete_q.params)
             else:
-                await conn.execute(
-                    """
-                    UPDATE onboarding
-                    SET precision_answers = $1::jsonb,
-                        precision_status = 'awaiting_answers',
-                        questions_answers = $2::jsonb,
-                        updated_at = NOW()
-                    WHERE session_id = $3
-                    """,
-                    json.dumps(precision_answers),
-                    json.dumps(qa_log),
-                    sid,
+                persist_precision_progress_q = build_query(
+                    PostgreSQLQuery.update(onboarding_t)
+                    .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.precision_status, "awaiting_answers")
+                    .set(onboarding_t.questions_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.updated_at, fn.Now())
+                    .where(onboarding_t.session_id == Parameter("%s")),
+                    [json.dumps(precision_answers), json.dumps(qa_log), sid],
                 )
+                await conn.execute(persist_precision_progress_q.sql, *persist_precision_progress_q.params)
 
         if all_answered:
             return await _gap_start(prev)
@@ -708,17 +721,15 @@ async def next_step(
         if sid:
             pool = get_pool()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE onboarding
-                    SET gap_answers = $1,
-                        playbook_status = 'ready',
-                        updated_at = NOW()
-                    WHERE session_id = $2
-                    """,
-                    formatted_answers,
-                    sid,
+                persist_gap_answers_q = build_query(
+                    PostgreSQLQuery.update(onboarding_t)
+                    .set(onboarding_t.gap_answers, Parameter("%s"))
+                    .set(onboarding_t.playbook_status, "ready")
+                    .set(onboarding_t.updated_at, fn.Now())
+                    .where(onboarding_t.session_id == Parameter("%s")),
+                    [formatted_answers, sid],
                 )
+                await conn.execute(persist_gap_answers_q.sql, *persist_gap_answers_q.params)
 
         return await _playbook_start({**prev, "gapAnswers": gap_answers})
 

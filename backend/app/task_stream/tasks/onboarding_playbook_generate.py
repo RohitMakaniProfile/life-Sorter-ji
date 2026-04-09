@@ -5,13 +5,20 @@ import json
 from typing import Any
 
 import structlog
+from pypika import Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.sql_builder import build_query
 from app.services.instant_tool_service import get_tools_for_q1_q2_q3
 from app.services.playbook_service import build_tools_toon, run_agent_a_merged, run_agent_c_stream, run_agent_e_standalone
 from app.task_stream.registry import register_task_stream
 
 logger = structlog.get_logger()
+users_t = Table("users")
+onboarding_t = Table("onboarding")
+playbook_runs_t = Table("playbook_runs")
 
 
 def _outcome_label(outcome_id: str) -> str:
@@ -65,28 +72,39 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
     try:
         async with pool.acquire() as conn:
             if not onboarding_id and user_id:
-                linked_sid = await conn.fetchval(
-                    "SELECT onboarding_session_id FROM users WHERE id::text = $1 LIMIT 1",
-                    user_id,
+                linked_sid_q = build_query(
+                    PostgreSQLQuery.from_(users_t)
+                    .select(users_t.onboarding_session_id)
+                    .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                    .limit(1),
+                    [user_id],
                 )
+                linked_sid = await conn.fetchval(linked_sid_q.sql, *linked_sid_q.params)
                 onboarding_id = str(linked_sid or "").strip()
             if not onboarding_id:
                 raise ValueError("onboarding_id or linked user_id is required for playbook/onboarding-generate")
 
-            onboarding = await conn.fetchrow(
-                """
-                SELECT
-                  id, user_id,
-                  outcome, domain, task,
-                  website_url,
-                  scale_answers, rca_qa, rca_summary, rca_handoff,
-                  gap_answers,
-                  web_summary
-                FROM onboarding
-                WHERE id = $1::uuid
-                """,
-                onboarding_id,
+            onboarding_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t)
+                .select(
+                    onboarding_t.id,
+                    onboarding_t.user_id,
+                    onboarding_t.outcome,
+                    onboarding_t.domain,
+                    onboarding_t.task,
+                    onboarding_t.website_url,
+                    onboarding_t.scale_answers,
+                    onboarding_t.rca_qa,
+                    onboarding_t.rca_summary,
+                    onboarding_t.rca_handoff,
+                    onboarding_t.gap_answers,
+                    onboarding_t.web_summary,
+                )
+                .where(onboarding_t.id.cast("TEXT") == Parameter("%s"))
+                .limit(1),
+                [onboarding_id],
             )
+            onboarding = await conn.fetchrow(onboarding_q.sql, *onboarding_q.params)
             if not onboarding:
                 raise ValueError(f"Onboarding row not found for onboarding_id={onboarding_id}")
 
@@ -110,43 +128,52 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             web_summary = str(onboarding.get("web_summary") or "")
 
             # Create a playbook_runs row (running).
-            playbook_run = await conn.fetchrow(
-                """
-                INSERT INTO playbook_runs (session_id, user_id, status, onboarding_snapshot, crawl_snapshot)
-                VALUES ($1, $2, 'running', $3::jsonb, $4::jsonb)
-                RETURNING id
-                """,
-                onboarding_id,
-                user_id,
-                json.dumps(
-                    {
-                        "outcome": outcome,
-                        "domain": domain,
-                        "task": task,
-                        "website_url": website_url,
-                        "scale_answers": business_profile,
-                        "rca_qa": rca_qa,
-                        "rca_summary": rca_summary,
-                        "rca_handoff": rca_handoff,
-                        "gap_answers": gap_answers,
-                    }
-                ),
-                json.dumps({"web_summary": web_summary}),
+            onboarding_snapshot = json.dumps(
+                {
+                    "outcome": outcome,
+                    "domain": domain,
+                    "task": task,
+                    "website_url": website_url,
+                    "scale_answers": business_profile,
+                    "rca_qa": rca_qa,
+                    "rca_summary": rca_summary,
+                    "rca_handoff": rca_handoff,
+                    "gap_answers": gap_answers,
+                }
             )
+            crawl_snapshot = json.dumps({"web_summary": web_summary})
+            playbook_run_q = build_query(
+                PostgreSQLQuery.into(playbook_runs_t)
+                .columns(
+                    playbook_runs_t.session_id,
+                    playbook_runs_t.user_id,
+                    playbook_runs_t.status,
+                    playbook_runs_t.onboarding_snapshot,
+                    playbook_runs_t.crawl_snapshot,
+                )
+                .insert(
+                    Parameter("%s"),
+                    Parameter("%s"),
+                    "running",
+                    Parameter("%s").cast("jsonb"),
+                    Parameter("%s").cast("jsonb"),
+                )
+                .returning(playbook_runs_t.id),
+                [onboarding_id, user_id, onboarding_snapshot, crawl_snapshot],
+            )
+            playbook_run = await conn.fetchrow(playbook_run_q.sql, *playbook_run_q.params)
             playbook_run_id = playbook_run.get("id")
 
-            await conn.execute(
-                """
-                UPDATE onboarding
-                SET playbook_status = 'generating',
-                    playbook_run_id = $1,
-                    playbook_error = '',
-                    updated_at = NOW()
-                WHERE id = $2
-                """,
-                playbook_run_id,
-                onboarding_id,
+            set_generating_q = build_query(
+                PostgreSQLQuery.update(onboarding_t)
+                .set(onboarding_t.playbook_status, "generating")
+                .set(onboarding_t.playbook_run_id, Parameter("%s"))
+                .set(onboarding_t.playbook_error, "")
+                .set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                [playbook_run_id, onboarding_id],
             )
+            await conn.execute(set_generating_q.sql, *set_generating_q.params)
 
         await send("stage", stage="generating", label="Writing your playbook...")
 
@@ -204,36 +231,36 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
         }
 
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE playbook_runs
-                SET status = 'complete',
-                    error = '',
-                    context_brief = $1,
-                    icp_card = $2,
-                    playbook = $3,
-                    website_audit = $4,
-                    latencies = $5::jsonb
-                WHERE id = $6
-                """,
-                result_payload["context_brief"],
-                result_payload["icp_card"],
-                result_payload["playbook"],
-                result_payload["website_audit"],
-                json.dumps(latencies),
-                playbook_run_id,
+            set_complete_q = build_query(
+                PostgreSQLQuery.update(playbook_runs_t)
+                .set(playbook_runs_t.status, "complete")
+                .set(playbook_runs_t.error, "")
+                .set(playbook_runs_t.context_brief, Parameter("%s"))
+                .set(playbook_runs_t.icp_card, Parameter("%s"))
+                .set(playbook_runs_t.playbook, Parameter("%s"))
+                .set(playbook_runs_t.website_audit, Parameter("%s"))
+                .set(playbook_runs_t.latencies, Parameter("%s").cast("jsonb"))
+                .where(playbook_runs_t.id == Parameter("%s")),
+                [
+                    result_payload["context_brief"],
+                    result_payload["icp_card"],
+                    result_payload["playbook"],
+                    result_payload["website_audit"],
+                    json.dumps(latencies),
+                    playbook_run_id,
+                ],
             )
-            await conn.execute(
-                """
-                UPDATE onboarding
-                SET playbook_status = 'complete',
-                    playbook_completed_at = NOW(),
-                    onboarding_completed_at = COALESCE(onboarding_completed_at, NOW()),
-                    updated_at = NOW()
-                WHERE id = $1::uuid
-                """,
-                onboarding_id,
+            await conn.execute(set_complete_q.sql, *set_complete_q.params)
+            set_onboarding_complete_q = build_query(
+                PostgreSQLQuery.update(onboarding_t)
+                .set(onboarding_t.playbook_status, "complete")
+                .set(onboarding_t.playbook_completed_at, fn.Now())
+                .set(onboarding_t.onboarding_completed_at, fn.Coalesce(onboarding_t.onboarding_completed_at, fn.Now()))
+                .set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                [onboarding_id],
             )
+            await conn.execute(set_onboarding_complete_q.sql, *set_onboarding_complete_q.params)
 
         await asyncio.sleep(0)
         logger.info("playbook/onboarding-generate done", onboarding_id=onboarding_id, playbook_run_id=str(playbook_run_id))
@@ -246,28 +273,24 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
         try:
             async with pool.acquire() as conn:
                 if playbook_run_id:
-                    await conn.execute(
-                        """
-                        UPDATE playbook_runs
-                        SET status = 'error',
-                            error = $1
-                        WHERE id = $2
-                        """,
-                        error_message,
-                        playbook_run_id,
+                    set_playbook_error_q = build_query(
+                        PostgreSQLQuery.update(playbook_runs_t)
+                        .set(playbook_runs_t.status, "error")
+                        .set(playbook_runs_t.error, Parameter("%s"))
+                        .where(playbook_runs_t.id == Parameter("%s")),
+                        [error_message, playbook_run_id],
                     )
+                    await conn.execute(set_playbook_error_q.sql, *set_playbook_error_q.params)
                 if onboarding_id:
-                    await conn.execute(
-                        """
-                        UPDATE onboarding
-                        SET playbook_status = 'error',
-                            playbook_error = $1,
-                            updated_at = NOW()
-                        WHERE id = $2
-                        """,
-                        error_message,
-                        onboarding_id,
+                    set_onboarding_error_q = build_query(
+                        PostgreSQLQuery.update(onboarding_t)
+                        .set(onboarding_t.playbook_status, "error")
+                        .set(onboarding_t.playbook_error, Parameter("%s"))
+                        .set(onboarding_t.updated_at, fn.Now())
+                        .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                        [error_message, onboarding_id],
                     )
+                    await conn.execute(set_onboarding_error_q.sql, *set_onboarding_error_q.params)
         except Exception as db_err:
             logger.error("playbook/onboarding-generate error update failed", error=str(db_err))
         # Re-raise to let task stream service handle the error event

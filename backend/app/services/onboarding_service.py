@@ -6,12 +6,17 @@ from typing import Any, Optional
 
 import json
 import structlog
+from pypika import Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.repositories.onboarding_table import insert_onboarding_default_values_returning
+from app.sql_builder import build_query
 from app.utils.url_sanitize import sanitize_http_url
 
 logger = structlog.get_logger()
-
+onboarding_t = Table("onboarding")
 ALLOWED_PATCH_FIELDS = frozenset(
     {
         "user_id",
@@ -28,6 +33,27 @@ ALLOWED_PATCH_FIELDS = frozenset(
 BACKEND_MANAGED_FIELDS = frozenset(
     {"questions_answers", "crawl_cache_key", "crawl_run_id", "onboarding_completed_at", "business_profile"}
 )
+
+RETURNING_COLUMNS = (
+    "id",
+    "user_id",
+    "outcome",
+    "domain",
+    "task",
+    "website_url",
+    "gbp_url",
+    "scale_answers",
+    "business_profile",
+    "questions_answers",
+    "crawl_cache_key",
+    "onboarding_completed_at",
+    "created_at",
+    "updated_at",
+)
+
+
+def _returning_terms() -> list[Any]:
+    return [getattr(onboarding_t, col) for col in RETURNING_COLUMNS]
 
 
 def _sanitize_onboarding_url_fields(d: dict[str, Any]) -> dict[str, Any]:
@@ -77,29 +103,20 @@ async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = Non
     pool = get_pool()
     async with pool.acquire() as conn:
         if not allowed:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO onboarding DEFAULT VALUES
-                RETURNING id, user_id, outcome, domain, task,
-                          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key,
-                          onboarding_completed_at, created_at, updated_at
-                """
-            )
+            row = await conn.fetchrow(insert_onboarding_default_values_returning())
         else:
             cols = list(allowed.keys())
             vals: list[Any] = list(allowed.values())
-            placeholders = ", ".join(f"${i + 1}" for i in range(len(vals)))
-            col_sql = ", ".join(cols)
-            row = await conn.fetchrow(
-                f"""
-                INSERT INTO onboarding ({col_sql})
-                VALUES ({placeholders})
-                RETURNING id, user_id, outcome, domain, task,
-                          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key,
-                          onboarding_completed_at, created_at, updated_at
-                """,
-                *vals,
+            insert_terms = [getattr(onboarding_t, col) for col in cols]
+            insert_placeholders = [Parameter("%s") for _ in vals]
+            create_with_fields_q = build_query(
+                PostgreSQLQuery.into(onboarding_t)
+                .columns(*insert_terms)
+                .insert(*insert_placeholders)
+                .returning(*_returning_terms()),
+                vals,
             )
+            row = await conn.fetchrow(create_with_fields_q.sql, *create_with_fields_q.params)
 
     out = _serialize_row(row)
     logger.info(
@@ -132,10 +149,13 @@ async def upsert_onboarding_patch(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT onboarding_completed_at, website_url FROM onboarding WHERE id = $1::uuid",
-            oid,
+        existing_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(onboarding_t.onboarding_completed_at, onboarding_t.website_url)
+            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            [oid],
         )
+        existing = await conn.fetchrow(existing_q.sql, *existing_q.params)
         if not existing:
             raise ValueError("onboarding row not found")
 
@@ -153,50 +173,41 @@ async def upsert_onboarding_patch(
             return await create_session_with_onboarding(initial_fields)
 
         if not allowed:
-            row = await conn.fetchrow(
-                """
-                SELECT id, user_id, outcome, domain, task,
-                       website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key,
-                       onboarding_completed_at, created_at, updated_at
-                FROM onboarding
-                WHERE id = $1::uuid
-                """,
-                oid,
+            current_row_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t)
+                .select(*_returning_terms())
+                .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+                [oid],
             )
+            row = await conn.fetchrow(current_row_q.sql, *current_row_q.params)
         else:
             cols = list(allowed.keys())
             vals = list(allowed.values())
-            set_sql = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(cols))
-            row = await conn.fetchrow(
-                f"""
-                UPDATE onboarding
-                SET {set_sql}, updated_at = NOW()
-                WHERE id = $1::uuid
-                RETURNING id, user_id, outcome, domain, task,
-                          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key,
-                          onboarding_completed_at, created_at, updated_at
-                """,
-                oid,
-                *vals,
+            update_qb = PostgreSQLQuery.update(onboarding_t)
+            for col_name in cols:
+                update_qb = update_qb.set(getattr(onboarding_t, col_name), Parameter("%s"))
+            update_q = build_query(
+                update_qb.set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.id == Parameter("%s").cast("uuid"))
+                .returning(*_returning_terms()),
+                [*vals, oid],
             )
+            row = await conn.fetchrow(update_q.sql, *update_q.params)
 
         if website_url_changed:
-            row = await conn.fetchrow(
-                """
-                UPDATE onboarding
-                SET web_summary = '',
-                    business_profile = '',
-                    rca_qa = '[]'::jsonb,
-                    rca_summary = '',
-                    rca_handoff = '',
-                    updated_at = NOW()
-                WHERE id = $1::uuid
-                RETURNING id, user_id, outcome, domain, task,
-                          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key,
-                          onboarding_completed_at, created_at, updated_at
-                """,
-                oid,
+            reset_summary_q = build_query(
+                PostgreSQLQuery.update(onboarding_t)
+                .set(onboarding_t.web_summary, "")
+                .set(onboarding_t.business_profile, "")
+                .set(onboarding_t.rca_qa, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.rca_summary, "")
+                .set(onboarding_t.rca_handoff, "")
+                .set(onboarding_t.updated_at, fn.Now())
+                .where(onboarding_t.id == Parameter("%s").cast("uuid"))
+                .returning(*_returning_terms()),
+                [json.dumps([]), oid],
             )
+            row = await conn.fetchrow(reset_summary_q.sql, *reset_summary_q.params)
 
     out = _serialize_row(row)
     logger.debug("onboarding patched", onboarding_id=oid, fields=list(allowed.keys()))

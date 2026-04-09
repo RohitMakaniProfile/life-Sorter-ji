@@ -4,13 +4,18 @@ import json
 from typing import Any
 
 from fastapi import HTTPException, Request
+from pypika import Table
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.db import get_pool
+from app.sql_builder import build_query
 from app.services.jwt_service import decode_and_verify_access_token
 from app.task_stream.redis_client import get_redis
 
 _AUTH_CACHE_PREFIX = "ikshan:auth:user"
 _AUTH_CACHE_TTL_SECONDS = 300
+users_t = Table("users")
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -23,15 +28,23 @@ def _extract_bearer_token(authorization: str | None) -> str:
 async def _load_user_from_db(user_id: str) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, email, phone_number, name, auth_provider, onboarding_session_id, last_login_at
-            FROM users
-            WHERE id::text = $1
-            LIMIT 1
-            """,
-            user_id,
+        lookup_user_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(
+                users_t.id,
+                users_t.email,
+                users_t.phone_number,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+                users_t.last_login_at,
+            )
+            # asyncpg can coerce UUID column comparisons from string params.
+            .where(users_t.id == Parameter("%s"))
+            .limit(1),
+            [user_id],
         )
+        row = await conn.fetchrow(lookup_user_q.sql, *lookup_user_q.params)
     if not row:
         return None
     return {

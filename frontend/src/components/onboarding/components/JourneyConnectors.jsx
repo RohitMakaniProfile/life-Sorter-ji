@@ -1,11 +1,11 @@
-import { useId, useState, useLayoutEffect, useCallback, useRef } from 'react';
+import { useId, useState, useLayoutEffect, useCallback, useEffect, useRef } from 'react';
 
 const R = 10;
 const END_INSET = 4;
 const LAYOUT_RETRY_MAX = 120;
 
 /** Path from source right (x0, y0) to target left (x1, y1) in the same coordinate space. */
-export function buildMeasuredConnectorPath(x0, y0, x1, y1) {
+function buildMeasuredConnectorPath(x0, y0, x1, y1) {
   const dy = y1 - y0;
   const absDy = Math.abs(dy);
   const span = x1 - x0;
@@ -124,7 +124,10 @@ export default function JourneyConnectors({ rootRef, scrollRef, branchTransition
   const markerId = `ob-jc-head-${reactId}`;
   const [layout, setLayout] = useState({ w: 0, h: 0, paths: [] });
   const segmentsRef = useRef(segments);
-  segmentsRef.current = segments;
+
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
 
   const remeasure = useCallback(() => {
     const run = (generation) => {
