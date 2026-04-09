@@ -8,12 +8,16 @@ from pydantic import BaseModel, Field
 class TaskStreamStartRequest(BaseModel):
     """Start (or resume) a background task stream for an actor."""
 
-    session_id: Optional[str] = Field(default=None, description="Onboarding/session actor id")
+    onboarding_id: Optional[str] = Field(default=None, description="Onboarding actor id")
     user_id: Optional[str] = Field(default=None, description="Authenticated actor id (if available)")
     payload: dict[str, Any] = Field(default_factory=dict, description="Task-specific input payload")
     resume_if_exists: bool = Field(
         default=True,
         description="If a stream already exists for this task+actor, return the same stream_id instead of starting a new task.",
+    )
+    force_fresh: bool = Field(
+        default=False,
+        description="Cancel any existing stream for this task+actor and start a new one. Takes precedence over resume_if_exists.",
     )
 
 
@@ -28,6 +32,6 @@ class TaskStreamAttachResponse(BaseModel):
 
 
 class TaskStreamActor(BaseModel):
-    session_id: Optional[str] = None
+    onboarding_id: Optional[str] = None
     user_id: Optional[str] = None
 

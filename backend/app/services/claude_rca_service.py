@@ -1146,3 +1146,146 @@ async def generate_precision_questions(
     except httpx.RequestError as e:
         logger.error("Precision questions request failed", error=str(e))
         return None
+
+
+# ══════════════════════════════════════════════════════════════
+#  GAP QUESTIONS — Pre-playbook clarifying questions
+# ══════════════════════════════════════════════════════════════
+
+_GAP_QUESTIONS_PROMPT_DEFAULT = """
+You are a smart intake specialist. You have been given company context and founder answers.
+
+Your job: identify what is GENUINELY missing that would change the playbook — and ask only
+those questions. Maximum 3. If you can proceed with fewer, ask fewer. 1 question is fine.
+If you have enough context, return NO questions.
+
+Rules:
+— Never ask what is already answered in the context
+— Only ask if the answer directly changes a playbook step
+— Every question gets 4 realistic options + Option E (type your own)
+
+Output JSON format:
+{
+  "questions": [
+    {
+      "id": "Q1",
+      "label": "Short label",
+      "question": "The specific question about THIS business",
+      "why_matters": "One line — what shifts in the playbook based on the answer",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text", "None of these — my answer is: ___"]
+    }
+  ]
+}
+
+If no questions are needed, return: {"questions": []}
+
+Only return valid JSON. No markdown, no explanation outside the JSON.
+""".strip()
+
+
+async def generate_gap_questions(
+    outcome: str,
+    outcome_label: str,
+    domain: str,
+    task: str,
+    rca_history: list[dict[str, str]],
+    scale_answers: dict[str, Any] | None = None,
+    web_summary: str = "",
+    rca_handoff: str = "",
+    rca_summary: str = "",
+    precision_answers: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]] | None:
+    """
+    Generate gap questions (0-3) before playbook generation.
+    Returns a list of question dicts, or None on failure.
+    Empty list means no additional questions needed.
+    """
+    settings = get_settings()
+    api_key = settings.OPENROUTER_API_KEY
+    model = settings.OPENROUTER_CLAUDE_MODEL  # Sonnet — faster + reliable JSON
+
+    if not api_key:
+        logger.warning("OpenRouter API key not configured — skipping gap questions")
+        return None
+
+    try:
+        from app.services.prompts_service import get_prompt
+
+        system_prompt = await get_prompt(
+            "gap-questions",
+            default=_GAP_QUESTIONS_PROMPT_DEFAULT,
+        )
+
+        user_payload = {
+            "outcome": str(outcome or "").strip(),
+            "outcome_label": str(outcome_label or "").strip(),
+            "domain": str(domain or "").strip(),
+            "task": str(task or "").strip(),
+            "scale_answers": scale_answers or {},
+            "web_summary": str(web_summary or "").strip(),
+            "rca_history": rca_history or [],
+            "rca_handoff": str(rca_handoff or "").strip(),
+            "rca_summary": str(rca_summary or "").strip(),
+            "precision_answers": precision_answers or [],
+        }
+        t0 = time.monotonic()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=json.dumps(user_payload, ensure_ascii=True),
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        content = str(result.get("message") or "")
+        logger.info("Gap questions raw response", raw_content=content[:4000] if content else "<empty>")
+
+        if not content or not content.strip():
+            logger.warning("Gap questions: empty response — treating as no questions")
+            return []
+
+        parsed = json.loads(_extract_json_value(content))
+        if isinstance(parsed, dict):
+            questions = parsed.get("questions", [])
+        elif isinstance(parsed, list):
+            questions = parsed
+        else:
+            questions = []
+
+        # Attach metadata for context pool to each question
+        _meta = {
+            "service": "openrouter",
+            "model": model,
+            "purpose": "gap_questions",
+            "system_prompt": system_prompt,
+            "user_message": json.dumps(user_payload, ensure_ascii=True),
+            "temperature": 0.3,
+            "max_tokens": 1500,
+            "raw_response": content,
+            "latency_ms": latency_ms,
+        }
+        for q in questions:
+            q["_meta"] = _meta
+
+        logger.info(
+            "Gap questions generated",
+            count=len(questions),
+            labels=[q.get("label", "?") for q in questions],
+        )
+        return questions[:3]  # Ensure max 3
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "Gap questions HTTP error",
+            status_code=e.response.status_code,
+            body=e.response.text[:300],
+        )
+        return None
+    except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+        logger.error("Gap questions parse error", error=str(e))
+        return None
+    except httpx.RequestError as e:
+        logger.error("Gap questions request failed", error=str(e))
+        return None
+

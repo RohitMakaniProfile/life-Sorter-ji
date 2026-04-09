@@ -26,7 +26,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
       3. Build a business_profile markdown summary from the web_summary and persist both together.
 
     Input payload:
-      - session_id  (carries onboarding_id from task-stream service)
+      - onboarding_id (carries onboarding_id from task-stream service)
       - user_id     (optional)
       - website_url (required)
 
@@ -37,7 +37,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
         raise ValueError("website_url is required")
 
     website_url = sanitize_http_url(raw_url) or raw_url
-    onboarding_id = str(payload.get("onboarding_id") or payload.get("session_id") or "").strip()
+    onboarding_id = str(payload.get("onboarding_id") or "").strip()
 
     await send("stage", stage="starting", label="Starting", url=website_url)
 
@@ -57,6 +57,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     page_data: dict[str, Any] = {}
     summary_text: str = ""
     scrape_error: str | None = None
+
 
     try:
         async def _on_progress(event: dict[str, Any]) -> None:
@@ -88,6 +89,8 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     await send("stage", stage="business_profile", label="Building business profile")
 
     business_profile = await generate_business_profile(web_summary=web_summary) if onboarding_id else ""
+
+
     if onboarding_id:
         await update_onboarding_crawl_outputs(
             onboarding_id,

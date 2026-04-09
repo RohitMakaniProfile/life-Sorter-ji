@@ -37,10 +37,13 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
   const autoResumeTriggeredRef = useRef(false);
 
   const startForSession = useCallback(
-    async (sid, { websiteUrl } = {}) => {
+    async (sid, { websiteUrl, forceFresh = false } = {}) => {
       const onboardingId = sid || (await ensureSession());
       const url = String(websiteUrl || '').trim();
       if (!onboardingId) return;
+
+      // If we have a new URL (not resume), force a fresh crawl
+      const shouldForceFresh = forceFresh || (url && url !== '(resume)');
 
       safeSetItem(STORAGE_CRAWL_STEP_REACHED, '1');
       setCrawlStreaming(true);
@@ -57,6 +60,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
         onboardingId,
         payload: url && url !== '(resume)' ? { website_url: url } : {},
         maxRetries: 2,
+        forceFresh: shouldForceFresh,
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks: {
           onEvent: (e) => {

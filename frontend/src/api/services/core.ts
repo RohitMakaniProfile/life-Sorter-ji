@@ -27,6 +27,8 @@ export const coreApi = {
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionStart, payload),
   onboardingPrecisionAnswer: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionAnswer, payload),
+  onboardingGapQuestionsStart: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.gapQuestionsStart, payload),
   request: apiRequest,
 };
 

@@ -32,18 +32,18 @@ class TaskStreamService:
         task_type: str,
         task_fn: TaskFn,
         payload: dict[str, Any],
-        session_id: Optional[str] = None,
+        onboarding_id: Optional[str] = None,
         user_id: Optional[str] = None,
         resume_if_exists: bool = True,
         force_fresh: bool = False,
     ) -> dict[str, str]:
-        if not (session_id or user_id):
-            raise HTTPException(status_code=400, detail="Provide session_id or user_id")
+        if not (onboarding_id or user_id):
+            raise HTTPException(status_code=400, detail="Provide onboarding_id or user_id")
 
         # Force fresh: mark any existing streams as cancelled/stale before starting new
         if force_fresh:
             existing = await self.store.resolve_stream_id(
-                task_type, session_id=session_id, user_id=user_id
+                task_type, onboarding_id=onboarding_id, user_id=user_id
             )
             if existing:
                 old_status = await self.store.get_status(existing)
@@ -52,14 +52,14 @@ class TaskStreamService:
                     await self.store.set_status(existing, "cancelled")
                     await self.store.xadd_event(existing, "error", {"message": "Superseded by new task"})
                 # Clear the actor mapping so we start fresh
-                await self.store.clear_actor_mapping(task_type, session_id=session_id, user_id=user_id)
+                await self.store.clear_actor_mapping(task_type, onboarding_id=onboarding_id, user_id=user_id)
 
-        # 1) Resume by mapping (session_id/user_id) if desired.
+        # 1) Resume by mapping (onboarding_id/user_id) if desired.
         #    Resume 'running' streams (live attach) and 'done' streams (replay final event).
         #    Do NOT resume 'error' or 'cancelled' — those should restart fresh.
         if resume_if_exists and not force_fresh:
             existing = await self.store.resolve_stream_id(
-                task_type, session_id=session_id, user_id=user_id
+                task_type, onboarding_id=onboarding_id, user_id=user_id
             )
             if existing:
                 status = await self.store.get_status(existing)
@@ -67,7 +67,7 @@ class TaskStreamService:
                     return {"stream_id": existing, "status": status}
 
         # 2) Acquire a lightweight lock so concurrent start requests don't double-spawn.
-        actor_key = (session_id or "").strip() or (user_id or "").strip() or "anon"
+        actor_key = (onboarding_id or "").strip() or (user_id or "").strip() or "anon"
         lock_key = f"{REDIS_TASKSTREAM_PREFIX}:lock:{task_type}:{actor_key}"
         acquired = False
         try:
@@ -76,7 +76,7 @@ class TaskStreamService:
                 for _ in range(20):
                     await asyncio.sleep(0.1)
                     existing = await self.store.resolve_stream_id(
-                        task_type, session_id=session_id, user_id=user_id
+                        task_type, onboarding_id=onboarding_id, user_id=user_id
                     )
                     if existing:
                         status = await self.store.get_status(existing)
@@ -89,20 +89,20 @@ class TaskStreamService:
             await self.store.create_stream_and_meta(
                 stream_id,
                 task_type=task_type,
-                session_id=session_id,
+                onboarding_id=onboarding_id,
                 user_id=user_id,
                 status="running",
             )
             await self.store.set_actor_mapping(
                 task_type,
                 stream_id=stream_id,
-                session_id=session_id,
+                onboarding_id=onboarding_id,
                 user_id=user_id,
             )
 
             task_payload: dict[str, Any] = {**payload}
-            if session_id:
-                task_payload.setdefault("session_id", session_id)
+            if onboarding_id:
+                task_payload.setdefault("onboarding_id", onboarding_id)
             if user_id:
                 task_payload.setdefault("user_id", user_id)
 

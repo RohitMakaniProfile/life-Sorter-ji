@@ -122,6 +122,8 @@ async def run_playwright_single_page(
         args={"url": url, "maxPages": 1},
         on_progress=_skill_progress,
     )
+
+
     if result.status != "ok":
         raise RuntimeError(str(result.error or "scrape-playwright failed"))
 

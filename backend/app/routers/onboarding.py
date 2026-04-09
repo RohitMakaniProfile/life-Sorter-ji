@@ -12,7 +12,7 @@ from app.middleware.auth_context import get_request_user, require_request_user
 from app.middleware.rate_limit import limiter
 from app.models.session import DynamicQuestion
 from app.services import onboarding_service
-from app.services.claude_rca_service import generate_precision_questions
+from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions
 from app.services.onboarding_question_service import generate_next_rca_question_for_onboarding
 
 logger = structlog.get_logger()
@@ -425,6 +425,28 @@ class SubmitOnboardingPrecisionAnswerResponse(BaseModel):
     precision_status: str = ""  # awaiting_answers | complete
 
 
+# ══════════════════════════════════════════════════════════════
+#  GAP QUESTIONS — Pre-playbook clarifying questions
+# ══════════════════════════════════════════════════════════════
+
+class GapQuestionItem(BaseModel):
+    id: str = ""
+    label: str = ""
+    question: str = ""
+    why_matters: str = ""
+    options: list[str] = []
+
+
+class StartGapQuestionsRequest(BaseModel):
+    onboarding_id: Optional[str] = None
+
+
+class StartGapQuestionsResponse(BaseModel):
+    onboarding_id: str
+    questions: list[GapQuestionItem] = []
+    available: bool = False  # True if questions exist
+
+
 def _parse_gap_questions(agent_output: str) -> list[dict[str, Any]]:
     """
     Parse LLM output into structured gap questions.
@@ -526,13 +548,28 @@ async def _resolve_onboarding_id(
     raise HTTPException(status_code=400, detail="onboarding_id is required")
 
 
+# ══════════════════════════════════════════════════════════════
+#  DEPRECATED — Use POST /gap-questions/start instead
+#  This function was used by the old /playbook/launch flow.
+#  Keeping for backward compatibility but should be removed.
+# ══════════════════════════════════════════════════════════════
 async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPlaybookRequest) -> StartOnboardingPlaybookResponse:
     """
-    Onboarding-native playbook start:
-    - Reads context from `onboarding` table
-    - Generates Phase 0 gap questions (if any)
-    - Persists `gap_questions` and `playbook_status` in onboarding
+    DEPRECATED: Use POST /gap-questions/start instead.
+
+    This function is no longer called by /playbook/launch.
+    The new flow is:
+      1. POST /gap-questions/start → generates questions
+      2. POST /playbook/gap-answers → if questions exist
+      3. POST /playbook/launch → starts generation (checks gap_questions field)
     """
+    import warnings
+    warnings.warn(
+        "_prepare_onboarding_playbook is deprecated. Use POST /gap-questions/start instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     from app.db import get_pool
     from app.services.playbook_service import run_phase0_gap_questions
 
@@ -675,25 +712,77 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPlaybookRequest = Body(...)):
     """
-    Transactional playbook launch (post-auth):
-    - Ensures prep state (gap questions) is computed.
-    - If gap questions needed: returns `stage=gap_questions`.
-    - Else starts/resumes background stream and returns `stage=started` + stream_id.
+    Launch playbook generation (post-auth).
+
+    Prerequisites:
+    - Must call /gap-questions/start first to check for gap questions
+    - If gap questions were returned, must answer them via /playbook/gap-answers
+
+    Flow:
+    - If gap_questions is NULL → error "Call /gap-questions/start first"
+    - If gap_questions has items AND gap_answers is empty → error "Answer gap questions first"
+    - Otherwise → start playbook generation task stream
     """
     require_request_user(request)
 
-    prep = await _prepare_onboarding_playbook(
+    from app.db import get_pool
+
+    onboarding_id = await _resolve_onboarding_id(
         request=request,
-        body=StartOnboardingPlaybookRequest(onboarding_id=body.onboarding_id),
+        provided_onboarding_id=body.onboarding_id,
     )
-    if prep.stage == "gap_questions":
-        return LaunchOnboardingPlaybookResponse(
-            onboarding_id=prep.onboarding_id,
-            stage="gap_questions",
-            gap_questions_parsed=prep.gap_questions_parsed,
-            message=prep.message,
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, gap_questions, gap_answers, playbook_status
+            FROM onboarding
+            WHERE id = $1::uuid
+            """,
+            onboarding_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
+
+        onboarding_id = str(row.get("id") or "")
+        gap_questions_raw = row.get("gap_questions")
+        gap_answers = str(row.get("gap_answers") or "").strip()
+        playbook_status = str(row.get("playbook_status") or "")
+
+        # Parse gap_questions
+        gap_questions = _as_list(gap_questions_raw)
+
+        # Check if gap questions have been generated
+        if gap_questions_raw is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Call /gap-questions/start before launching playbook."
+            )
+
+        # Check if gap questions exist but haven't been answered
+        if gap_questions and len(gap_questions) > 0 and not gap_answers:
+            return LaunchOnboardingPlaybookResponse(
+                onboarding_id=onboarding_id,
+                stage="gap_questions",
+                gap_questions_parsed=[GapQuestion(**q) for q in gap_questions],
+                message="Answer gap questions before launching playbook.",
+            )
+
+        # Update status to starting
+        await conn.execute(
+            """
+            UPDATE onboarding
+            SET playbook_status = 'starting',
+                playbook_started_at = COALESCE(playbook_started_at, NOW()),
+                playbook_error = '',
+                updated_at = NOW()
+            WHERE id = $1::uuid
+            """,
+            onboarding_id,
         )
 
+    # Start the playbook generation task stream
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import TASK_STREAM_REGISTRY
 
@@ -706,13 +795,13 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
     started = await service.start_task_stream(
         task_type=task_type,
         task_fn=task_fn,
-        payload={"onboarding_id": prep.onboarding_id},
-        session_id=prep.onboarding_id,
+        payload={"onboarding_id": onboarding_id},
+        onboarding_id=onboarding_id,
         user_id=None,
         resume_if_exists=True,
     )
     return LaunchOnboardingPlaybookResponse(
-        onboarding_id=prep.onboarding_id,
+        onboarding_id=onboarding_id,
         stage="started",
         gap_questions_parsed=[],
         stream_id=str(started.get("stream_id") or ""),
@@ -954,3 +1043,153 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
             all_answered=False,
             precision_status="awaiting_answers",
         )
+
+
+# ══════════════════════════════════════════════════════════════
+#  GAP QUESTIONS ENDPOINT — Pre-playbook clarifying questions
+# ══════════════════════════════════════════════════════════════
+
+@router.post("/gap-questions/start", response_model=StartGapQuestionsResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_CHAT)
+async def onboarding_gap_questions_start(request: Request, body: StartGapQuestionsRequest = Body(...)):
+    """
+    Generate gap questions before playbook generation.
+    Similar to precision/start but for pre-playbook context gaps.
+
+    Returns:
+      - questions: list of gap questions (0-3)
+      - available: True if questions exist and need answers
+
+    If questions=[] and available=False, frontend should proceed directly to playbook.
+    """
+    onboarding_id = await _resolve_onboarding_id(
+        request=request,
+        provided_onboarding_id=body.onboarding_id,
+    )
+
+    from app.db import get_pool
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT outcome, domain, task, scale_answers, rca_qa, rca_summary, rca_handoff, web_summary,
+                   precision_questions, precision_answers
+            FROM onboarding
+            WHERE id = $1::uuid
+            """,
+            onboarding_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
+
+        outcome = str(row.get("outcome") or "")
+        domain = str(row.get("domain") or "")
+        task = str(row.get("task") or "")
+        scale_answers = _as_dict(row.get("scale_answers"))
+        rca_qa = _as_list(row.get("rca_qa"))
+        rca_history = [
+            {"question": str(it.get("question") or ""), "answer": str(it.get("answer") or "")}
+            for it in rca_qa
+            if isinstance(it, dict) and it.get("answer") not in (None, "")
+        ]
+        rca_summary = str(row.get("rca_summary") or "")
+        rca_handoff = str(row.get("rca_handoff") or "")
+        web_summary = str(row.get("web_summary") or "")
+
+        # Get precision answers with their questions for context
+        precision_questions = _as_list(row.get("precision_questions"))
+        precision_answers_raw = _as_list(row.get("precision_answers"))
+        precision_answers = []
+        for ans in precision_answers_raw:
+            q_idx = ans.get("question_index", 0)
+            q_obj = precision_questions[q_idx] if q_idx < len(precision_questions) else {}
+            q_text = ans.get("question", "") or q_obj.get("question", "")
+            precision_answers.append({
+                "question": q_text,
+                "answer": str(ans.get("answer") or ""),
+                "type": str(ans.get("type") or q_obj.get("type", "")),
+                "insight": str(q_obj.get("insight", "")),  # Why this question was asked
+            })
+
+        outcome_label = {
+            "lead-generation": "Lead Generation",
+            "sales-retention": "Sales & Retention",
+            "business-strategy": "Business Strategy",
+            "save-time": "Save Time",
+        }.get(outcome, "")
+
+        # Generate gap questions using the new generator
+        generated = await generate_gap_questions(
+            outcome=outcome,
+            outcome_label=outcome_label,
+            domain=domain,
+            task=task,
+            rca_history=rca_history,
+            scale_answers=scale_answers or None,
+            web_summary=web_summary,
+            rca_handoff=rca_handoff,
+            rca_summary=rca_summary,
+            precision_answers=precision_answers if precision_answers else None,
+        )
+
+        # Handle generation failure or empty questions
+        if generated is None:
+            # LLM call failed — treat as no questions needed, allow playbook to proceed
+            logger.warning("Gap questions generation failed — treating as no questions needed")
+            await conn.execute(
+                """
+                UPDATE onboarding
+                SET gap_questions = '[]'::jsonb,
+                    playbook_status = 'ready',
+                    updated_at = NOW()
+                WHERE id = $1::uuid
+                """,
+                onboarding_id,
+            )
+            return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
+
+        if not generated or len(generated) == 0:
+            # No questions needed — context is sufficient
+            await conn.execute(
+                """
+                UPDATE onboarding
+                SET gap_questions = '[]'::jsonb,
+                    playbook_status = 'ready',
+                    updated_at = NOW()
+                WHERE id = $1::uuid
+                """,
+                onboarding_id,
+            )
+            return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
+
+        # Clean up and store questions
+        cleaned = [
+            {
+                "id": str(q.get("id") or f"Q{i+1}"),
+                "label": str(q.get("label") or ""),
+                "question": str(q.get("question") or ""),
+                "why_matters": str(q.get("why_matters") or ""),
+                "options": q.get("options") or [],
+            }
+            for i, q in enumerate(generated[:3])
+        ]
+
+        await conn.execute(
+            """
+            UPDATE onboarding
+            SET gap_questions = $1::jsonb,
+                playbook_status = 'awaiting_gap_answers',
+                updated_at = NOW()
+            WHERE id = $2::uuid
+            """,
+            json.dumps(cleaned),
+            onboarding_id,
+        )
+
+        return StartGapQuestionsResponse(
+            onboarding_id=onboarding_id,
+            questions=[GapQuestionItem(**q) for q in cleaned],
+            available=len(cleaned) > 0,
+        )
+

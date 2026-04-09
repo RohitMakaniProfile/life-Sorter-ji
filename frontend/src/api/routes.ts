@@ -54,6 +54,7 @@ export const API_ROUTES = {
     rcaNextQuestion: '/api/v1/onboarding/rca-next-question',
     precisionStart: '/api/v1/onboarding/precision/start',
     precisionAnswer: '/api/v1/onboarding/precision/answer',
+    gapQuestionsStart: '/api/v1/onboarding/gap-questions/start',
     playbookLaunch: '/api/v1/onboarding/playbook/launch',
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
   },

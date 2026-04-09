@@ -125,6 +125,7 @@ export async function startTaskStreamAndListen(
     userId?: string | null;
     payload?: Record<string, unknown>;
     resumeIfExists?: boolean;
+    forceFresh?: boolean;
     callbacks: TaskStreamCallbacks;
   },
 ): Promise<void> {
@@ -132,6 +133,7 @@ export async function startTaskStreamAndListen(
   const userId = opts.userId ?? null;
   const payload = opts.payload ?? {};
   const streamIdKey = streamIdStorageKey(taskType, onboardingId, userId);
+  const forceFresh = opts.forceFresh ?? false;
 
   // Helper to clean up stored stream ID and cursor
   const cleanup = () => {
@@ -142,8 +144,14 @@ export async function startTaskStreamAndListen(
     }
   };
 
+  // If forceFresh, clean up stored stream ID first so we don't try to resume
+  if (forceFresh) {
+    cleanup();
+  }
+
   // 1) If we already have a stream_id for this actor/taskType, resume directly.
-  const storedStreamId = safeLocalStorageGet(streamIdKey);
+  //    Skip this if forceFresh is true.
+  const storedStreamId = forceFresh ? null : safeLocalStorageGet(streamIdKey);
   if (storedStreamId) {
     const cursor = safeLocalStorageGet(cursorStorageKey(storedStreamId));
     const url = `${API_ROUTES.taskStream.eventsByStreamId(storedStreamId)}${
@@ -163,7 +171,8 @@ export async function startTaskStreamAndListen(
       onboarding_id: onboardingId,
       user_id: userId,
       payload,
-      resume_if_exists: opts.resumeIfExists ?? true,
+      resume_if_exists: forceFresh ? false : (opts.resumeIfExists ?? true),
+      force_fresh: forceFresh,
     }),
   });
   if (!startRes.ok) {
@@ -252,10 +261,13 @@ export async function runResumableTaskStream(
     maxRetries?: number;
     /** Optional hook to stop retries (e.g. component unmounted). */
     shouldStop?: () => boolean;
+    /** Force a fresh start, cancelling any existing stream. */
+    forceFresh?: boolean;
   },
 ): Promise<void> {
   const maxRetries = Math.max(0, Number(opts.maxRetries ?? 4));
   const shouldStop = opts.shouldStop ?? (() => false);
+  const forceFresh = opts.forceFresh ?? false;
 
   let attempt = 0;
   let finished = false;
@@ -286,6 +298,8 @@ export async function runResumableTaskStream(
         userId: opts.userId,
         payload: opts.payload,
         resumeIfExists: true,
+        // Only force fresh on the first attempt
+        forceFresh: attempt === 0 && forceFresh,
         callbacks: wrappedCallbacks,
       });
 

@@ -898,7 +898,11 @@ async def _crawl_parallel_async(
     to_visit = deque()
     discovered = set()
     scraped = set()  # URLs we've finished scraping (for stop condition)
-    scraped_urls = []  # ordered list for result; full page data streamed via progress only
+    scraped_urls = []  # ordered list for result
+    # Only collect full page data for small crawls (<=5 pages) to avoid memory issues
+    # For larger crawls, page data is streamed via progress events
+    collect_pages = max_pages <= 5
+    pages_data: list[dict] = []
     failed_list = []
     lock = asyncio.Lock()
     stop_flag = asyncio.Event()
@@ -1013,7 +1017,9 @@ async def _crawl_parallel_async(
                 if rec:
                     async with lock:
                         scraped_urls.append(url)
-                    # Stream full page so Node can store in DB; no in-memory accumulation
+                        if collect_pages:
+                            pages_data.append(rec)
+                    # Stream full page so Node can store in DB
                     _progress({"event": "page_data", **rec})
                     for link in rec.get("links_internal", []):
                         ln = (link.rstrip("/") or link)
@@ -1041,6 +1047,7 @@ async def _crawl_parallel_async(
     return {
         "base_url": base_url,
         "scraped_urls": scraped_urls,
+        "pages": pages_data if collect_pages else [],
         "failed_urls": failed_list,
         "stats": {
             "total_pages": len(scraped_urls),
@@ -1097,6 +1104,9 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
             robots_txt = ""
 
     scraped_urls: list[str] = []
+    # Only collect full page data for small crawls (<=5 pages) to avoid memory issues
+    collect_pages = max_pages <= 5
+    pages_data: list[dict] = []
     failed_list: list[dict] = []  # [{"url": str, "error": str}, ...]
     failed = 0
     skipped = 0
@@ -1139,11 +1149,14 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
 
             to_scrape = [u for u in discovered if not _is_blog_url(u)][:max_pages]
             scraped_urls = []
+            pages_data_deep: list[dict] = []
             for idx, url_norm in enumerate(to_scrape):
                 _progress({"event": "page", "url": url_norm, "status": "scraping", "index": idx + 1, "total": len(to_scrape)})
                 rec = _scrape_single_page(context, url_norm, 0, base_domain, robots_parser, respect_robots)
                 if rec:
                     scraped_urls.append(url_norm)
+                    if collect_pages:
+                        pages_data_deep.append(rec)
                     _progress({"event": "page_data", **rec})
                     _progress({"event": "page", "url": url_norm, "status": "done", "index": idx + 1, "total": len(to_scrape)})
                 else:
@@ -1154,6 +1167,7 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
             return {
                 "base_url": base_url,
                 "scraped_urls": scraped_urls,
+                "pages": pages_data_deep if collect_pages else [],
                 "failed_urls": failed_list,
                 "stats": {
                     "total_pages": len(scraped_urls),
@@ -1320,6 +1334,8 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                     page_record["timeout_error"] = timeout_err
 
                 scraped_urls.append(url_norm)
+                if collect_pages:
+                    pages_data.append(page_record)
                 _progress({"event": "page_data", **page_record})
 
                 _progress({"event": "page", "url": url_norm, "status": "done", "scraped": len(scraped_urls)})
@@ -1353,6 +1369,7 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
     return {
         "base_url": base_url,
         "scraped_urls": scraped_urls,
+        "pages": pages_data if collect_pages else [],
         "failed_urls": failed_urls,
         "stats": {
             "total_pages": len(scraped_urls),

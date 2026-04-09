@@ -407,6 +407,11 @@ async def _crawl_parallel_async(
                 if not respect_robots or not robots_parser or robots_parser.can_fetch("*", un):
                     to_visit.append(un)
 
+    # Collect page data for the "pages" array in the final result
+    # Only collect for small crawls (<=5 pages) to avoid memory issues
+    collect_pages = max_pages <= 5
+    pages_data: list[dict] = []
+
     lock = asyncio.Lock()
     stop_flag = asyncio.Event()
     discovery_idle_count = 0
@@ -516,6 +521,8 @@ async def _crawl_parallel_async(
                 if rec:
                     async with lock:
                         scraped_urls.append(url)
+                        if collect_pages:
+                            pages_data.append(rec)
                     _progress({"event": "page_data", **rec})
                     await _emit_checkpoint()
                     for link in rec.get("links_internal", []):
@@ -541,6 +548,7 @@ async def _crawl_parallel_async(
         "base_url": base_url,
         "scraped_urls": scraped_urls,
         "failed_urls": failed_list,
+        "pages": pages_data if collect_pages else [],
         "stats": {
             "total_pages": len(scraped_urls),
             "failed_pages": len(failed_list),
@@ -624,6 +632,9 @@ def crawl_with_playwright(
 
     scraped_urls: list[str] = []
     failed_list: list[dict] = []
+    # Only collect full page data for small crawls (<=5 pages) to avoid memory issues
+    collect_pages = max_pages <= 5
+    pages_data: list[dict] = []
     visited = set()
     queue = deque([(base_url, 0)])
 
@@ -679,6 +690,8 @@ def crawl_with_playwright(
                 }
                 _progress({"event": "page_data", **rec})
                 scraped_urls.append(url_norm)
+                if collect_pages:
+                    pages_data.append(rec)
 
                 internal, _ = parse_links(html, url_norm, base_domain)
                 if depth < max_depth:
@@ -699,6 +712,7 @@ def crawl_with_playwright(
         "base_url": base_url,
         "scraped_urls": scraped_urls,
         "failed_urls": failed_list,
+        "pages": pages_data if collect_pages else [],
         "stats": {
             "total_pages": len(scraped_urls),
             "failed_pages": len(failed_list),

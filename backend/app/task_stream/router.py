@@ -37,10 +37,10 @@ def create_task_stream_router(
         except Exception:
             return None, None
         user_id = str(payload.get("sub") or "").strip() or None
-        session_id = (
-            str(payload.get("onboarding_session_id") or payload.get("session_id") or "").strip() or None
+        onboarding_id = (
+            str(payload.get("onboarding_session_id") or payload.get("onboarding_id") or "").strip() or None
         )
-        return session_id, user_id
+        return onboarding_id, user_id
 
     @router.post("/start/{task_type:path}")
     async def start_task_stream(
@@ -51,17 +51,18 @@ def create_task_stream_router(
         task_fn = task_registry.get(task_type)
         if not task_fn:
             raise HTTPException(status_code=404, detail=f"Unknown task_type: {task_type}")
-        auth_sid, auth_uid = _actor_from_auth(authorization)
-        eff_session_id = body.session_id or auth_sid
+        auth_oid, auth_uid = _actor_from_auth(authorization)
+        eff_onboarding_id = body.onboarding_id or auth_oid
         eff_user_id = body.user_id or auth_uid
 
         return await service.start_task_stream(
             task_type=task_type,
             task_fn=task_fn,
             payload=body.payload or {},
-            session_id=eff_session_id,
+            onboarding_id=eff_onboarding_id,
             user_id=eff_user_id,
             resume_if_exists=body.resume_if_exists,
+            force_fresh=body.force_fresh,
         )
 
     @router.get("/events/{stream_id}")
@@ -86,12 +87,12 @@ def create_task_stream_router(
     @router.get("/events/{task_type:path}/resume")
     async def resume_by_actor(
         task_type: str,
-        session_id: str | None = None,
+        onboarding_id: str | None = None,
         user_id: str | None = None,
         cursor: str | None = None,
     ) -> StreamingResponse:
         stream_id = await service.store.resolve_stream_id(
-            task_type, session_id=session_id, user_id=user_id
+            task_type, onboarding_id=onboarding_id, user_id=user_id
         )
         if not stream_id:
             raise HTTPException(status_code=404, detail="No active task stream found for actor")

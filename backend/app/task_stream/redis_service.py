@@ -38,8 +38,8 @@ class RedisTaskStreamStore:
     def _seq_key(self, stream_id: str) -> str:
         return f"{REDIS_TASKSTREAM_PREFIX}:seq:{stream_id}"
 
-    def _map_session_key(self, task_type: str, session_id: str) -> str:
-        return f"{REDIS_TASKSTREAM_PREFIX}:map:{task_type}:session:{session_id}"
+    def _map_session_key(self, task_type: str, onboarding_id: str) -> str:
+        return f"{REDIS_TASKSTREAM_PREFIX}:map:{task_type}:session:{onboarding_id}"
 
     def _map_user_key(self, task_type: str, user_id: str) -> str:
         return f"{REDIS_TASKSTREAM_PREFIX}:map:{task_type}:user:{user_id}"
@@ -56,14 +56,14 @@ class RedisTaskStreamStore:
         self,
         task_type: str,
         *,
-        session_id: Optional[str] = None,
+        onboarding_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Optional[str]:
-        if session_id:
+        if onboarding_id:
             redis = await _require_redis()
-            sid = (session_id or "").strip()
-            if sid:
-                v = await redis.get(self._map_session_key(task_type, sid))
+            oid = (onboarding_id or "").strip()
+            if oid:
+                v = await redis.get(self._map_session_key(task_type, oid))
                 if v:
                     return str(v)
 
@@ -82,7 +82,7 @@ class RedisTaskStreamStore:
         stream_id: str,
         *,
         task_type: str,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
         status: str = "running",
     ) -> None:
@@ -90,7 +90,7 @@ class RedisTaskStreamStore:
         meta = {
             "task_type": task_type,
             "status": status,
-            "session_id": session_id or "",
+            "onboarding_id": onboarding_id or "",
             "user_id": user_id or "",
             "created_at": datetime.utcnow().isoformat() + "Z",
         }
@@ -120,15 +120,15 @@ class RedisTaskStreamStore:
         task_type: str,
         *,
         stream_id: str,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
         redis = await _require_redis()
         ttl = REDIS_TASKSTREAM_TTL_SECONDS
-        if session_id:
-            sid = (session_id or "").strip()
-            if sid:
-                await redis.set(self._map_session_key(task_type, sid), stream_id, ex=ttl)
+        if onboarding_id:
+            oid = (onboarding_id or "").strip()
+            if oid:
+                await redis.set(self._map_session_key(task_type, oid), stream_id, ex=ttl)
         if user_id:
             uid = (user_id or "").strip()
             if uid:
@@ -138,15 +138,15 @@ class RedisTaskStreamStore:
         self,
         task_type: str,
         *,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
         """Remove actor mapping so next start creates a fresh stream."""
         redis = await _require_redis()
-        if session_id:
-            sid = (session_id or "").strip()
-            if sid:
-                await redis.delete(self._map_session_key(task_type, sid))
+        if onboarding_id:
+            oid = (onboarding_id or "").strip()
+            if oid:
+                await redis.delete(self._map_session_key(task_type, oid))
         if user_id:
             uid = (user_id or "").strip()
             if uid:

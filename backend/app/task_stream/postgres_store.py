@@ -68,14 +68,14 @@ class PostgresTaskStreamStore:
         self,
         task_type: str,
         *,
-        session_id: Optional[str] = None,
+        onboarding_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Optional[str]:
         pool = get_pool()
         async with pool.acquire() as conn:
-            if session_id:
-                sid = (session_id or "").strip()
-                if sid:
+            if onboarding_id:
+                oid = (onboarding_id or "").strip()
+                if oid:
                     row = await conn.fetchrow(
                         """
                         SELECT m.stream_id
@@ -89,7 +89,7 @@ class PostgresTaskStreamStore:
                         LIMIT 1
                         """,
                         task_type,
-                        sid,
+                        oid,
                     )
                     if row:
                         return str(row["stream_id"])
@@ -121,7 +121,7 @@ class PostgresTaskStreamStore:
         stream_id: str,
         *,
         task_type: str,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
         status: str = "running",
     ) -> None:
@@ -138,7 +138,7 @@ class PostgresTaskStreamStore:
                 """,
                 stream_id,
                 task_type,
-                (session_id or "").strip(),
+                (onboarding_id or "").strip(),
                 (user_id or "").strip(),
                 status,
                 exp,
@@ -198,15 +198,15 @@ class PostgresTaskStreamStore:
         task_type: str,
         *,
         stream_id: str,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
         exp = _expires_at()
         pool = get_pool()
         async with pool.acquire() as conn:
-            if session_id:
-                sid = (session_id or "").strip()
-                if sid:
+            if onboarding_id:
+                oid = (onboarding_id or "").strip()
+                if oid:
                     await conn.execute(
                         """
                         INSERT INTO task_stream_maps (task_type, map_kind, map_key, stream_id, expires_at)
@@ -216,7 +216,7 @@ class PostgresTaskStreamStore:
                             expires_at = EXCLUDED.expires_at
                         """,
                         task_type,
-                        sid,
+                        oid,
                         stream_id,
                         exp,
                     )
@@ -241,22 +241,22 @@ class PostgresTaskStreamStore:
         self,
         task_type: str,
         *,
-        session_id: Optional[str],
+        onboarding_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
         """Remove actor mapping so next start creates a fresh stream."""
         pool = get_pool()
         async with pool.acquire() as conn:
-            if session_id:
-                sid = (session_id or "").strip()
-                if sid:
+            if onboarding_id:
+                oid = (onboarding_id or "").strip()
+                if oid:
                     await conn.execute(
                         """
                         DELETE FROM task_stream_maps
                         WHERE task_type = $1 AND map_kind = 'session' AND map_key = $2
                         """,
                         task_type,
-                        sid,
+                        oid,
                     )
             if user_id:
                 uid = (user_id or "").strip()

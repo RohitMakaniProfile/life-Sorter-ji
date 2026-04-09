@@ -2,6 +2,7 @@ import { useState, useRef, useMemo, useCallback, useLayoutEffect, useEffect } fr
 import { useNavigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import StageLayout from './components/StageLayout';
+import TransitionMessages from './components/TransitionMessages';
 import UrlStage from './stages/UrlStage';
 import DeeperDiveStage from './stages/DeeperDiveStage';
 import DiagnosticStage from './stages/DiagnosticStage';
@@ -133,6 +134,8 @@ export default function OnboardingApp() {
   const [gapQuestions, setGapQuestions] = useState([]);
   const [gapAnswers, setGapAnswers] = useState({});
   const [showGapQuestions, setShowGapQuestions] = useState(false);
+  const [showTransitionMessages, setShowTransitionMessages] = useState(false);
+  const [checkingGapQuestions, setCheckingGapQuestions] = useState(false);
 
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(() => Boolean(getUserIdFromJwt()));
@@ -174,6 +177,8 @@ export default function OnboardingApp() {
     setShowDiagnostic(false);
     setShowPrecision(false);
     setShowComplete(false);
+    setShowTransitionMessages(false);
+    setCheckingGapQuestions(false);
     setEarlyTools([]);
   };
 
@@ -627,24 +632,46 @@ export default function OnboardingApp() {
       setShowOtpModal(true);
       return;
     }
-    setShowPlaybook(true);
-    prepareStreaming();
-    setTimeout(scrollToEnd, 50);
+
+    // Step 1: Check gap questions first
+    setCheckingGapQuestions(true);
     try {
       const sid = await ensureSession();
       await waitForCrawl();
-      const startData = await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
-      const parsedGap = startData.gap_questions_parsed || startData.gap_questions || [];
-      if (Array.isArray(parsedGap) && parsedGap.length) {
+
+      // Call the new gap questions API
+      const gapData = await coreApi.onboardingGapQuestionsStart({ onboarding_id: sid });
+      const parsedGap = gapData.questions || [];
+
+      if (Array.isArray(parsedGap) && parsedGap.length > 0) {
+        // Gap questions exist - show them and wait for answers
         setGapQuestions(parsedGap);
         setShowGapQuestions(true);
-        stopStreaming();
+        setShowPlaybook(true);
+        setCheckingGapQuestions(false);
         return;
       }
-      await startForSession(sid, { fresh: false });
-    } catch {
-      setError('Failed to start playbook.');
-      stopStreaming();
+
+      // No gap questions - show transition messages and launch playbook in parallel
+      setCheckingGapQuestions(false);
+      setShowTransitionMessages(true);
+      setShowPlaybook(true);
+      prepareStreaming();
+
+      // Launch playbook immediately (parallel execution)
+      try {
+        await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
+        await startForSession(sid, { fresh: false });
+      } catch (launchErr) {
+        console.error('Playbook launch error:', launchErr);
+        setError('Failed to start playbook generation.');
+        setShowTransitionMessages(false);
+        stopStreaming();
+      }
+    } catch (err) {
+      console.error('Gap questions check error:', err);
+      setCheckingGapQuestions(false);
+      setError('Failed to check gap questions.');
     }
   };
 
@@ -652,6 +679,12 @@ export default function OnboardingApp() {
     setOtpVerified(true);
     setShowOtpModal(false);
   };
+
+  // Called when transition messages animation completes
+  const handleTransitionComplete = useCallback(() => {
+    setShowTransitionMessages(false);
+    setTimeout(scrollToEnd, 50);
+  }, [scrollToEnd]);
 
   useEffect(() => {
     if (!otpVerified || !pendingPlaybookLaunchRef.current) return;
@@ -823,7 +856,43 @@ export default function OnboardingApp() {
     return <OtpModal onboardingId={onboardingIdRef.current || ''} onVerified={handleOtpVerified} />;
   }
 
+  // Show loading state while checking gap questions
+  if (checkingGapQuestions) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          onboardingId={onboardingIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
+        <div className="flex min-h-[50vh] flex-col items-center justify-center px-4">
+          <div className="flex flex-col items-center text-center">
+            <div className="mb-4 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-violet-500" />
+            <p className="text-sm text-white/60">Analyzing your responses...</p>
+          </div>
+        </div>
+      </StageLayout>
+    );
+  }
+
   if (showPlaybook) {
+    // Show transition messages if active (playbook generating in background)
+    if (showTransitionMessages) {
+      return (
+        <StageLayout error={error} onClearError={clearError}>
+          <DeveloperTaskStreamsPanel
+            onboardingId={onboardingIdRef.current}
+            userId={null}
+            taskTypes={['crawl', 'playbook/onboarding-generate']}
+          />
+          <TransitionMessages
+            onComplete={handleTransitionComplete}
+            isComplete={playbookDone}
+          />
+        </StageLayout>
+      );
+    }
+
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel
