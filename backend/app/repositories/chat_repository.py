@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pypika import Order, Table
@@ -19,6 +20,103 @@ from app.sql_builder import build_query
 from app.skills.service import list_skills
 
 playbook_runs_t = Table("playbook_runs")
+onboarding_t = Table("onboarding")
+
+
+def _as_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, dict)]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return [x for x in parsed if isinstance(x, dict)] if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _has_onboarding_markers(messages: list[dict[str, Any]]) -> bool:
+    for msg in messages:
+        step = str(msg.get("journeyStep") or "")
+        mid = str(msg.get("messageId") or "")
+        if step.startswith("onboarding_") or mid.startswith("onboarding:"):
+            return True
+    return False
+
+
+async def _attach_onboarding_transcript(
+    messages: list[dict[str, Any]],
+    *,
+    onboarding_session_id: str | None,
+) -> list[dict[str, Any]]:
+    sid = str(onboarding_session_id or "").strip()
+    if not sid:
+        return messages
+    if _has_onboarding_markers(messages):
+        return messages
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(
+                onboarding_t.outcome,
+                onboarding_t.domain,
+                onboarding_t.task,
+                onboarding_t.website_url,
+                onboarding_t.gbp_url,
+                onboarding_t.questions_answers,
+            )
+            .where(onboarding_t.id == Parameter("%s"))
+            .limit(1),
+            [sid],
+        )
+        row = await conn.fetchrow(row_q.sql, *row_q.params)
+
+    if not row:
+        return messages
+
+    summary = {
+        "role": "assistant",
+        "content": "Onboarding selections and Q&A imported into this conversation.",
+        "createdAt": now_iso(),
+        "journeyStep": "onboarding_summary",
+        "messageId": f"onboarding:summary:{sid}",
+        "journeySelections": {
+            "onboardingSessionId": sid,
+            "outcome": str(row.get("outcome") or ""),
+            "domain": str(row.get("domain") or ""),
+            "task": str(row.get("task") or ""),
+            "websiteUrl": str(row.get("website_url") or ""),
+            "gbpUrl": str(row.get("gbp_url") or ""),
+        },
+    }
+    onboarding_msgs: list[dict[str, Any]] = [summary]
+    qa = _as_list(row.get("questions_answers"))
+    for idx, item in enumerate(qa):
+        q = str(item.get("question") or "").strip()
+        a = str(item.get("answer") or "").strip()
+        if q:
+            onboarding_msgs.append(
+                {
+                    "role": "assistant",
+                    "content": q,
+                    "createdAt": now_iso(),
+                    "journeyStep": "onboarding_question",
+                    "messageId": f"onboarding:q:{sid}:{idx}",
+                }
+            )
+        if a:
+            onboarding_msgs.append(
+                {
+                    "role": "user",
+                    "content": a,
+                    "createdAt": now_iso(),
+                    "journeyStep": "onboarding_answer",
+                    "messageId": f"onboarding:a:{sid}:{idx}",
+                }
+            )
+    return onboarding_msgs + messages
 
 
 async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -134,6 +232,8 @@ async def get_messages(
         user_id=user_id,
     )
     messages = conv.get("messages") or []
+    onboarding_sid = str(conv.get("onboardingSessionId") or session_id or "").strip() or None
+    messages = await _attach_onboarding_transcript(messages, onboarding_session_id=onboarding_sid)
     messages = await _attach_playbook_content(messages)
     return {
         "messages": messages,

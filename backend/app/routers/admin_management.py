@@ -33,6 +33,7 @@ crawl_runs_t = Table("crawl_runs")
 playbook_runs_t = Table("playbook_runs")
 session_links_t = Table("session_user_links")
 system_config_t = Table("system_config")
+token_usage_t = Table("token_usage")
 
 
 class AdminApiEntry(BaseModel):
@@ -461,7 +462,7 @@ async def delete_user(request: Request, user_id: str):
         user_q = build_query(
             PostgreSQLQuery.from_(users_t)
             .select(users_t.id, users_t.email, users_t.phone_number, users_t.onboarding_session_id)
-            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .where(users_t.id == Parameter("%s"))
             .limit(1),
             [uid],
         )
@@ -497,7 +498,7 @@ async def delete_user(request: Request, user_id: str):
             # 4. Crawl runs
             try:
                 del_crawl_q = build_query(
-                    PostgreSQLQuery.from_(crawl_runs_t).delete().where(crawl_runs_t.user_id.cast("TEXT") == Parameter("%s")),
+                    PostgreSQLQuery.from_(crawl_runs_t).delete().where(crawl_runs_t.user_id == Parameter("%s")),
                     [uid],
                 )
                 await conn.execute(del_crawl_q.sql, *del_crawl_q.params)
@@ -507,7 +508,7 @@ async def delete_user(request: Request, user_id: str):
             # 5. Playbook runs
             try:
                 del_playbook_q = build_query(
-                    PostgreSQLQuery.from_(playbook_runs_t).delete().where(playbook_runs_t.user_id.cast("TEXT") == Parameter("%s")),
+                    PostgreSQLQuery.from_(playbook_runs_t).delete().where(playbook_runs_t.user_id == Parameter("%s")),
                     [uid],
                 )
                 await conn.execute(del_playbook_q.sql, *del_playbook_q.params)
@@ -531,7 +532,7 @@ async def delete_user(request: Request, user_id: str):
             # 8. Delete user — cascades: payment_checkout_context, user_plan_grants,
             #    admin_subscription_grants, admin_subscription_grant_logs
             del_user_q = build_query(
-                PostgreSQLQuery.from_(users_t).delete().where(users_t.id.cast("TEXT") == Parameter("%s")),
+                PostgreSQLQuery.from_(users_t).delete().where(users_t.id == Parameter("%s")),
                 [uid],
             )
             await conn.execute(del_user_q.sql, *del_user_q.params)
@@ -681,6 +682,147 @@ async def upsert_system_config_entry_route(request: Request, key: str, body: Ups
             "description": str(row.get("description") or ""),
             "updatedAt": updated_at.isoformat() if updated_at else "",
         }
+    }
+
+
+@router.get("/token-usage/summary", response_model=dict[str, Any])
+async def token_usage_summary(request: Request):
+    require_super_admin(request)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT "
+            "COALESCE(SUM(cost_inr), 0) AS spend_inr, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) FILTER (WHERE user_id IS NOT NULL) AS calls_count, "
+            "COUNT(*) FILTER (WHERE user_id IS NOT NULL AND cost_inr IS NULL) AS unknown_priced_calls, "
+            "COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS users_count "
+            "FROM token_usage"
+        )
+    return {
+        "spendInr": float(row.get("spend_inr") or 0),
+        "inputTokens": int(row.get("input_tokens") or 0),
+        "outputTokens": int(row.get("output_tokens") or 0),
+        "callsCount": int(row.get("calls_count") or 0),
+        "unknownPricedCalls": int(row.get("unknown_priced_calls") or 0),
+        "usersCount": int(row.get("users_count") or 0),
+    }
+
+
+@router.get("/token-usage/users", response_model=dict[str, Any])
+async def token_usage_users(request: Request, q: str = "", limit: int = 30, offset: int = 0):
+    require_super_admin(request)
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    pool = get_pool()
+    needle = f"%{(q or '').strip()}%"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT u.id::text AS user_id, u.email, u.phone_number, "
+            "COALESCE(SUM(t.cost_inr), 0) AS spend_inr, "
+            "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls_count "
+            "FROM token_usage t "
+            "JOIN users u ON u.id::text = t.user_id "
+            "WHERE t.user_id IS NOT NULL "
+            "AND ($1 = '%%' OR u.email ILIKE $1 OR u.phone_number ILIKE $1) "
+            "GROUP BY u.id, u.email, u.phone_number "
+            "ORDER BY spend_inr DESC, calls_count DESC "
+            "LIMIT $2 OFFSET $3",
+            needle,
+            limit,
+            offset,
+        )
+    users = [
+        {
+            "userId": str(r.get("user_id") or ""),
+            "email": str(r.get("email") or ""),
+            "phoneNumber": str(r.get("phone_number") or ""),
+            "spendInr": float(r.get("spend_inr") or 0),
+            "inputTokens": int(r.get("input_tokens") or 0),
+            "outputTokens": int(r.get("output_tokens") or 0),
+            "callsCount": int(r.get("calls_count") or 0),
+        }
+        for r in rows
+    ]
+    return {"users": users, "limit": limit, "offset": offset}
+
+
+@router.get("/token-usage/users/{user_id}/conversations", response_model=dict[str, Any])
+async def token_usage_user_conversations(request: Request, user_id: str, limit: int = 30, offset: int = 0):
+    require_super_admin(request)
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    uid = str(user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT conversation_id, "
+            "COALESCE(SUM(cost_inr), 0) AS spend_inr, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls_count, "
+            "MAX(created_at) AS last_used_at "
+            "FROM token_usage "
+            "WHERE user_id = $1 AND conversation_id IS NOT NULL "
+            "GROUP BY conversation_id "
+            "ORDER BY last_used_at DESC "
+            "LIMIT $2 OFFSET $3",
+            uid, limit, offset,
+        )
+    return {
+        "conversations": [
+            {
+                "conversationId": str(r.get("conversation_id") or ""),
+                "spendInr": float(r.get("spend_inr") or 0),
+                "inputTokens": int(r.get("input_tokens") or 0),
+                "outputTokens": int(r.get("output_tokens") or 0),
+                "callsCount": int(r.get("calls_count") or 0),
+                "lastUsedAt": r.get("last_used_at").isoformat() if r.get("last_used_at") else "",
+            }
+            for r in rows
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/token-usage/conversations/{conversation_id}/calls", response_model=dict[str, Any])
+async def token_usage_conversation_calls(request: Request, conversation_id: str, limit: int = 100, offset: int = 0):
+    require_super_admin(request)
+    limit = min(max(1, limit), 500)
+    offset = max(0, offset)
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT message_id, stage, provider, model_name, input_tokens, output_tokens, cost_inr, created_at "
+            "FROM token_usage WHERE conversation_id = $1 "
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            cid, limit, offset,
+        )
+    return {
+        "calls": [
+            {
+                "messageId": str(r.get("message_id") or ""),
+                "stage": str(r.get("stage") or ""),
+                "provider": str(r.get("provider") or ""),
+                "model": str(r.get("model_name") or ""),
+                "inputTokens": int(r.get("input_tokens") or 0),
+                "outputTokens": int(r.get("output_tokens") or 0),
+                "costInr": float(r.get("cost_inr")) if r.get("cost_inr") is not None else None,
+                "createdAt": r.get("created_at").isoformat() if r.get("created_at") else "",
+            }
+            for r in rows
+        ],
+        "limit": limit,
+        "offset": offset,
     }
 
 

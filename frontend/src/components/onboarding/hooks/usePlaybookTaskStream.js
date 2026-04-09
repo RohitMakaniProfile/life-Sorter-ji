@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/services/taskStream';
 import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError } from '../../../api/services/taskStreamMonitor';
-import { getUserIdFromJwt } from '../../../api/authSession';
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 const STORAGE_PLAYBOOK_STEP_REACHED = 'doable-claw-playbook-step-reached';
+const PARTIAL_PLAYBOOK_PREFIX = 'life-sorter-playbook-partial:';
 
 function safeGetItem(key) {
   try {
@@ -32,6 +32,22 @@ function safeRemoveItem(key) {
 
 function hasPlaybookStepReached() {
   return safeGetItem(STORAGE_PLAYBOOK_STEP_REACHED) === '1';
+}
+
+function partialPlaybookKey(sessionId) {
+  return `${PARTIAL_PLAYBOOK_PREFIX}${sessionId}`;
+}
+
+function loadPartialPlaybook(sessionId) {
+  return safeGetItem(partialPlaybookKey(sessionId)) || '';
+}
+
+function savePartialPlaybook(sessionId, value) {
+  safeSetItem(partialPlaybookKey(sessionId), value || '');
+}
+
+function clearPartialPlaybook(sessionId) {
+  safeRemoveItem(partialPlaybookKey(sessionId));
 }
 
 export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp, onShowPlaybook, setError }) {
@@ -73,8 +89,11 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
       if (!fresh) {
         // Keep current UI state, but make sure streaming indicator is on.
         setPlaybookStreaming(true);
+        const existing = loadPartialPlaybook(onboardingId);
+        if (existing) setPlaybookText(existing);
       } else {
         resetPlaybackState();
+        clearPartialPlaybook(onboardingId);
       }
 
       // Starting from UI implies user reached this step; allow future auto-resume.
@@ -97,7 +116,11 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
           if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), onboardingId });
           monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId, event: e });
           if (e.type === 'token' && e.token) {
-            setPlaybookText((t) => t + String(e.token));
+            setPlaybookText((t) => {
+              const next = t + String(e.token);
+              savePartialPlaybook(onboardingId, next);
+              return next;
+            });
           }
         },
         onDone: (e) => {
@@ -113,6 +136,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
             context_brief: e.context_brief || '',
             icp_card: e.icp_card || '',
           });
+          clearPartialPlaybook(onboardingId);
           monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId, event: e });
         },
         onError: (e) => {
@@ -157,17 +181,16 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
         if (!hasPlaybookStepReached()) return;
         const sid = await ensureSession();
         if (cancelled || !sid) return;
-        const actorUserId = getUserIdFromJwt();
 
         autoResumeTriggeredRef.current = true;
-        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { onboardingId: null, userId: actorUserId });
+        const storedStreamId = getStoredTaskStreamId(TASK_TYPE_PLAYBOOK_GENERATE, { onboardingId: sid, userId: null });
         if (!storedStreamId) return;
 
         // Auto-attach without status polling. If stale/expired, the attach will error and we'll ignore it.
         onShowPlaybook?.();
 
         setPlaybookStreaming(true);
-        setPlaybookText('');
+        setPlaybookText(loadPartialPlaybook(sid));
         setPlaybookDone(false);
         setPlaybookResult(null);
         setNeedsManualRetry(false);
@@ -187,7 +210,13 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
               if (!e || typeof e !== 'object') return;
               if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: String(e.stream_id), onboardingId: sid });
               monitorTaskStreamEvent({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId: sid, event: e });
-              if (e.type === 'token' && e.token) setPlaybookText((t) => t + String(e.token));
+              if (e.type === 'token' && e.token) {
+                setPlaybookText((t) => {
+                  const next = t + String(e.token);
+                  savePartialPlaybook(sid, next);
+                  return next;
+                });
+              }
             },
             onDone: (e) => {
               if (runIdRef.current !== myRunId) return;
@@ -202,6 +231,7 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
                 context_brief: e.context_brief || '',
                 icp_card: e.icp_card || '',
               });
+              clearPartialPlaybook(sid);
               monitorTaskStreamDone({ taskType: TASK_TYPE_PLAYBOOK_GENERATE, streamId: e.stream_id, onboardingId: sid, event: e });
             },
             onError: (e) => {
@@ -249,6 +279,26 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     setNeedsManualRetry(true);
   }, []);
 
+  const clearResumeArtifacts = useCallback(() => {
+    try {
+      const keys = [];
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const key = window.localStorage.key(i);
+        if (!key) continue;
+        if (
+          key === STORAGE_PLAYBOOK_STEP_REACHED ||
+          key.startsWith('ikshan-taskstream') ||
+          key.startsWith(PARTIAL_PLAYBOOK_PREFIX)
+        ) {
+          keys.push(key);
+        }
+      }
+      keys.forEach((k) => window.localStorage.removeItem(k));
+    } catch {
+      // ignore storage cleanup failures
+    }
+  }, []);
+
   return {
     playbookStreaming,
     playbookText,
@@ -261,5 +311,6 @@ export function usePlaybookTaskStream({ ensureSession, otpVerified, onRequestOtp
     startForSession,
     markStepReached,
     clearStepReached,
+    clearResumeArtifacts,
   };
 }

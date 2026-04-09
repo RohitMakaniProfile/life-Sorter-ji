@@ -445,6 +445,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL,
     session_id          TEXT,
+    onboarding_session_id TEXT,
     user_id             TEXT,
     title               TEXT,
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
@@ -458,6 +459,9 @@ ALTER TABLE conversations
 
 ALTER TABLE conversations
     ADD COLUMN IF NOT EXISTS user_id TEXT;
+
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS onboarding_session_id TEXT;
 
 DO $$
 BEGIN
@@ -487,6 +491,9 @@ CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
 
 CREATE INDEX IF NOT EXISTS idx_conversations_session_id
     ON conversations (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_onboarding_session_id
+    ON conversations (onboarding_session_id);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id
     ON conversations (user_id);
@@ -634,20 +641,47 @@ CREATE TABLE IF NOT EXISTS token_usage (
     id              BIGSERIAL   PRIMARY KEY,
     message_id      TEXT        NOT NULL,
     session_id      TEXT,
+    conversation_id TEXT,
+    user_id         TEXT,
     model           TEXT        NOT NULL DEFAULT '',
+    stage           TEXT        NOT NULL DEFAULT '',
+    provider        TEXT        NOT NULL DEFAULT '',
+    model_name      TEXT        NOT NULL DEFAULT '',
     input_tokens    INTEGER     NOT NULL DEFAULT 0,
     output_tokens   INTEGER     NOT NULL DEFAULT 0,
+    cost_usd        NUMERIC(12,6),
+    cost_inr        NUMERIC(12,2),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE token_usage
     ADD COLUMN IF NOT EXISTS session_id TEXT;
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS conversation_id TEXT;
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT '';
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS cost_usd NUMERIC(12,6);
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS cost_inr NUMERIC(12,2);
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
     ON token_usage (message_id);
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_session_id
     ON token_usage (session_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id_created_at
+    ON token_usage (user_id, created_at DESC)
+    WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_token_usage_conversation_id_created_at
+    ON token_usage (conversation_id, created_at DESC)
+    WHERE conversation_id IS NOT NULL;
 
 COMMENT ON TABLE token_usage IS
     'LLM token usage per assistant message, one row per model call.';
@@ -814,8 +848,31 @@ VALUES
     ('auth.super_admin_emails', '[]', 'json', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
     ('auth.admin_emails', '[]', 'json', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
     ('auth.super_admin_phones', '[]', 'json', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
-    ('auth.admin_phones', '[]', 'json', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)')
+    ('auth.admin_phones', '[]', 'json', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)'),
+    ('sms.report_link_enabled', 'false', 'boolean', 'Send deep-analysis report link via SMS after completion'),
+    ('sms.report_link_sender_id', '', 'string', '2Factor sender id for report link SMS'),
+    ('sms.report_link_template_name', '', 'string', '2Factor template name for report link SMS')
 ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS report_link_sms_logs (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_user_id
+    ON report_link_sms_logs (user_id, created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_report_link_sms_logs_updated_at ON report_link_sms_logs;
+CREATE TRIGGER trg_report_link_sms_logs_updated_at
+    BEFORE UPDATE ON report_link_sms_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TABLE IF NOT EXISTS otp_provider_logs (
     id                   BIGSERIAL PRIMARY KEY,

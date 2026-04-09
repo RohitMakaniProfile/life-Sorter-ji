@@ -260,3 +260,42 @@ export interface PromptEntry {
   updatedAt: string;
 }
 
+export interface AdminTokenUsageSummary {
+  spendInr: number;
+  inputTokens: number;
+  outputTokens: number;
+  callsCount: number;
+  unknownPricedCalls: number;
+  usersCount: number;
+}
+
+export interface AdminTokenUsageUser {
+  userId: string;
+  email: string;
+  phoneNumber: string;
+  spendInr: number;
+  inputTokens: number;
+  outputTokens: number;
+  callsCount: number;
+}
+
+export interface AdminTokenUsageConversation {
+  conversationId: string;
+  spendInr: number;
+  inputTokens: number;
+  outputTokens: number;
+  callsCount: number;
+  lastUsedAt: string;
+}
+
+export interface AdminTokenUsageCall {
+  messageId: string;
+  stage: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  costInr: number | null;
+  createdAt: string;
+}
+

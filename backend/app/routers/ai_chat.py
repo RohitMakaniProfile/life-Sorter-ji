@@ -636,6 +636,7 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     body = await req.json()
     agent_id = str(body.get("agentId") or "").strip() or None
     session_id = str(body.get("sessionId") or "").strip() or None
+    onboarding_session_id = str(body.get("onboardingSessionId") or "").strip() or session_id
     user_id = str(body.get("userId") or "").strip() or None
 
     if not agent_id:
@@ -644,7 +645,8 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     # ── Plan access check ──
     await _enforce_agent_access(req, agent_id)
 
-    conv = await create_new_conversation(agent_id, session_id=session_id, user_id=user_id)
+    # Keep onboarding and chat tied to one canonical session actor key.
+    conv = await create_new_conversation(agent_id, session_id=onboarding_session_id, user_id=user_id)
     conversation_id = conv["id"]
 
     initial = AGENT_INITIAL_MESSAGES.get(agent_id)
@@ -664,6 +666,7 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     return {
         "conversationId": conversation_id,
         "agentId": agent_id,
+        "onboardingSessionId": onboarding_session_id,
         "messages": conv.get("messages") or [],
     }
 

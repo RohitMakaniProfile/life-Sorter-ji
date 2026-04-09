@@ -33,6 +33,29 @@ export const API_ROUTES = {
         const qs = params.toString();
         return `/api/v1/admin/management/users${qs ? `?${qs}` : ''}`;
       },
+      tokenUsageSummary: '/api/v1/admin/management/token-usage/summary',
+      tokenUsageUsers: (q?: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (q) params.set('q', q);
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/users${qs ? `?${qs}` : ''}`;
+      },
+      tokenUsageUserConversations: (userId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/users/${encodeURIComponent(userId)}/conversations${qs ? `?${qs}` : ''}`;
+      },
+      tokenUsageConversationCalls: (conversationId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/management/token-usage/conversations/${encodeURIComponent(conversationId)}/calls${qs ? `?${qs}` : ''}`;
+      },
     },
     subscriptionGrants: {
       list: '/api/v1/admin/subscription-grants',
@@ -57,6 +80,7 @@ export const API_ROUTES = {
     gapQuestionsStart: '/api/v1/onboarding/gap-questions/start',
     playbookLaunch: '/api/v1/onboarding/playbook/launch',
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
+    playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
   },
   aiChat: {
     stream: '/api/v1/ai-chat/stream',

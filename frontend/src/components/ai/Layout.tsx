@@ -88,6 +88,10 @@ export default function Layout() {
                 <span className="text-lg text-slate-200 group-hover:text-white">📝</span>
                 <span className="text-sm text-slate-200 group-hover:text-white">Prompts</span>
               </NavLink>
+              <NavLink to="/admin/token-usage" className={navLinkClass}>
+                <span className="text-lg text-slate-200 group-hover:text-white">💸</span>
+                <span className="text-sm text-slate-200 group-hover:text-white">Token Usage</span>
+              </NavLink>
               <NavLink to="/admin/agents" className={navLinkClass}>
                 <span className="text-lg text-slate-200 group-hover:text-white">🧩</span>
                 <span className="text-sm text-slate-200 group-hover:text-white">Agents (Edit)</span>

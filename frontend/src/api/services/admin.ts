@@ -11,6 +11,10 @@ import type {
   AdminSkillCallSummary,
   AdminSkillCallDetail,
   PromptEntry,
+  AdminTokenUsageSummary,
+  AdminTokenUsageUser,
+  AdminTokenUsageConversation,
+  AdminTokenUsageCall,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -129,6 +133,28 @@ export async function listPrompts(category?: string): Promise<{ prompts: PromptE
     ? `${API_ROUTES.admin.management.prompts}?category=${encodeURIComponent(category)}`
     : API_ROUTES.admin.management.prompts;
   return apiGet<{ prompts: PromptEntry[] }>(url);
+}
+
+export async function getTokenUsageSummary(): Promise<AdminTokenUsageSummary> {
+  return apiGet<AdminTokenUsageSummary>(API_ROUTES.admin.management.tokenUsageSummary);
+}
+
+export async function getTokenUsageUsers(q?: string, limit?: number, offset?: number): Promise<{ users: AdminTokenUsageUser[]; limit: number; offset: number }> {
+  return apiGet<{ users: AdminTokenUsageUser[]; limit: number; offset: number }>(
+    API_ROUTES.admin.management.tokenUsageUsers(q, limit, offset),
+  );
+}
+
+export async function getTokenUsageUserConversations(userId: string, limit?: number, offset?: number): Promise<{ conversations: AdminTokenUsageConversation[]; limit: number; offset: number }> {
+  return apiGet<{ conversations: AdminTokenUsageConversation[]; limit: number; offset: number }>(
+    API_ROUTES.admin.management.tokenUsageUserConversations(userId, limit, offset),
+  );
+}
+
+export async function getTokenUsageConversationCalls(conversationId: string, limit?: number, offset?: number): Promise<{ calls: AdminTokenUsageCall[]; limit: number; offset: number }> {
+  return apiGet<{ calls: AdminTokenUsageCall[]; limit: number; offset: number }>(
+    API_ROUTES.admin.management.tokenUsageConversationCalls(conversationId, limit, offset),
+  );
 }
 
 export async function getPrompt(slug: string): Promise<{ prompt: PromptEntry }> {

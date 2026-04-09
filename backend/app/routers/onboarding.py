@@ -76,6 +76,7 @@ class OnboardingStateResponse(BaseModel):
     playbook_error: Optional[str] = None
     gap_questions: Optional[list[dict[str, Any]]] = None
     gap_answers: Optional[str] = None
+    gap_answers_parsed: Optional[dict[str, str]] = None
 
 
 def _as_dict(v: Any) -> dict[str, Any]:
@@ -287,6 +288,7 @@ async def get_onboarding_state(
             playbook_error=str(row_dict.get("playbook_error") or "") or None,
             gap_questions=gap_questions if gap_questions else None,
             gap_answers=str(row_dict.get("gap_answers") or "") or None,
+            gap_answers_parsed=_parse_gap_answers_map(row_dict.get("gap_answers")) or None,
         )
 
 
@@ -424,12 +426,51 @@ class LaunchOnboardingPlaybookResponse(BaseModel):
     stream_id: str = ""
     stream_status: str = ""
     message: str = ""
+    gap_answers_parsed: Optional[dict[str, str]] = None
 
 
 class SubmitOnboardingGapAnswersResponse(BaseModel):
     onboarding_id: str
     stage: str  # ready
     message: str = ""
+
+
+class SubmitOnboardingMcqAnswerRequest(BaseModel):
+    onboarding_id: Optional[str] = None
+    question_index: int
+    answer_key: str
+    answer_text: str
+
+
+class SubmitOnboardingMcqAnswerResponse(BaseModel):
+    onboarding_id: str
+    all_answered: bool
+    playbook_status: str
+    gap_answers_parsed: dict[str, str] = {}
+
+
+def _parse_gap_answers_map(value: Any) -> dict[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {str(k): str(v) for k, v in parsed.items()}
+    except Exception:
+        pass
+    out: dict[str, str] = {}
+    for part in raw.split(","):
+        piece = part.strip()
+        if "-" not in piece:
+            continue
+        k, v = piece.split("-", 1)
+        out[str(k).strip()] = str(v).strip()
+    return out
+
+
+def _serialize_gap_answers_text(answer_map: dict[str, str]) -> str:
+    return json.dumps(answer_map, ensure_ascii=False)
 
 
 class PrecisionQuestionItem(BaseModel):
@@ -848,6 +889,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         stream_id=str(started.get("stream_id") or ""),
         stream_status=str(started.get("status") or ""),
         message="Playbook generation started.",
+        gap_answers_parsed=_parse_gap_answers_map(gap_answers),
     )
 
 
@@ -887,6 +929,52 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
         await conn.execute(update_q.sql, *update_q.params)
 
     return SubmitOnboardingGapAnswersResponse(onboarding_id=onboarding_id, stage="ready", message="Gap answers saved.")
+
+
+@router.post("/playbook/mcq-answer", response_model=SubmitOnboardingMcqAnswerResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def onboarding_playbook_mcq_answer(request: Request, body: SubmitOnboardingMcqAnswerRequest = Body(...)):
+    require_request_user(request)
+    onboarding_id = await _resolve_onboarding_id(request=request, provided_onboarding_id=body.onboarding_id)
+    if body.question_index < 0:
+        raise HTTPException(status_code=400, detail="question_index must be >= 0")
+
+    from app.db import get_pool
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(onboarding_t.id, onboarding_t.gap_questions, onboarding_t.gap_answers)
+            .where(onboarding_t.id == Parameter("%s"))
+            .limit(1),
+            [onboarding_id],
+        )
+        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        if not row:
+            raise HTTPException(status_code=404, detail="Onboarding row not found")
+
+        gap_questions = _as_list(row.get("gap_questions"))
+        answer_map = _parse_gap_answers_map(row.get("gap_answers"))
+        answer_map[f"Q{body.question_index + 1}"] = str(body.answer_key or body.answer_text or "").strip()
+        all_answered = len(gap_questions) > 0 and len(answer_map) >= len(gap_questions)
+        status = "ready" if all_answered else "awaiting_gap_answers"
+
+        await conn.execute(
+            "UPDATE onboarding "
+            "SET gap_answers = $1, playbook_status = $2, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = $3",
+            _serialize_gap_answers_text(answer_map),
+            status,
+            onboarding_id,
+        )
+
+    return SubmitOnboardingMcqAnswerResponse(
+        onboarding_id=onboarding_id,
+        all_answered=all_answered,
+        playbook_status=status,
+        gap_answers_parsed=answer_map,
+    )
 
 
 @router.post("/precision/start", response_model=StartOnboardingPrecisionResponse)

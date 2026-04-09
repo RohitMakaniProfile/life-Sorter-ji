@@ -169,3 +169,27 @@ When adding a new DB query:
 2. Pass through `build_query(...)`.
 3. Keep table/domain-specific query definitions under `backend/app/repositories/`.
 4. If a Postgres-specific edge case is clearer as SQL constant, place it in repository table modules (not inline inside service/router runtime callsites).
+
+## Recent Runtime Stabilization (Post-Migration)
+
+After the initial migration, a few production-like runtime regressions were fixed without reducing code quality:
+
+- Removed unsupported PyPika `.cast(...)` usage from critical paths where the installed PyPika version does not support `Field.cast`/`Parameter.cast`.
+- Switched sensitive JSONB writes to explicit SQL with `::jsonb` casting for asyncpg compatibility.
+- Fixed OTP verification path failures in `auth` flow caused by cast-based UUID/TEXT comparisons.
+- Fixed onboarding patch/reset path failures in `onboarding_service` for UUID and JSONB updates.
+- Fixed playbook stream task failures in:
+  - `task_stream/tasks/onboarding_playbook_generate.py`
+  - `task_stream/postgres_store.py`
+  by replacing cast-based inserts/updates with safe SQL-cast execution.
+
+Validation after these fixes:
+
+- Backend compile checks passed.
+- Local smoke checks passed for:
+  - `POST /api/v1/auth/verify-otp`
+  - `POST /api/v1/onboarding`
+  - playbook task-stream start/events flow
+- CORS error symptoms resolved once backend 500s were removed (CORS was secondary to server exceptions).
+
+For the complete timeline and broader non-PyPika change history, see `changes.md`.

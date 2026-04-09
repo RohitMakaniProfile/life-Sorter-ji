@@ -51,6 +51,15 @@ messages_t = Table("messages")
 skill_calls_t = Table("skill_calls")
 plan_runs_t = Table("plan_runs")
 token_usage_t = Table("token_usage")
+onboarding_t = Table("onboarding")
+
+USD_TO_INR = 94.0
+MODEL_PRICING_USD_PER_TOKEN: dict[str, tuple[float, float]] = {
+    "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
+    "gpt-4o": (5.0 / 1_000_000, 15.0 / 1_000_000),
+    "claude-3-5-sonnet-20241022": (3.0 / 1_000_000, 15.0 / 1_000_000),
+    "claude-3-7-sonnet-20250219": (3.0 / 1_000_000, 15.0 / 1_000_000),
+}
 
 DEFAULT_AGENTS = [
     {
@@ -389,6 +398,7 @@ async def get_or_create_conversation(
                 conversations_t.id,
                 conversations_t.agent_id,
                 conversations_t.session_id,
+                conversations_t.onboarding_session_id,
                 conversations_t.user_id,
                 conversations_t.created_at,
                 conversations_t.updated_at,
@@ -400,14 +410,16 @@ async def get_or_create_conversation(
                 Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
+                Parameter("%s"),
             ),
-            [cid, selected_agent, sid, uid, now, now],
+            [cid, selected_agent, sid, sid, uid, now, now],
         )
         await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
         "agentId": selected_agent,
+        "onboardingSessionId": sid,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -441,6 +453,7 @@ async def create_new_conversation(
                 conversations_t.id,
                 conversations_t.agent_id,
                 conversations_t.session_id,
+                conversations_t.onboarding_session_id,
                 conversations_t.user_id,
                 conversations_t.created_at,
                 conversations_t.updated_at,
@@ -452,14 +465,16 @@ async def create_new_conversation(
                 Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
+                Parameter("%s"),
             ),
-            [cid, selected_agent, sid, uid, now, now],
+            [cid, selected_agent, sid, sid, uid, now, now],
         )
         await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
         "agentId": selected_agent,
+        "onboardingSessionId": sid,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -527,6 +542,7 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
         "id": conv["id"],
         "agentId": conv["agent_id"] or DEFAULT_AGENT_ID,
         "sessionId": conv["session_id"],
+        "onboardingSessionId": conv.get("onboarding_session_id"),
         "userId": conv["user_id"],
         "title": conv["title"] or None,
         "messages": [_message_from_row(m) for m in messages],
@@ -828,6 +844,7 @@ async def list_conversations(
                 "id": r["id"],
                 "agentId": r["agent_id"] or DEFAULT_AGENT_ID,
                 "sessionId": r["session_id"],
+                "onboardingSessionId": r.get("onboarding_session_id"),
                 "userId": r["user_id"],
                 "title": r["title"] or "New conversation",
                 "messageCount": count,
@@ -1369,6 +1386,27 @@ def _decode_token_usage_model(encoded: str) -> dict[str, str]:
     }
 
 
+def _pricing_for_model(model_name: str) -> tuple[float, float] | None:
+    name = (model_name or "").strip().lower()
+    if not name:
+        return None
+    if name in MODEL_PRICING_USD_PER_TOKEN:
+        return MODEL_PRICING_USD_PER_TOKEN[name]
+    for key, val in MODEL_PRICING_USD_PER_TOKEN.items():
+        if key in name:
+            return val
+    return None
+
+
+def _compute_cost_usd_inr(model_name: str, input_tokens: int, output_tokens: int) -> tuple[float | None, float | None]:
+    pricing = _pricing_for_model(model_name)
+    if not pricing:
+        return None, None
+    in_rate, out_rate = pricing
+    usd = (max(0, int(input_tokens)) * in_rate) + (max(0, int(output_tokens)) * out_rate)
+    return round(usd, 6), round(usd * USD_TO_INR, 2)
+
+
 async def save_token_usage(
     message_id: str,
     model: str,
@@ -1380,18 +1418,65 @@ async def save_token_usage(
     session_id: str | None = None,
 ) -> None:
     pool = get_pool()
-    encoded_model = _encode_token_usage_model(model, stage, provider)
+    decoded = _decode_token_usage_model(_encode_token_usage_model(model, stage, provider))
+    stage_name = (stage or decoded["stage"] or "unknown").strip()
+    provider_name = (provider or decoded["provider"] or "unknown").strip()
+    model_name = (model or decoded["model"] or "unknown").strip()
+    encoded_model = _encode_token_usage_model(model_name, stage_name, provider_name)
+    cost_usd, cost_inr = _compute_cost_usd_inr(model_name, input_tokens, output_tokens)
     async with pool.acquire() as conn:
+        sid = (session_id or "").strip() or None
+        conversation_id: str | None = None
+        linked_user_id: str | None = None
+
+        link_q = build_query(
+            PostgreSQLQuery.from_(messages_t)
+            .join(conversations_t)
+            .on(conversations_t.id == messages_t.conversation_id)
+            .select(messages_t.conversation_id, conversations_t.user_id)
+            .where(messages_t.message.get_text_value("messageId") == Parameter("%s"))
+            .limit(1),
+            [message_id],
+        )
+        found = await conn.fetchrow(link_q.sql, *link_q.params)
+        if found:
+            conversation_id = str(found.get("conversation_id") or "").strip() or None
+            linked_user_id = str(found.get("user_id") or "").strip() or None
+
+        if sid and not linked_user_id:
+            onboarding_user_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t)
+                .select(onboarding_t.user_id)
+                .where(onboarding_t.id == Parameter("%s"))
+                .limit(1),
+                [sid],
+            )
+            onboarding_user = await conn.fetchval(onboarding_user_q.sql, *onboarding_user_q.params)
+            linked_user_id = str(onboarding_user or "").strip() or None
+
         insert_token_usage_q = build_query(
             PostgreSQLQuery.into(token_usage_t)
             .columns(
                 token_usage_t.message_id,
                 token_usage_t.session_id,
+                token_usage_t.conversation_id,
+                token_usage_t.user_id,
                 token_usage_t.model,
+                token_usage_t.stage,
+                token_usage_t.provider,
+                token_usage_t.model_name,
                 token_usage_t.input_tokens,
                 token_usage_t.output_tokens,
+                token_usage_t.cost_usd,
+                token_usage_t.cost_inr,
             )
             .insert(
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
+                Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
@@ -1400,10 +1485,17 @@ async def save_token_usage(
             ),
             [
                 message_id,
-                (session_id or "").strip() or None,
+                sid,
+                conversation_id,
+                linked_user_id,
                 encoded_model,
+                stage_name,
+                provider_name,
+                model_name,
                 input_tokens,
                 output_tokens,
+                cost_usd,
+                cost_inr,
             ],
         )
         await conn.execute(insert_token_usage_q.sql, *insert_token_usage_q.params)
@@ -1436,8 +1528,13 @@ async def get_token_usage(message_id: str) -> dict[str, Any]:
             PostgreSQLQuery.from_(token_usage_t)
             .select(
                 token_usage_t.model,
+                token_usage_t.stage,
+                token_usage_t.provider,
+                token_usage_t.model_name,
                 token_usage_t.input_tokens,
                 token_usage_t.output_tokens,
+                token_usage_t.cost_usd,
+                token_usage_t.cost_inr,
                 token_usage_t.created_at,
             )
             .where(token_usage_t.message_id == Parameter("%s"))
@@ -1448,11 +1545,13 @@ async def get_token_usage(message_id: str) -> dict[str, Any]:
     entries = [
         (
             lambda decoded: {
-                "stage": decoded["stage"],
-                "provider": decoded["provider"],
-                "model": decoded["model"],
+                "stage": str(r.get("stage") or decoded["stage"]),
+                "provider": str(r.get("provider") or decoded["provider"]),
+                "model": str(r.get("model_name") or decoded["model"]),
                 "inputTokens": r["input_tokens"],
                 "outputTokens": r["output_tokens"],
+                "costUsd": float(r["cost_usd"]) if r.get("cost_usd") is not None else None,
+                "costInr": float(r["cost_inr"]) if r.get("cost_inr") is not None else None,
                 "createdAt": str(r["created_at"]),
             }
         )(_decode_token_usage_model(str(r["model"])))

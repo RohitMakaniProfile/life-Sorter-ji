@@ -50,6 +50,20 @@ def _as_list(v: Any) -> list[dict[str, Any]]:
     return v if isinstance(v, list) else []
 
 
+def _coerce_gap_answers_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parts = [f"{k}-{v}" for k, v in parsed.items()]
+            return ", ".join(parts)
+    except Exception:
+        pass
+    return raw
+
+
 
 @register_task_stream("playbook/onboarding-generate")
 async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> dict[str, Any]:
@@ -123,7 +137,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             ]
             rca_summary = str(onboarding.get("rca_summary") or "")
             rca_handoff = str(onboarding.get("rca_handoff") or "")
-            gap_answers = str(onboarding.get("gap_answers") or "")
+            gap_answers = _coerce_gap_answers_text(onboarding.get("gap_answers"))
 
             web_summary = str(onboarding.get("web_summary") or "")
 
