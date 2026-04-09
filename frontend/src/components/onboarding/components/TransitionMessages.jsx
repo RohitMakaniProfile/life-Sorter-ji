@@ -17,28 +17,28 @@ const TRANSITION_MESSAGES = [
     text: 'Agent has no more questions...',
     subtext: 'You provided excellent context',
     delay: 0,
-    duration: 1800,
+    duration: 3000,
   },
   {
     icon: Brain,
     text: 'Building a complete picture of your business...',
     subtext: 'Analyzing your goals, challenges, and opportunities',
     delay: 1800,
-    duration: 2000,
+    duration: 3000,
   },
   {
     icon: FileText,
     text: 'Crafting your personalized growth playbook...',
     subtext: 'Creating actionable strategies tailored for you',
     delay: 3800,
-    duration: 2000,
+    duration: 3000,
   },
   {
     icon: Sparkles,
     text: 'Almost ready!',
     subtext: 'Finalizing your customized recommendations',
     delay: 5800,
-    duration: 1500,
+    duration: 3000,
   },
 ];
 
