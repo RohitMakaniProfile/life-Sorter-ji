@@ -74,7 +74,8 @@ export default function Navbar() {
           How It Works
         </button>
       </div>
-      <div>
+      <div className="flex items-center gap-2">
+        <img src="/ikshan-logo.svg" alt="Ikshan" className="h-6 w-auto" />
         <span className="text-sm font-bold tracking-[0.2em] text-white/80">DOABLE CLAW</span>
       </div>
     </nav>

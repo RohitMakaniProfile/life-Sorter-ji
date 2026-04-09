@@ -185,6 +185,9 @@ export default function PhoneVerifyPage() {
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
       <div className="w-full max-w-md border border-zinc-800 rounded-xl p-6 bg-zinc-900">
+        <div className="flex justify-center mb-4">
+          <img src="/ikshan-logo.svg" alt="Ikshan" className="h-10 w-auto" />
+        </div>
         <div className="text-sm uppercase tracking-wide text-zinc-400">
           {isLinkMode ? 'Link Phone Number' : 'Sign In'}
         </div>
