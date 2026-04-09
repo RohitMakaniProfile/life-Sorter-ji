@@ -166,7 +166,7 @@ async def save_checkout_context(*, order_id: str, user_id: str, plan_id: str) ->
                 payment_checkout_context_t.plan_id,
                 payment_checkout_context_t.created_at,
             )
-            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s").cast("uuid"), fn.Now())
+            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"), fn.Now())
             .on_conflict(payment_checkout_context_t.order_id)
             .do_update(payment_checkout_context_t.user_id)
             .do_update(payment_checkout_context_t.plan_id)
@@ -261,7 +261,7 @@ async def complete_plan_purchase(*, user_id: str, order_id: str) -> Tuple[bool, 
                 )
                 .insert(
                     Parameter("%s"),
-                    Parameter("%s").cast("uuid"),
+                    Parameter("%s"),
                     Parameter("%s"),
                     Parameter("%s"),
                 ),

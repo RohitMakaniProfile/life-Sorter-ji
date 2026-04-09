@@ -60,7 +60,7 @@ async def _store_otp_postgres(
                 otp_sessions_t.payload,
                 otp_sessions_t.expires_at,
             )
-            .insert(Parameter("%s"), Parameter("%s").cast("jsonb"), Parameter("%s"))
+            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"))
             .on_conflict(otp_sessions_t.phone_number)
             .do_update(otp_sessions_t.payload)
             .do_update(otp_sessions_t.expires_at),
@@ -153,7 +153,7 @@ async def log_provider_call(
                     Parameter("%s"),
                     Parameter("%s"),
                     Parameter("%s"),
-                    Parameter("%s").cast("jsonb"),
+                    Parameter("%s"),
                     Parameter("%s"),
                     Parameter("%s"),
                     Parameter("%s"),

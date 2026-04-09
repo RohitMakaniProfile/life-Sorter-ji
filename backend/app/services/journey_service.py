@@ -285,8 +285,8 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
         async with pool.acquire() as conn:
             mark_precision_empty_q = build_query(
                 PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.precision_questions, Parameter("%s").cast("jsonb"))
-                .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.precision_questions, Parameter("%s"))
+                .set(onboarding_t.precision_answers, Parameter("%s"))
                 .set(onboarding_t.precision_status, "complete")
                 .set(onboarding_t.precision_completed_at, fn.Now())
                 .set(onboarding_t.updated_at, fn.Now())
@@ -311,8 +311,8 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
     async with pool.acquire() as conn:
         save_precision_questions_q = build_query(
             PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.precision_questions, Parameter("%s").cast("jsonb"))
-            .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+            .set(onboarding_t.precision_questions, Parameter("%s"))
+            .set(onboarding_t.precision_answers, Parameter("%s"))
             .set(onboarding_t.precision_status, "awaiting_answers")
             .set(onboarding_t.precision_completed_at, None)
             .set(onboarding_t.updated_at, fn.Now())
@@ -408,7 +408,7 @@ async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
         async with pool.acquire() as conn:
             set_gap_questions_q = build_query(
                 PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.gap_questions, Parameter("%s").cast("jsonb"))
+                .set(onboarding_t.gap_questions, Parameter("%s"))
                 .set(onboarding_t.playbook_status, "awaiting_gap_answers")
                 .set(onboarding_t.updated_at, fn.Now())
                 .where(onboarding_t.id == Parameter("%s")),
@@ -420,7 +420,7 @@ async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
     async with pool.acquire() as conn:
         clear_gap_questions_q = build_query(
             PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.gap_questions, Parameter("%s").cast("jsonb"))
+            .set(onboarding_t.gap_questions, Parameter("%s"))
             .set(onboarding_t.playbook_status, "ready")
             .set(onboarding_t.updated_at, fn.Now())
             .where(onboarding_t.id == Parameter("%s")),
@@ -659,10 +659,10 @@ async def next_step(
             if all_answered:
                 persist_precision_complete_q = build_query(
                     PostgreSQLQuery.update(onboarding_t)
-                    .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.precision_answers, Parameter("%s"))
                     .set(onboarding_t.precision_status, "complete")
                     .set(onboarding_t.precision_completed_at, fn.Now())
-                    .set(onboarding_t.questions_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.questions_answers, Parameter("%s"))
                     .set(onboarding_t.updated_at, fn.Now())
                     .where(onboarding_t.session_id == Parameter("%s")),
                     [json.dumps(precision_answers), json.dumps(qa_log), sid],
@@ -671,9 +671,9 @@ async def next_step(
             else:
                 persist_precision_progress_q = build_query(
                     PostgreSQLQuery.update(onboarding_t)
-                    .set(onboarding_t.precision_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.precision_answers, Parameter("%s"))
                     .set(onboarding_t.precision_status, "awaiting_answers")
-                    .set(onboarding_t.questions_answers, Parameter("%s").cast("jsonb"))
+                    .set(onboarding_t.questions_answers, Parameter("%s"))
                     .set(onboarding_t.updated_at, fn.Now())
                     .where(onboarding_t.session_id == Parameter("%s")),
                     [json.dumps(precision_answers), json.dumps(qa_log), sid],

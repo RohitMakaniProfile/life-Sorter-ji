@@ -76,7 +76,7 @@ async def finish_onboarding_skill_call(
         finish_skill_q = build_query(
             PostgreSQLQuery.update(skill_calls_t)
             .set(skill_calls_t.state, Parameter("%s"))
-            .set(skill_calls_t.output, Parameter("%s").cast("jsonb"))
+            .set(skill_calls_t.output, Parameter("%s"))
             .set(skill_calls_t.error, Parameter("%s"))
             .set(skill_calls_t.ended_at, PostgreSQLQuery.now())
             .set(skill_calls_t.duration_ms, Parameter("%s"))
@@ -358,7 +358,7 @@ async def fetch_onboarding_context(onboarding_id: str) -> dict[str, Any]:
                 onboarding_t.web_summary,
                 onboarding_t.business_profile,
             )
-            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            .where(onboarding_t.id == Parameter("%s")),
             [onboarding_id],
         )
         row = await conn.fetchrow(fetch_context_q.sql, *fetch_context_q.params)
@@ -396,7 +396,7 @@ async def update_onboarding_crawl_outputs(
             .set(onboarding_t.web_summary, Parameter("%s"))
             .set(onboarding_t.business_profile, Parameter("%s"))
             .set(onboarding_t.updated_at, PostgreSQLQuery.now())
-            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            .where(onboarding_t.id == Parameter("%s")),
             [web_summary, business_profile, onboarding_id],
         )
         await conn.execute(update_outputs_q.sql, *update_outputs_q.params)
