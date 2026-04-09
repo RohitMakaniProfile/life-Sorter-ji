@@ -15,7 +15,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 import structlog
-from pypika import Table
+from pypika import Table, functions as fn
 from pypika.dialects import PostgreSQLQuery
 from pypika.terms import Parameter
 
@@ -78,7 +78,7 @@ async def finish_onboarding_skill_call(
             .set(skill_calls_t.state, Parameter("%s"))
             .set(skill_calls_t.output, Parameter("%s"))
             .set(skill_calls_t.error, Parameter("%s"))
-            .set(skill_calls_t.ended_at, PostgreSQLQuery.now())
+            .set(skill_calls_t.ended_at, fn.Now())
             .set(skill_calls_t.duration_ms, Parameter("%s"))
             .where(skill_calls_t.id == Parameter("%s")),
             [state, json.dumps(output if output is not None else []), error, duration_ms, skill_call_id],
@@ -395,7 +395,7 @@ async def update_onboarding_crawl_outputs(
             PostgreSQLQuery.update(onboarding_t)
             .set(onboarding_t.web_summary, Parameter("%s"))
             .set(onboarding_t.business_profile, Parameter("%s"))
-            .set(onboarding_t.updated_at, PostgreSQLQuery.now())
+            .set(onboarding_t.updated_at, fn.Now())
             .where(onboarding_t.id == Parameter("%s")),
             [web_summary, business_profile, onboarding_id],
         )
