@@ -340,14 +340,13 @@ class PostgresTaskStreamStore:
                 seq = await conn.fetchval(bump_seq_q.sql, *bump_seq_q.params)
                 if seq is None:
                     raise RuntimeError(f"task stream not found or expired: {stream_id}")
-                insert_event_q = build_query(
-                    PostgreSQLQuery.into(task_stream_events_t)
-                    .columns("stream_id", "seq", "event")
-                    .insert(Parameter("%s"), Parameter("%s"), Parameter("%s").cast("jsonb"))
-                    .returning(task_stream_events_t.id),
-                    [stream_id, int(seq), event_json],
+                row = await conn.fetchrow(
+                    "INSERT INTO task_stream_events (stream_id, seq, event) "
+                    "VALUES ($1, $2, $3::jsonb) RETURNING id",
+                    stream_id,
+                    int(seq),
+                    event_json,
                 )
-                row = await conn.fetchrow(insert_event_q.sql, *insert_event_q.params)
                 eid = int(row["id"])
                 set_last_event_q = build_query(
                     PostgreSQLQuery.update(task_stream_streams_t)

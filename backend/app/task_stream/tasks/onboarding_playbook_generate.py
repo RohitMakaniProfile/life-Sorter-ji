@@ -75,7 +75,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                 linked_sid_q = build_query(
                     PostgreSQLQuery.from_(users_t)
                     .select(users_t.onboarding_session_id)
-                    .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                    .where(users_t.id == Parameter("%s"))
                     .limit(1),
                     [user_id],
                 )
@@ -100,7 +100,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                     onboarding_t.gap_answers,
                     onboarding_t.web_summary,
                 )
-                .where(onboarding_t.id.cast("TEXT") == Parameter("%s"))
+                .where(onboarding_t.id == Parameter("%s"))
                 .limit(1),
                 [onboarding_id],
             )
@@ -142,26 +142,14 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                 }
             )
             crawl_snapshot = json.dumps({"web_summary": web_summary})
-            playbook_run_q = build_query(
-                PostgreSQLQuery.into(playbook_runs_t)
-                .columns(
-                    playbook_runs_t.session_id,
-                    playbook_runs_t.user_id,
-                    playbook_runs_t.status,
-                    playbook_runs_t.onboarding_snapshot,
-                    playbook_runs_t.crawl_snapshot,
-                )
-                .insert(
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    "running",
-                    Parameter("%s").cast("jsonb"),
-                    Parameter("%s").cast("jsonb"),
-                )
-                .returning(playbook_runs_t.id),
-                [onboarding_id, user_id, onboarding_snapshot, crawl_snapshot],
+            playbook_run = await conn.fetchrow(
+                "INSERT INTO playbook_runs (session_id, user_id, status, onboarding_snapshot, crawl_snapshot) "
+                "VALUES ($1, $2, 'running', $3::jsonb, $4::jsonb) RETURNING id",
+                onboarding_id,
+                user_id,
+                onboarding_snapshot,
+                crawl_snapshot,
             )
-            playbook_run = await conn.fetchrow(playbook_run_q.sql, *playbook_run_q.params)
             playbook_run_id = playbook_run.get("id")
 
             set_generating_q = build_query(
@@ -170,7 +158,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                 .set(onboarding_t.playbook_run_id, Parameter("%s"))
                 .set(onboarding_t.playbook_error, "")
                 .set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                .where(onboarding_t.id == Parameter("%s")),
                 [playbook_run_id, onboarding_id],
             )
             await conn.execute(set_generating_q.sql, *set_generating_q.params)
@@ -231,33 +219,30 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
         }
 
         async with pool.acquire() as conn:
-            set_complete_q = build_query(
-                PostgreSQLQuery.update(playbook_runs_t)
-                .set(playbook_runs_t.status, "complete")
-                .set(playbook_runs_t.error, "")
-                .set(playbook_runs_t.context_brief, Parameter("%s"))
-                .set(playbook_runs_t.icp_card, Parameter("%s"))
-                .set(playbook_runs_t.playbook, Parameter("%s"))
-                .set(playbook_runs_t.website_audit, Parameter("%s"))
-                .set(playbook_runs_t.latencies, Parameter("%s").cast("jsonb"))
-                .where(playbook_runs_t.id == Parameter("%s")),
-                [
-                    result_payload["context_brief"],
-                    result_payload["icp_card"],
-                    result_payload["playbook"],
-                    result_payload["website_audit"],
-                    json.dumps(latencies),
-                    playbook_run_id,
-                ],
+            await conn.execute(
+                "UPDATE playbook_runs "
+                "SET status = 'complete', "
+                "    error = '', "
+                "    context_brief = $1, "
+                "    icp_card = $2, "
+                "    playbook = $3, "
+                "    website_audit = $4, "
+                "    latencies = $5::jsonb "
+                "WHERE id = $6",
+                result_payload["context_brief"],
+                result_payload["icp_card"],
+                result_payload["playbook"],
+                result_payload["website_audit"],
+                json.dumps(latencies),
+                playbook_run_id,
             )
-            await conn.execute(set_complete_q.sql, *set_complete_q.params)
             set_onboarding_complete_q = build_query(
                 PostgreSQLQuery.update(onboarding_t)
                 .set(onboarding_t.playbook_status, "complete")
                 .set(onboarding_t.playbook_completed_at, fn.Now())
                 .set(onboarding_t.onboarding_completed_at, fn.Coalesce(onboarding_t.onboarding_completed_at, fn.Now()))
                 .set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                .where(onboarding_t.id == Parameter("%s")),
                 [onboarding_id],
             )
             await conn.execute(set_onboarding_complete_q.sql, *set_onboarding_complete_q.params)
@@ -287,7 +272,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                         .set(onboarding_t.playbook_status, "error")
                         .set(onboarding_t.playbook_error, Parameter("%s"))
                         .set(onboarding_t.updated_at, fn.Now())
-                        .where(onboarding_t.id.cast("TEXT") == Parameter("%s")),
+                        .where(onboarding_t.id == Parameter("%s")),
                         [error_message, onboarding_id],
                     )
                     await conn.execute(set_onboarding_error_q.sql, *set_onboarding_error_q.params)

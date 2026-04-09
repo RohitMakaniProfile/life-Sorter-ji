@@ -148,7 +148,7 @@ async def _user_exists(user_id: str, email: str | None) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
         id_exists_q = build_query(
-            PostgreSQLQuery.from_(users_t).select(1).where(users_t.id.cast("TEXT") == Parameter("%s")).limit(1),
+            PostgreSQLQuery.from_(users_t).select(1).where(users_t.id == Parameter("%s")).limit(1),
             [user_id],
         )
         if await conn.fetchval(id_exists_q.sql, *id_exists_q.params):
@@ -210,7 +210,7 @@ async def _upsert_user_from_otp(phone_number: str, onboarding_session_id: str | 
         existing_q = build_query(
             PostgreSQLQuery.from_(users_t)
             .select(
-                users_t.id.cast("TEXT").as_("id"),
+                users_t.id.as_("id"),
                 users_t.phone_number,
                 users_t.email,
                 users_t.name,
@@ -231,9 +231,9 @@ async def _upsert_user_from_otp(phone_number: str, onboarding_session_id: str | 
                 .set(users_t.auth_provider, Parameter("%s"))
                 .set(users_t.onboarding_session_id, fn.Coalesce(Parameter("%s"), users_t.onboarding_session_id))
                 .set(users_t.updated_at, fn.Now())
-                .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                .where(users_t.id == Parameter("%s"))
                 .returning(
-                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.id.as_("id"),
                     users_t.phone_number,
                     users_t.email,
                     users_t.name,
@@ -255,7 +255,7 @@ async def _upsert_user_from_otp(phone_number: str, onboarding_session_id: str | 
                 )
                 .insert(Parameter("%s"), "", "otp", Parameter("%s"), fn.Now())
                 .returning(
-                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.id.as_("id"),
                     users_t.phone_number,
                     users_t.email,
                     users_t.name,
@@ -276,7 +276,7 @@ async def _upsert_user_from_google(email: str, name: str, onboarding_session_id:
         existing_q = build_query(
             PostgreSQLQuery.from_(users_t)
             .select(
-                users_t.id.cast("TEXT").as_("id"),
+                users_t.id.as_("id"),
                 users_t.phone_number,
                 users_t.email,
                 users_t.name,
@@ -298,9 +298,9 @@ async def _upsert_user_from_google(email: str, name: str, onboarding_session_id:
                 .set(users_t.onboarding_session_id, fn.Coalesce(Parameter("%s"), users_t.onboarding_session_id))
                 .set(users_t.last_login_at, fn.Now())
                 .set(users_t.updated_at, fn.Now())
-                .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                .where(users_t.id == Parameter("%s"))
                 .returning(
-                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.id.as_("id"),
                     users_t.phone_number,
                     users_t.email,
                     users_t.name,
@@ -322,7 +322,7 @@ async def _upsert_user_from_google(email: str, name: str, onboarding_session_id:
                 )
                 .insert(Parameter("%s"), Parameter("%s"), "google", Parameter("%s"), fn.Now())
                 .returning(
-                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.id.as_("id"),
                     users_t.phone_number,
                     users_t.email,
                     users_t.name,
@@ -346,9 +346,9 @@ async def _link_phone_to_user(user_id: str, phone_number: str) -> dict:
         # Check if phone is already used by another user
         existing_phone_q = build_query(
             PostgreSQLQuery.from_(users_t)
-            .select(users_t.id.cast("TEXT").as_("id"))
+            .select(users_t.id.as_("id"))
             .where(users_t.phone_number == Parameter("%s"))
-            .where(users_t.id.cast("TEXT") != Parameter("%s"))
+            .where(users_t.id != Parameter("%s"))
             .limit(1),
             [phone, uid],
         )
@@ -365,9 +365,9 @@ async def _link_phone_to_user(user_id: str, phone_number: str) -> dict:
                 Case().when(users_t.auth_provider == "google", "both").else_(users_t.auth_provider),
             )
             .set(users_t.updated_at, fn.Now())
-            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .where(users_t.id == Parameter("%s"))
             .returning(
-                users_t.id.cast("TEXT").as_("id"),
+                users_t.id.as_("id"),
                 users_t.phone_number,
                 users_t.email,
                 users_t.name,
@@ -391,9 +391,9 @@ async def _link_email_to_user(user_id: str, email: str, name: str | None = None)
         # Check if email is already used by another user
         existing_email_q = build_query(
             PostgreSQLQuery.from_(users_t)
-            .select(users_t.id.cast("TEXT").as_("id"))
+            .select(users_t.id.as_("id"))
             .where(users_t.email == Parameter("%s"))
-            .where(users_t.id.cast("TEXT") != Parameter("%s"))
+            .where(users_t.id != Parameter("%s"))
             .limit(1),
             [em, uid],
         )
@@ -411,9 +411,9 @@ async def _link_email_to_user(user_id: str, email: str, name: str | None = None)
                 Case().when(users_t.auth_provider == "otp", "both").else_(users_t.auth_provider),
             )
             .set(users_t.updated_at, fn.Now())
-            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .where(users_t.id == Parameter("%s"))
             .returning(
-                users_t.id.cast("TEXT").as_("id"),
+                users_t.id.as_("id"),
                 users_t.phone_number,
                 users_t.email,
                 users_t.name,
@@ -524,12 +524,12 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
             async with pool.acquire() as conn:
                 link_onboarding_q = build_query(
                     PostgreSQLQuery.update(Table("onboarding"))
-                    .set(Table("onboarding").user_id, Parameter("%s").cast("uuid"))
+                    .set(Table("onboarding").user_id, Parameter("%s"))
                     .set(Table("onboarding").updated_at, fn.Now())
-                    .where(Table("onboarding").id.cast("TEXT") == Parameter("%s"))
+                    .where(Table("onboarding").id == Parameter("%s"))
                     .where(
                         Table("onboarding").user_id.isnull()
-                        | (Table("onboarding").user_id.cast("TEXT") == Parameter("%s"))
+                        | (Table("onboarding").user_id == Parameter("%s"))
                     ),
                     [user_id, onboarding_session_id, user_id],
                 )
@@ -655,12 +655,12 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
             async with pool.acquire() as conn:
                 link_onboarding_q = build_query(
                     PostgreSQLQuery.update(Table("onboarding"))
-                    .set(Table("onboarding").user_id, Parameter("%s").cast("uuid"))
+                    .set(Table("onboarding").user_id, Parameter("%s"))
                     .set(Table("onboarding").updated_at, fn.Now())
-                    .where(Table("onboarding").id.cast("TEXT") == Parameter("%s"))
+                    .where(Table("onboarding").id == Parameter("%s"))
                     .where(
                         Table("onboarding").user_id.isnull()
-                        | (Table("onboarding").user_id.cast("TEXT") == Parameter("%s"))
+                        | (Table("onboarding").user_id == Parameter("%s"))
                     ),
                     [user_id, onboarding_id, user_id],
                 )
@@ -723,14 +723,14 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
         user_q = build_query(
             PostgreSQLQuery.from_(users_t)
             .select(
-                users_t.id.cast("TEXT").as_("id"),
+                users_t.id.as_("id"),
                 users_t.email,
                 users_t.phone_number,
                 users_t.name,
                 users_t.auth_provider,
                 users_t.onboarding_session_id,
             )
-            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .where(users_t.id == Parameter("%s"))
             .limit(1),
             [user_id],
         )

@@ -152,7 +152,7 @@ async def upsert_onboarding_patch(
         existing_q = build_query(
             PostgreSQLQuery.from_(onboarding_t)
             .select(onboarding_t.onboarding_completed_at, onboarding_t.website_url)
-            .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+            .where(onboarding_t.id == Parameter("%s")),
             [oid],
         )
         existing = await conn.fetchrow(existing_q.sql, *existing_q.params)
@@ -176,7 +176,7 @@ async def upsert_onboarding_patch(
             current_row_q = build_query(
                 PostgreSQLQuery.from_(onboarding_t)
                 .select(*_returning_terms())
-                .where(onboarding_t.id == Parameter("%s").cast("uuid")),
+                .where(onboarding_t.id == Parameter("%s")),
                 [oid],
             )
             row = await conn.fetchrow(current_row_q.sql, *current_row_q.params)
@@ -188,26 +188,29 @@ async def upsert_onboarding_patch(
                 update_qb = update_qb.set(getattr(onboarding_t, col_name), Parameter("%s"))
             update_q = build_query(
                 update_qb.set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id == Parameter("%s").cast("uuid"))
+                .where(onboarding_t.id == Parameter("%s"))
                 .returning(*_returning_terms()),
                 [*vals, oid],
             )
             row = await conn.fetchrow(update_q.sql, *update_q.params)
 
         if website_url_changed:
-            reset_summary_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.web_summary, "")
-                .set(onboarding_t.business_profile, "")
-                .set(onboarding_t.rca_qa, Parameter("%s").cast("jsonb"))
-                .set(onboarding_t.rca_summary, "")
-                .set(onboarding_t.rca_handoff, "")
-                .set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id == Parameter("%s").cast("uuid"))
-                .returning(*_returning_terms()),
-                [json.dumps([]), oid],
+            # Keep this as explicit SQL because jsonb cast on bound parameters is
+            # runtime-sensitive across environments with PyPika expressions.
+            reset_summary_sql = (
+                "UPDATE onboarding "
+                "SET web_summary = '', "
+                "    business_profile = '', "
+                "    rca_qa = $1::jsonb, "
+                "    rca_summary = '', "
+                "    rca_handoff = '', "
+                "    updated_at = NOW() "
+                "WHERE id = $2 "
+                "RETURNING id, user_id, outcome, domain, task, "
+                "          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key, "
+                "          onboarding_completed_at, created_at, updated_at"
             )
-            row = await conn.fetchrow(reset_summary_q.sql, *reset_summary_q.params)
+            row = await conn.fetchrow(reset_summary_sql, json.dumps([]), oid)
 
     out = _serialize_row(row)
     logger.debug("onboarding patched", onboarding_id=oid, fields=list(allowed.keys()))

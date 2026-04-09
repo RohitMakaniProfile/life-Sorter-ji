@@ -718,15 +718,15 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
         parsed = _parse_gap_questions(gap_text) if gap_text else []
 
         if parsed:
-            set_gap_questions_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.gap_questions, Parameter("%s"))
-                .set(onboarding_t.playbook_status, "awaiting_gap_answers")
-                .set(onboarding_t.updated_at, fn.CurTimestamp())
-                .where(onboarding_t.id == Parameter("%s")),
-                [parsed, onboarding_id],
+            await conn.execute(
+                "UPDATE onboarding "
+                "SET gap_questions = $1::jsonb, "
+                "    playbook_status = 'awaiting_gap_answers', "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $2",
+                json.dumps(parsed),
+                onboarding_id,
             )
-            await conn.execute(set_gap_questions_q.sql, *set_gap_questions_q.params)
             return StartOnboardingPlaybookResponse(
                 onboarding_id=onboarding_id,
                 stage="gap_questions",
@@ -734,15 +734,15 @@ async def _prepare_onboarding_playbook(request: Request, body: StartOnboardingPl
                 message="I need a few more details before building your playbook.",
             )
 
-        set_gap_ready_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.gap_questions, [])
-            .set(onboarding_t.playbook_status, "ready")
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
+        await conn.execute(
+            "UPDATE onboarding "
+            "SET gap_questions = $1::jsonb, "
+            "    playbook_status = 'ready', "
+            "    updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = $2",
+            json.dumps([]),
+            onboarding_id,
         )
-        await conn.execute(set_gap_ready_q.sql, *set_gap_ready_q.params)
         return StartOnboardingPlaybookResponse(
             onboarding_id=onboarding_id,
             stage="ready",
@@ -950,17 +950,18 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             business_profile_text=str(row.get("business_profile") or ""),
         )
         if not generated:
-            complete_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.precision_questions, [])
-                .set(onboarding_t.precision_answers, [])
-                .set(onboarding_t.precision_status, "complete")
-                .set(onboarding_t.precision_completed_at, fn.CurTimestamp())
-                .set(onboarding_t.updated_at, fn.CurTimestamp())
-                .where(onboarding_t.id == Parameter("%s")),
-                [onboarding_id],
+            await conn.execute(
+                "UPDATE onboarding "
+                "SET precision_questions = $1::jsonb, "
+                "    precision_answers = $2::jsonb, "
+                "    precision_status = 'complete', "
+                "    precision_completed_at = CURRENT_TIMESTAMP, "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $3",
+                json.dumps([]),
+                json.dumps([]),
+                onboarding_id,
             )
-            await conn.execute(complete_q.sql, *complete_q.params)
             return StartOnboardingPrecisionResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         cleaned = [
@@ -973,17 +974,18 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             }
             for q in generated[:3]
         ]
-        set_questions_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.precision_questions, Parameter("%s"))
-            .set(onboarding_t.precision_answers, [])
-            .set(onboarding_t.precision_status, "awaiting_answers")
-            .set(onboarding_t.precision_completed_at, None)
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [cleaned, onboarding_id],
+        await conn.execute(
+            "UPDATE onboarding "
+            "SET precision_questions = $1::jsonb, "
+            "    precision_answers = $2::jsonb, "
+            "    precision_status = 'awaiting_answers', "
+            "    precision_completed_at = NULL, "
+            "    updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = $3",
+            json.dumps(cleaned),
+            json.dumps([]),
+            onboarding_id,
         )
-        await conn.execute(set_questions_q.sql, *set_questions_q.params)
         return StartOnboardingPrecisionResponse(
             onboarding_id=onboarding_id,
             questions=[PrecisionQuestionItem(**q) for q in cleaned],
@@ -1047,33 +1049,35 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
         next_idx = body.question_index + 1
         all_answered = next_idx >= len(precision_questions)
         if all_answered:
-            complete_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.precision_answers, Parameter("%s"))
-                .set(onboarding_t.precision_status, "complete")
-                .set(onboarding_t.precision_completed_at, fn.CurTimestamp())
-                .set(onboarding_t.questions_answers, Parameter("%s"))
-                .set(onboarding_t.updated_at, fn.CurTimestamp())
-                .where(onboarding_t.id == Parameter("%s")),
-                [precision_answers, qa_log, onboarding_id],
+            await conn.execute(
+                "UPDATE onboarding "
+                "SET precision_answers = $1::jsonb, "
+                "    precision_status = 'complete', "
+                "    precision_completed_at = CURRENT_TIMESTAMP, "
+                "    questions_answers = $2::jsonb, "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $3",
+                json.dumps(precision_answers),
+                json.dumps(qa_log),
+                onboarding_id,
             )
-            await conn.execute(complete_q.sql, *complete_q.params)
             return SubmitOnboardingPrecisionAnswerResponse(
                 onboarding_id=onboarding_id,
                 all_answered=True,
                 precision_status="complete",
             )
 
-        pending_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.precision_answers, Parameter("%s"))
-            .set(onboarding_t.precision_status, "awaiting_answers")
-            .set(onboarding_t.questions_answers, Parameter("%s"))
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [precision_answers, qa_log, onboarding_id],
+        await conn.execute(
+            "UPDATE onboarding "
+            "SET precision_answers = $1::jsonb, "
+            "    precision_status = 'awaiting_answers', "
+            "    questions_answers = $2::jsonb, "
+            "    updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = $3",
+            json.dumps(precision_answers),
+            json.dumps(qa_log),
+            onboarding_id,
         )
-        await conn.execute(pending_q.sql, *pending_q.params)
         next_q = precision_questions[next_idx]
         return SubmitOnboardingPrecisionAnswerResponse(
             onboarding_id=onboarding_id,
@@ -1184,28 +1188,28 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
         if generated is None:
             # LLM call failed — treat as no questions needed, allow playbook to proceed
             logger.warning("Gap questions generation failed — treating as no questions needed")
-            no_gap_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.gap_questions, [])
-                .set(onboarding_t.playbook_status, "ready")
-                .set(onboarding_t.updated_at, fn.CurTimestamp())
-                .where(onboarding_t.id == Parameter("%s")),
-                [onboarding_id],
+            await conn.execute(
+                "UPDATE onboarding "
+                "SET gap_questions = $1::jsonb, "
+                "    playbook_status = 'ready', "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $2",
+                json.dumps([]),
+                onboarding_id,
             )
-            await conn.execute(no_gap_q.sql, *no_gap_q.params)
             return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         if not generated or len(generated) == 0:
             # No questions needed — context is sufficient
-            no_gap_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.gap_questions, [])
-                .set(onboarding_t.playbook_status, "ready")
-                .set(onboarding_t.updated_at, fn.CurTimestamp())
-                .where(onboarding_t.id == Parameter("%s")),
-                [onboarding_id],
+            await conn.execute(
+                "UPDATE onboarding "
+                "SET gap_questions = $1::jsonb, "
+                "    playbook_status = 'ready', "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $2",
+                json.dumps([]),
+                onboarding_id,
             )
-            await conn.execute(no_gap_q.sql, *no_gap_q.params)
             return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         # Clean up and store questions
@@ -1220,15 +1224,15 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
             for i, q in enumerate(generated[:3])
         ]
 
-        set_gap_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.gap_questions, Parameter("%s"))
-            .set(onboarding_t.playbook_status, "awaiting_gap_answers")
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [cleaned, onboarding_id],
+        await conn.execute(
+            "UPDATE onboarding "
+            "SET gap_questions = $1::jsonb, "
+            "    playbook_status = 'awaiting_gap_answers', "
+            "    updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = $2",
+            json.dumps(cleaned),
+            onboarding_id,
         )
-        await conn.execute(set_gap_q.sql, *set_gap_q.params)
 
         return StartGapQuestionsResponse(
             onboarding_id=onboarding_id,
