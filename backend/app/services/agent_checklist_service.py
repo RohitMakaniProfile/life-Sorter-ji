@@ -967,7 +967,9 @@ async def start_plan_via_task_stream(body: dict[str, Any]) -> dict[str, Any]:
     if not str(body.get("agentId") or "").strip():
         raise HTTPException(status_code=400, detail="agentId is required for plan execution")
 
-    session_id, user_id = actor_from_payload(body)
+    _, user_id = actor_from_payload(body)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="userId is required for plan execution")
 
     # Get the task function from registry
     task_registry = get_task_registry()
@@ -985,7 +987,6 @@ async def start_plan_via_task_stream(body: dict[str, Any]) -> dict[str, Any]:
             "agent_id": str(body.get("agentId") or "").strip(),
             "message": str(body.get("message") or "approve"),
         },
-        session_id=session_id,
         user_id=user_id,
         resume_if_exists=False,  # Don't resume - user explicitly clicked Start
         force_fresh=True,  # Clear any stale streams before starting
