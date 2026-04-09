@@ -4,12 +4,21 @@ import json
 from typing import Any, Optional
 
 from fastapi import HTTPException
+from pypika import Table
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 import structlog
 
 from app.db import get_pool
+from app.repositories.onboarding_table import (
+    update_onboarding_questions_answers_query,
+    update_onboarding_rca_qa_query,
+)
 from app.models.session import DynamicQuestion
+from app.sql_builder import build_query
 
 logger = structlog.get_logger()
+onboarding_t = Table("onboarding")
 
 
 def _normalize_rca_qa(rca_qa: Any) -> list[dict[str, Any]]:
@@ -55,11 +64,8 @@ def _apply_answer_to_pending(rca_qa: list[dict[str, Any]], answer: str) -> int:
 
 
 async def _persist_rca_qa(conn, *, onboarding_id: Any, rca_qa: list[dict[str, Any]]) -> None:
-    await conn.execute(
-        "UPDATE onboarding SET rca_qa = $1::jsonb WHERE id = $2",
-        json.dumps(rca_qa),
-        onboarding_id,
-    )
+    q = update_onboarding_rca_qa_query(onboarding_id, json.dumps(rca_qa))
+    await conn.execute(q.sql, *q.params)
 
 
 async def generate_next_rca_question_for_onboarding(
@@ -81,14 +87,23 @@ async def generate_next_rca_question_for_onboarding(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, rca_qa, questions_answers, outcome, domain, task, web_summary, scale_answers, business_profile
-            FROM onboarding
-            WHERE id = $1::uuid
-            """,
-            oid,
+        fetch_onboarding_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(
+                onboarding_t.id,
+                onboarding_t.rca_qa,
+                onboarding_t.questions_answers,
+                onboarding_t.outcome,
+                onboarding_t.domain,
+                onboarding_t.task,
+                onboarding_t.web_summary,
+                onboarding_t.scale_answers,
+                onboarding_t.business_profile,
+            )
+            .where(onboarding_t.id == Parameter("%s")),
+            [oid],
         )
+        row = await conn.fetchrow(fetch_onboarding_q.sql, *fetch_onboarding_q.params)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -156,11 +171,8 @@ async def generate_next_rca_question_for_onboarding(
             except Exception:
                 pass
             await _persist_rca_qa(conn, onboarding_id=onboarding_id, rca_qa=rca_qa)
-            await conn.execute(
-                "UPDATE onboarding SET questions_answers = $1::jsonb, updated_at = NOW() WHERE id = $2",
-                json.dumps(questions_answers),
-                onboarding_id,
-            )
+            q = update_onboarding_questions_answers_query(onboarding_id, json.dumps(questions_answers))
+            await conn.execute(q.sql, *q.params)
 
         first_unanswered_idx = _first_unanswered_index(rca_qa)
 

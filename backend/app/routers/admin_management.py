@@ -9,15 +9,30 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from pypika import Order, Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
 
 from app.config import get_settings
 from app.db import get_pool
 from app.middleware.auth_context import get_request_auth_claims, require_super_admin
 from app.task_stream.redis_client import get_redis
 from app.doable_claw_agent.stores import auto_timeout_stale_skill_calls
+from app.sql_builder import build_query
 
 
 router = APIRouter(prefix="/admin/management", tags=["Admin-Management"])
+users_t = Table("users")
+otp_logs_t = Table("otp_provider_logs")
+plan_runs_t = Table("plan_runs")
+task_streams_t = Table("task_stream_streams")
+skill_calls_t = Table("skill_calls")
+conversations_t = Table("conversations")
+onboarding_t = Table("onboarding")
+crawl_runs_t = Table("crawl_runs")
+playbook_runs_t = Table("playbook_runs")
+session_links_t = Table("session_user_links")
+system_config_t = Table("system_config")
 
 
 class AdminApiEntry(BaseModel):
@@ -61,7 +76,8 @@ async def observability_snapshot(request: Request):
     db_ok = True
     try:
         async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+            ping_q = build_query(PostgreSQLQuery.select(1))
+            await conn.fetchval(ping_q.sql, *ping_q.params)
     except Exception as exc:
         db_ok = False
         services.append(_service_status("postgres", False, f"Database ping failed: {exc}"))
@@ -135,15 +151,20 @@ async def observability_snapshot(request: Request):
     # Recent failures + counters from DB tables
     async with pool.acquire() as conn:
         try:
-            otp_failed = await conn.fetch(
-                """
-                SELECT action, provider, phone_masked, error, created_at
-                FROM otp_provider_logs
-                WHERE success = FALSE
-                ORDER BY created_at DESC
-                LIMIT 20
-                """
+            otp_failed_q = build_query(
+                PostgreSQLQuery.from_(otp_logs_t)
+                .select(
+                    otp_logs_t.action,
+                    otp_logs_t.provider,
+                    otp_logs_t.phone_masked,
+                    otp_logs_t.error,
+                    otp_logs_t.created_at,
+                )
+                .where(otp_logs_t.success == False)  # noqa: E712
+                .orderby(otp_logs_t.created_at, order=Order.desc)
+                .limit(20)
             )
+            otp_failed = await conn.fetch(otp_failed_q.sql, *otp_failed_q.params)
             for r in otp_failed:
                 recent_errors.append(
                     {
@@ -162,15 +183,14 @@ async def observability_snapshot(request: Request):
             counters["otp_failures_last_20"] = 0
 
         try:
-            failed_plans = await conn.fetch(
-                """
-                SELECT id, status, updated_at
-                FROM plan_runs
-                WHERE status = 'error'
-                ORDER BY updated_at DESC
-                LIMIT 20
-                """
+            failed_plans_q = build_query(
+                PostgreSQLQuery.from_(plan_runs_t)
+                .select(plan_runs_t.id, plan_runs_t.status, plan_runs_t.updated_at)
+                .where(plan_runs_t.status == "error")
+                .orderby(plan_runs_t.updated_at, order=Order.desc)
+                .limit(20)
             )
+            failed_plans = await conn.fetch(failed_plans_q.sql, *failed_plans_q.params)
             for r in failed_plans:
                 recent_errors.append(
                     {
@@ -185,9 +205,10 @@ async def observability_snapshot(request: Request):
             counters["plan_errors_last_20"] = 0
 
         try:
-            running_streams = await conn.fetchval(
-                "SELECT COUNT(*) FROM task_stream_streams WHERE status = 'running'"
+            running_streams_q = build_query(
+                PostgreSQLQuery.from_(task_streams_t).select(fn.Count(1)).where(task_streams_t.status == "running")
             )
+            running_streams = await conn.fetchval(running_streams_q.sql, *running_streams_q.params)
             counters["task_stream_running"] = int(running_streams or 0)
         except Exception:
             counters["task_stream_running"] = 0
@@ -214,34 +235,59 @@ async def list_users(request: Request, q: str = "", limit: int = 50, offset: int
     async with pool.acquire() as conn:
         if search:
             pattern = f"%{search}%"
-            rows = await conn.fetch(
-                """
-                SELECT id, email, phone_number, name, auth_provider, created_at, last_login_at
-                FROM users
-                WHERE email ILIKE $1 OR phone_number ILIKE $1 OR name ILIKE $1
-                ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3
-                """,
-                pattern,
-                limit,
-                offset,
+            rows_q = build_query(
+                PostgreSQLQuery.from_(users_t)
+                .select(
+                    users_t.id,
+                    users_t.email,
+                    users_t.phone_number,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.created_at,
+                    users_t.last_login_at,
+                )
+                .where(
+                    users_t.email.ilike(Parameter("%s"))
+                    | users_t.phone_number.ilike(Parameter("%s"))
+                    | users_t.name.ilike(Parameter("%s"))
+                )
+                .orderby(users_t.created_at, order=Order.desc)
+                .limit(Parameter("%s"))
+                .offset(Parameter("%s")),
+                [pattern, pattern, pattern, limit, offset],
             )
-            total = await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE email ILIKE $1 OR phone_number ILIKE $1 OR name ILIKE $1",
-                pattern,
+            rows = await conn.fetch(rows_q.sql, *rows_q.params)
+            total_q = build_query(
+                PostgreSQLQuery.from_(users_t)
+                .select(fn.Count(1))
+                .where(
+                    users_t.email.ilike(Parameter("%s"))
+                    | users_t.phone_number.ilike(Parameter("%s"))
+                    | users_t.name.ilike(Parameter("%s"))
+                ),
+                [pattern, pattern, pattern],
             )
+            total = await conn.fetchval(total_q.sql, *total_q.params)
         else:
-            rows = await conn.fetch(
-                """
-                SELECT id, email, phone_number, name, auth_provider, created_at, last_login_at
-                FROM users
-                ORDER BY created_at DESC
-                LIMIT $1 OFFSET $2
-                """,
-                limit,
-                offset,
+            rows_q = build_query(
+                PostgreSQLQuery.from_(users_t)
+                .select(
+                    users_t.id,
+                    users_t.email,
+                    users_t.phone_number,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.created_at,
+                    users_t.last_login_at,
+                )
+                .orderby(users_t.created_at, order=Order.desc)
+                .limit(Parameter("%s"))
+                .offset(Parameter("%s")),
+                [limit, offset],
             )
-            total = await conn.fetchval("SELECT COUNT(*) FROM users")
+            rows = await conn.fetch(rows_q.sql, *rows_q.params)
+            total_q = build_query(PostgreSQLQuery.from_(users_t).select(fn.Count(1)))
+            total = await conn.fetchval(total_q.sql, *total_q.params)
 
     users = []
     for r in rows:
@@ -272,26 +318,39 @@ async def list_user_skill_calls(request: Request, user_id: str, limit: int = 5, 
     pool = get_pool()
     async with pool.acquire() as conn:
         await auto_timeout_stale_skill_calls(conn, user_id=uid)
-        rows = await conn.fetch(
-            """
-            SELECT sc.id, sc.conversation_id, sc.message_id, sc.skill_id,
-                   sc.input, sc.state, sc.started_at, sc.ended_at, sc.duration_ms
-            FROM skill_calls sc
-            JOIN conversations c ON c.id = sc.conversation_id
-            WHERE c.user_id = $1
-            ORDER BY sc.started_at DESC
-            LIMIT $2 OFFSET $3
-            """,
-            uid, limit, offset,
+        sc = skill_calls_t.as_("sc")
+        c = conversations_t.as_("c")
+        rows_q = build_query(
+            PostgreSQLQuery.from_(sc)
+            .join(c)
+            .on(c.id == sc.conversation_id)
+            .select(
+                sc.id,
+                sc.conversation_id,
+                sc.message_id,
+                sc.skill_id,
+                sc.input,
+                sc.state,
+                sc.started_at,
+                sc.ended_at,
+                sc.duration_ms,
+            )
+            .where(c.user_id == Parameter("%s"))
+            .orderby(sc.started_at, order=Order.desc)
+            .limit(Parameter("%s"))
+            .offset(Parameter("%s")),
+            [uid, limit, offset],
         )
-        total = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM skill_calls sc
-            JOIN conversations c ON c.id = sc.conversation_id
-            WHERE c.user_id = $1
-            """,
-            uid,
+        rows = await conn.fetch(rows_q.sql, *rows_q.params)
+        total_q = build_query(
+            PostgreSQLQuery.from_(sc)
+            .join(c)
+            .on(c.id == sc.conversation_id)
+            .select(fn.Count(1))
+            .where(c.user_id == Parameter("%s")),
+            [uid],
         )
+        total = await conn.fetchval(total_q.sql, *total_q.params)
     calls = []
     for r in rows:
         started_at = r.get("started_at")
@@ -319,15 +378,29 @@ async def get_skill_call_detail(request: Request, skill_call_id: str):
     pool = get_pool()
     async with pool.acquire() as conn:
         await auto_timeout_stale_skill_calls(conn, skill_call_id=int(scid))
-        row = await conn.fetchrow(
-            """
-            SELECT id, conversation_id, message_id, skill_id, run_id,
-                   input, streamed_text, state, output, error,
-                   started_at, ended_at, duration_ms, created_at
-            FROM skill_calls WHERE id = $1 LIMIT 1
-            """,
-            int(scid),
+        detail_q = build_query(
+            PostgreSQLQuery.from_(skill_calls_t)
+            .select(
+                skill_calls_t.id,
+                skill_calls_t.conversation_id,
+                skill_calls_t.message_id,
+                skill_calls_t.skill_id,
+                skill_calls_t.run_id,
+                skill_calls_t.input,
+                skill_calls_t.streamed_text,
+                skill_calls_t.state,
+                skill_calls_t.output,
+                skill_calls_t.error,
+                skill_calls_t.started_at,
+                skill_calls_t.ended_at,
+                skill_calls_t.duration_ms,
+                skill_calls_t.created_at,
+            )
+            .where(skill_calls_t.id == Parameter("%s"))
+            .limit(1),
+            [int(scid)],
         )
+        row = await conn.fetchrow(detail_q.sql, *detail_q.params)
     if not row:
         raise HTTPException(status_code=404, detail="Skill call not found")
     started_at = row.get("started_at")
@@ -385,10 +458,14 @@ async def delete_user(request: Request, user_id: str):
     pool = get_pool()
     async with pool.acquire() as conn:
         # Fetch user to confirm existence and grab onboarding_session_id
-        user_row = await conn.fetchrow(
-            "SELECT id, email, phone_number, onboarding_session_id FROM users WHERE id::text = $1 LIMIT 1",
-            uid,
+        user_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(users_t.id, users_t.email, users_t.phone_number, users_t.onboarding_session_id)
+            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .limit(1),
+            [uid],
         )
+        user_row = await conn.fetchrow(user_q.sql, *user_q.params)
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -396,39 +473,68 @@ async def delete_user(request: Request, user_id: str):
 
         async with conn.transaction():
             # 1. Conversations → cascades messages, skill_calls, plan_runs
-            await conn.execute("DELETE FROM conversations WHERE user_id = $1", uid)
+            del_conversations_q = build_query(
+                PostgreSQLQuery.from_(conversations_t).delete().where(conversations_t.user_id == Parameter("%s")),
+                [uid],
+            )
+            await conn.execute(del_conversations_q.sql, *del_conversations_q.params)
 
             # 2. Onboarding rows linked by user_id (TEXT)
-            await conn.execute("DELETE FROM onboarding WHERE user_id = $1", uid)
+            del_onboarding_user_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t).delete().where(onboarding_t.user_id == Parameter("%s")),
+                [uid],
+            )
+            await conn.execute(del_onboarding_user_q.sql, *del_onboarding_user_q.params)
 
             # 3. Onboarding row linked by session_id (if present and different)
             if onboarding_session_id:
-                await conn.execute(
-                    "DELETE FROM onboarding WHERE session_id = $1",
-                    onboarding_session_id,
+                del_onboarding_session_q = build_query(
+                    PostgreSQLQuery.from_(onboarding_t).delete().where(onboarding_t.session_id == Parameter("%s")),
+                    [onboarding_session_id],
                 )
+                await conn.execute(del_onboarding_session_q.sql, *del_onboarding_session_q.params)
 
             # 4. Crawl runs
             try:
-                await conn.execute("DELETE FROM crawl_runs WHERE user_id::text = $1", uid)
+                del_crawl_q = build_query(
+                    PostgreSQLQuery.from_(crawl_runs_t).delete().where(crawl_runs_t.user_id.cast("TEXT") == Parameter("%s")),
+                    [uid],
+                )
+                await conn.execute(del_crawl_q.sql, *del_crawl_q.params)
             except Exception:
                 pass  # table may not use UUID cast
 
             # 5. Playbook runs
             try:
-                await conn.execute("DELETE FROM playbook_runs WHERE user_id::text = $1", uid)
+                del_playbook_q = build_query(
+                    PostgreSQLQuery.from_(playbook_runs_t).delete().where(playbook_runs_t.user_id.cast("TEXT") == Parameter("%s")),
+                    [uid],
+                )
+                await conn.execute(del_playbook_q.sql, *del_playbook_q.params)
             except Exception:
                 pass
 
             # 6. Task stream streams (user_id is TEXT in this table)
-            await conn.execute("DELETE FROM task_stream_streams WHERE user_id = $1", uid)
+            del_streams_q = build_query(
+                PostgreSQLQuery.from_(task_streams_t).delete().where(task_streams_t.user_id == Parameter("%s")),
+                [uid],
+            )
+            await conn.execute(del_streams_q.sql, *del_streams_q.params)
 
             # 7. Session-user links
-            await conn.execute("DELETE FROM session_user_links WHERE user_id = $1", uid)
+            del_links_q = build_query(
+                PostgreSQLQuery.from_(session_links_t).delete().where(session_links_t.user_id == Parameter("%s")),
+                [uid],
+            )
+            await conn.execute(del_links_q.sql, *del_links_q.params)
 
             # 8. Delete user — cascades: payment_checkout_context, user_plan_grants,
             #    admin_subscription_grants, admin_subscription_grant_logs
-            await conn.execute("DELETE FROM users WHERE id::text = $1", uid)
+            del_user_q = build_query(
+                PostgreSQLQuery.from_(users_t).delete().where(users_t.id.cast("TEXT") == Parameter("%s")),
+                [uid],
+            )
+            await conn.execute(del_user_q.sql, *del_user_q.params)
 
     return {
         "success": True,
@@ -443,9 +549,18 @@ async def list_system_config(request: Request):
     require_super_admin(request)
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT key, value, type, description, updated_at FROM system_config ORDER BY key ASC"
+        cfg_q = build_query(
+            PostgreSQLQuery.from_(system_config_t)
+            .select(
+                system_config_t.key,
+                system_config_t.value,
+                system_config_t.type,
+                system_config_t.description,
+                system_config_t.updated_at,
+            )
+            .orderby(system_config_t.key, order=Order.asc)
         )
+        rows = await conn.fetch(cfg_q.sql, *cfg_q.params)
     entries = []
     for r in rows:
         updated_at = r.get("updated_at")
@@ -469,10 +584,20 @@ async def get_system_config_entry(request: Request, key: str):
         raise HTTPException(status_code=400, detail="key is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT key, value, type, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
-            k,
+        cfg_item_q = build_query(
+            PostgreSQLQuery.from_(system_config_t)
+            .select(
+                system_config_t.key,
+                system_config_t.value,
+                system_config_t.type,
+                system_config_t.description,
+                system_config_t.updated_at,
+            )
+            .where(system_config_t.key == Parameter("%s"))
+            .limit(1),
+            [k],
         )
+        row = await conn.fetchrow(cfg_item_q.sql, *cfg_item_q.params)
     if not row:
         raise HTTPException(status_code=404, detail="Config key not found")
     updated_at = row.get("updated_at")
@@ -505,7 +630,14 @@ async def upsert_system_config_entry_route(request: Request, key: str, body: Ups
             raise HTTPException(status_code=400, detail=f"Invalid type: {config_type}. Must be one of: {', '.join(VALID_TYPES)}")
         
         if config_type is None:
-            existing = await conn.fetchval("SELECT type FROM system_config WHERE key = $1", k)
+            existing_q = build_query(
+                PostgreSQLQuery.from_(system_config_t)
+                .select(system_config_t.type)
+                .where(system_config_t.key == Parameter("%s"))
+                .limit(1),
+                [k],
+            )
+            existing = await conn.fetchval(existing_q.sql, *existing_q.params)
             config_type = str(existing or "string")
         
         # Validate value against type
@@ -513,26 +645,32 @@ async def upsert_system_config_entry_route(request: Request, key: str, body: Ups
         if not is_valid:
             raise HTTPException(status_code=400, detail=err)
         
-        await conn.execute(
-            """
-            INSERT INTO system_config (key, value, type, description)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (key)
-            DO UPDATE SET
-              value = EXCLUDED.value,
-              type = EXCLUDED.type,
-              description = EXCLUDED.description
-            """,
-            k,
-            body.value,
-            config_type,
-            body.description,
+        upsert_q = build_query(
+            PostgreSQLQuery.into(system_config_t)
+            .columns(system_config_t.key, system_config_t.value, system_config_t.type, system_config_t.description)
+            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"))
+            .on_conflict(system_config_t.key)
+            .do_update(system_config_t.value)
+            .do_update(system_config_t.type)
+            .do_update(system_config_t.description),
+            [k, body.value, config_type, body.description],
         )
+        await conn.execute(upsert_q.sql, *upsert_q.params)
 
-        row = await conn.fetchrow(
-            "SELECT key, value, type, description, updated_at FROM system_config WHERE key = $1 LIMIT 1",
-            k,
+        row_q = build_query(
+            PostgreSQLQuery.from_(system_config_t)
+            .select(
+                system_config_t.key,
+                system_config_t.value,
+                system_config_t.type,
+                system_config_t.description,
+                system_config_t.updated_at,
+            )
+            .where(system_config_t.key == Parameter("%s"))
+            .limit(1),
+            [k],
         )
+        row = await conn.fetchrow(row_q.sql, *row_q.params)
 
     updated_at = row.get("updated_at") if row else None
     return {

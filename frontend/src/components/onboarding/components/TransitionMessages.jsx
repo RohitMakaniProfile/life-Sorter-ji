@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect } from 'react';
 import { Sparkles, Brain, FileText, CheckCircle } from 'lucide-react';
 

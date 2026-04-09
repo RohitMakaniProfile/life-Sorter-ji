@@ -15,6 +15,10 @@ import time
 import uuid
 from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, HTTPException, Header
+from pypika import Table, functions as fn
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
+from pypika import Case
 
 import structlog
 
@@ -31,10 +35,14 @@ from app.services.jwt_service import create_access_token, decode_and_verify_acce
 from app.auth.identity import verify_google_or_firebase_token
 from app.db import get_pool
 from app.config import get_settings
+from app.sql_builder import build_query
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+users_t = Table("users")
+conversations_t = Table("conversations")
+session_links_t = Table("session_user_links")
 
 # ── Request / Response Models ─────────────────────────────────
 
@@ -139,15 +147,30 @@ def _parse_bearer_token(authorization: str | None) -> str:
 async def _user_exists(user_id: str, email: str | None) -> bool:
     pool = get_pool()
     async with pool.acquire() as conn:
-        if await conn.fetchval("SELECT 1 FROM users WHERE id::text = $1 LIMIT 1", user_id):
+        id_exists_q = build_query(
+            PostgreSQLQuery.from_(users_t).select(1).where(users_t.id.cast("TEXT") == Parameter("%s")).limit(1),
+            [user_id],
+        )
+        if await conn.fetchval(id_exists_q.sql, *id_exists_q.params):
             return True
-        if email and await conn.fetchval("SELECT 1 FROM users WHERE email = $1 LIMIT 1", email):
+        if email:
+            email_exists_q = build_query(
+                PostgreSQLQuery.from_(users_t).select(1).where(users_t.email == Parameter("%s")).limit(1),
+                [email],
+            )
+            if await conn.fetchval(email_exists_q.sql, *email_exists_q.params):
+                return True
+        conv_exists_q = build_query(
+            PostgreSQLQuery.from_(conversations_t).select(1).where(conversations_t.user_id == Parameter("%s")).limit(1),
+            [user_id],
+        )
+        if await conn.fetchval(conv_exists_q.sql, *conv_exists_q.params):
             return True
-        if await conn.fetchval("SELECT 1 FROM conversations WHERE user_id = $1 LIMIT 1", user_id):
-            return True
-        if await conn.fetchval("SELECT 1 FROM session_user_links WHERE user_id = $1 LIMIT 1", user_id):
-            return True
-        if email and await conn.fetchval("SELECT 1 FROM users WHERE email = $1 LIMIT 1", email):
+        link_exists_q = build_query(
+            PostgreSQLQuery.from_(session_links_t).select(1).where(session_links_t.user_id == Parameter("%s")).limit(1),
+            [user_id],
+        )
+        if await conn.fetchval(link_exists_q.sql, *link_exists_q.params):
             return True
     return False
 
@@ -184,42 +207,64 @@ async def _upsert_user_from_otp(phone_number: str, onboarding_session_id: str | 
     phone = (phone_number or "").strip()
     sid = (onboarding_session_id or "").strip() or None
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            """
-            SELECT id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-            FROM users
-            WHERE phone_number = $1
-            LIMIT 1
-            """,
-            phone,
+        existing_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(
+                users_t.id.cast("TEXT").as_("id"),
+                users_t.phone_number,
+                users_t.email,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+            )
+            .where(users_t.phone_number == Parameter("%s"))
+            .limit(1),
+            [phone],
         )
+        existing = await conn.fetchrow(existing_q.sql, *existing_q.params)
         if existing:
             provider_now = str(existing.get("auth_provider") or "otp")
             next_provider = "both" if provider_now == "google" else "otp"
-            row = await conn.fetchrow(
-                """
-                UPDATE users
-                SET last_login_at = NOW(),
-                    auth_provider = $1,
-                    onboarding_session_id = COALESCE($2, onboarding_session_id),
-                    updated_at = NOW()
-                WHERE id = $3::uuid
-                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-                """,
-                next_provider,
-                sid,
-                str(existing.get("id") or ""),
+            update_q = build_query(
+                PostgreSQLQuery.update(users_t)
+                .set(users_t.last_login_at, fn.Now())
+                .set(users_t.auth_provider, Parameter("%s"))
+                .set(users_t.onboarding_session_id, fn.Coalesce(Parameter("%s"), users_t.onboarding_session_id))
+                .set(users_t.updated_at, fn.Now())
+                .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                .returning(
+                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.phone_number,
+                    users_t.email,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                ),
+                [next_provider, sid, str(existing.get("id") or "")],
             )
+            row = await conn.fetchrow(update_q.sql, *update_q.params)
         else:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO users (phone_number, name, auth_provider, onboarding_session_id, last_login_at)
-                VALUES ($1, '', 'otp', $2, NOW())
-                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-                """,
-                phone,
-                sid,
+            insert_q = build_query(
+                PostgreSQLQuery.into(users_t)
+                .columns(
+                    users_t.phone_number,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                    users_t.last_login_at,
+                )
+                .insert(Parameter("%s"), "", "otp", Parameter("%s"), fn.Now())
+                .returning(
+                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.phone_number,
+                    users_t.email,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                ),
+                [phone, sid],
             )
+            row = await conn.fetchrow(insert_q.sql, *insert_q.params)
     return dict(row) if row else {}
 
 
@@ -228,45 +273,65 @@ async def _upsert_user_from_google(email: str, name: str, onboarding_session_id:
     em = (email or "").strip().lower()
     sid = (onboarding_session_id or "").strip() or None
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            """
-            SELECT id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-            FROM users
-            WHERE email = $1
-            LIMIT 1
-            """,
-            em,
+        existing_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(
+                users_t.id.cast("TEXT").as_("id"),
+                users_t.phone_number,
+                users_t.email,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+            )
+            .where(users_t.email == Parameter("%s"))
+            .limit(1),
+            [em],
         )
+        existing = await conn.fetchrow(existing_q.sql, *existing_q.params)
         if existing:
             provider_now = str(existing.get("auth_provider") or "google")
             next_provider = "both" if provider_now == "otp" else "google"
-            row = await conn.fetchrow(
-                """
-                UPDATE users
-                SET name = COALESCE($1, name),
-                    auth_provider = $2,
-                    onboarding_session_id = COALESCE($3, onboarding_session_id),
-                    last_login_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = $4::uuid
-                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-                """,
-                name,
-                next_provider,
-                sid,
-                str(existing.get("id") or ""),
+            update_q = build_query(
+                PostgreSQLQuery.update(users_t)
+                .set(users_t.name, fn.Coalesce(Parameter("%s"), users_t.name))
+                .set(users_t.auth_provider, Parameter("%s"))
+                .set(users_t.onboarding_session_id, fn.Coalesce(Parameter("%s"), users_t.onboarding_session_id))
+                .set(users_t.last_login_at, fn.Now())
+                .set(users_t.updated_at, fn.Now())
+                .where(users_t.id.cast("TEXT") == Parameter("%s"))
+                .returning(
+                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.phone_number,
+                    users_t.email,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                ),
+                [name, next_provider, sid, str(existing.get("id") or "")],
             )
+            row = await conn.fetchrow(update_q.sql, *update_q.params)
         else:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO users (email, name, auth_provider, onboarding_session_id, last_login_at)
-                VALUES ($1, $2, 'google', $3, NOW())
-                RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-                """,
-                em,
-                name,
-                sid,
+            insert_q = build_query(
+                PostgreSQLQuery.into(users_t)
+                .columns(
+                    users_t.email,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                    users_t.last_login_at,
+                )
+                .insert(Parameter("%s"), Parameter("%s"), "google", Parameter("%s"), fn.Now())
+                .returning(
+                    users_t.id.cast("TEXT").as_("id"),
+                    users_t.phone_number,
+                    users_t.email,
+                    users_t.name,
+                    users_t.auth_provider,
+                    users_t.onboarding_session_id,
+                ),
+                [em, name, sid],
             )
+            row = await conn.fetchrow(insert_q.sql, *insert_q.params)
     return dict(row) if row else {}
 
 
@@ -279,27 +344,39 @@ async def _link_phone_to_user(user_id: str, phone_number: str) -> dict:
         return {}
     async with pool.acquire() as conn:
         # Check if phone is already used by another user
-        existing_phone_user = await conn.fetchrow(
-            "SELECT id::text AS id FROM users WHERE phone_number = $1 AND id::text != $2 LIMIT 1",
-            phone,
-            uid,
+        existing_phone_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(users_t.id.cast("TEXT").as_("id"))
+            .where(users_t.phone_number == Parameter("%s"))
+            .where(users_t.id.cast("TEXT") != Parameter("%s"))
+            .limit(1),
+            [phone, uid],
         )
+        existing_phone_user = await conn.fetchrow(existing_phone_q.sql, *existing_phone_q.params)
         if existing_phone_user:
             raise HTTPException(status_code=400, detail="This phone number is already linked to another account")
 
-        # Update the existing user with the phone number
-        row = await conn.fetchrow(
-            """
-            UPDATE users
-            SET phone_number = $1,
-                auth_provider = CASE WHEN auth_provider = 'google' THEN 'both' ELSE auth_provider END,
-                updated_at = NOW()
-            WHERE id = $2::uuid
-            RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-            """,
-            phone,
-            uid,
+        # Keep provider transition semantics exactly as before.
+        link_phone_q = build_query(
+            PostgreSQLQuery.update(users_t)
+            .set(users_t.phone_number, Parameter("%s"))
+            .set(
+                users_t.auth_provider,
+                Case().when(users_t.auth_provider == "google", "both").else_(users_t.auth_provider),
+            )
+            .set(users_t.updated_at, fn.Now())
+            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .returning(
+                users_t.id.cast("TEXT").as_("id"),
+                users_t.phone_number,
+                users_t.email,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+            ),
+            [phone, uid],
         )
+        row = await conn.fetchrow(link_phone_q.sql, *link_phone_q.params)
     return dict(row) if row else {}
 
 
@@ -312,29 +389,40 @@ async def _link_email_to_user(user_id: str, email: str, name: str | None = None)
         return {}
     async with pool.acquire() as conn:
         # Check if email is already used by another user
-        existing_email_user = await conn.fetchrow(
-            "SELECT id::text AS id FROM users WHERE email = $1 AND id::text != $2 LIMIT 1",
-            em,
-            uid,
+        existing_email_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(users_t.id.cast("TEXT").as_("id"))
+            .where(users_t.email == Parameter("%s"))
+            .where(users_t.id.cast("TEXT") != Parameter("%s"))
+            .limit(1),
+            [em, uid],
         )
+        existing_email_user = await conn.fetchrow(existing_email_q.sql, *existing_email_q.params)
         if existing_email_user:
             raise HTTPException(status_code=400, detail="This email is already linked to another account")
 
-        # Update the existing user with the email
-        row = await conn.fetchrow(
-            """
-            UPDATE users
-            SET email = $1,
-                name = COALESCE($2, name),
-                auth_provider = CASE WHEN auth_provider = 'otp' THEN 'both' ELSE auth_provider END,
-                updated_at = NOW()
-            WHERE id = $3::uuid
-            RETURNING id::text AS id, phone_number, email, name, auth_provider, onboarding_session_id
-            """,
-            em,
-            name,
-            uid,
+        # Keep provider transition semantics exactly as before.
+        link_email_q = build_query(
+            PostgreSQLQuery.update(users_t)
+            .set(users_t.email, Parameter("%s"))
+            .set(users_t.name, fn.Coalesce(Parameter("%s"), users_t.name))
+            .set(
+                users_t.auth_provider,
+                Case().when(users_t.auth_provider == "otp", "both").else_(users_t.auth_provider),
+            )
+            .set(users_t.updated_at, fn.Now())
+            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .returning(
+                users_t.id.cast("TEXT").as_("id"),
+                users_t.phone_number,
+                users_t.email,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+            ),
+            [em, name, uid],
         )
+        row = await conn.fetchrow(link_email_q.sql, *link_email_q.params)
     return dict(row) if row else {}
 
 
@@ -434,16 +522,18 @@ async def verify_otp_endpoint(req: VerifyOTPRequest):
         try:
             pool = get_pool()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE onboarding
-                    SET user_id = $1::uuid,
-                        updated_at = NOW()
-                    WHERE id = $2::uuid AND (user_id IS NULL OR user_id = $1::uuid)
-                    """,
-                    user_id,
-                    onboarding_session_id,
+                link_onboarding_q = build_query(
+                    PostgreSQLQuery.update(Table("onboarding"))
+                    .set(Table("onboarding").user_id, Parameter("%s").cast("uuid"))
+                    .set(Table("onboarding").updated_at, fn.Now())
+                    .where(Table("onboarding").id.cast("TEXT") == Parameter("%s"))
+                    .where(
+                        Table("onboarding").user_id.isnull()
+                        | (Table("onboarding").user_id.cast("TEXT") == Parameter("%s"))
+                    ),
+                    [user_id, onboarding_session_id, user_id],
                 )
+                await conn.execute(link_onboarding_q.sql, *link_onboarding_q.params)
         except Exception as exc:
             logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, onboarding_id=onboarding_session_id)
 
@@ -563,16 +653,18 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
         try:
             pool = get_pool()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE onboarding
-                    SET user_id = $1::uuid,
-                        updated_at = NOW()
-                    WHERE id = $2::uuid AND (user_id IS NULL OR user_id = $1::uuid)
-                """,
-                user_id,
-                    onboarding_id,
+                link_onboarding_q = build_query(
+                    PostgreSQLQuery.update(Table("onboarding"))
+                    .set(Table("onboarding").user_id, Parameter("%s").cast("uuid"))
+                    .set(Table("onboarding").updated_at, fn.Now())
+                    .where(Table("onboarding").id.cast("TEXT") == Parameter("%s"))
+                    .where(
+                        Table("onboarding").user_id.isnull()
+                        | (Table("onboarding").user_id.cast("TEXT") == Parameter("%s"))
+                    ),
+                    [user_id, onboarding_id, user_id],
                 )
+                await conn.execute(link_onboarding_q.sql, *link_onboarding_q.params)
         except Exception as exc:
             logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, onboarding_id=onboarding_id)
 
@@ -628,15 +720,21 @@ async def auth_me_endpoint(authorization: str | None = Header(default=None)):
     # Fetch fresh user data from database
     pool = get_pool()
     async with pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id::text AS id, email, phone_number, name, auth_provider, onboarding_session_id
-            FROM users
-            WHERE id::text = $1
-            LIMIT 1
-            """,
-            user_id,
+        user_q = build_query(
+            PostgreSQLQuery.from_(users_t)
+            .select(
+                users_t.id.cast("TEXT").as_("id"),
+                users_t.email,
+                users_t.phone_number,
+                users_t.name,
+                users_t.auth_provider,
+                users_t.onboarding_session_id,
+            )
+            .where(users_t.id.cast("TEXT") == Parameter("%s"))
+            .limit(1),
+            [user_id],
         )
+        user_row = await conn.fetchrow(user_q.sql, *user_q.params)
 
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")

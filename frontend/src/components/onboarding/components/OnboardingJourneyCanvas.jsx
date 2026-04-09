@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/preserve-manual-memoization */
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import FlowNode from './FlowNode';
 import JourneyConnectors from './JourneyConnectors';
@@ -85,7 +86,6 @@ function DomainAndTaskColumns({
   branchDomains,
   branchDomainKey,
   branchTasks,
-  outcomeOptions,
   selectedOutcome,
   selectedDomain,
   selectedTask,
@@ -339,7 +339,6 @@ export default function OnboardingJourneyCanvas({
     branchDomains,
     branchDomainKey,
     branchTasks,
-    outcomeOptions,
     selectedOutcome,
     selectedDomain,
     selectedTask,

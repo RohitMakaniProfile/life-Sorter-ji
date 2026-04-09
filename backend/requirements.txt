@@ -43,3 +43,4 @@ playwright
 firebase-admin>=6.0.0
 PyJWT>=2.8.0
 google-auth>=2.0.0
+pypika>=0.48.9

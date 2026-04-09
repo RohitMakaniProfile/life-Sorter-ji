@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from pypika import Order, Table
+from pypika.dialects import PostgreSQLQuery
+from pypika.terms import Parameter
+
 from app.db import get_pool
 from app.doable_claw_agent.stores import (
     delete_conversation,
@@ -11,7 +15,10 @@ from app.doable_claw_agent.stores import (
     list_conversations,
     now_iso,
 )
+from app.sql_builder import build_query
 from app.skills.service import list_skills
+
+playbook_runs_t = Table("playbook_runs")
 
 
 async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -55,16 +62,21 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
     # Look up completed playbook from playbook_runs
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT playbook, website_audit, context_brief, icp_card, status
-            FROM playbook_runs
-            WHERE session_id = $1
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            session_id,
+        fetch_playbook_q = build_query(
+            PostgreSQLQuery.from_(playbook_runs_t)
+            .select(
+                playbook_runs_t.playbook,
+                playbook_runs_t.website_audit,
+                playbook_runs_t.context_brief,
+                playbook_runs_t.icp_card,
+                playbook_runs_t.status,
+            )
+            .where(playbook_runs_t.session_id == Parameter("%s"))
+            .orderby(playbook_runs_t.updated_at, order=Order.desc)
+            .limit(1),
+            [session_id],
         )
+        row = await conn.fetchrow(fetch_playbook_q.sql, *fetch_playbook_q.params)
 
     if not row or row["status"] != "complete":
         return messages
