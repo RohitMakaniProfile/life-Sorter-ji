@@ -267,6 +267,12 @@ export interface AdminTokenUsageSummary {
   callsCount: number;
   unknownPricedCalls: number;
   usersCount: number;
+  overallSpendInr: number;
+  overallInputTokens: number;
+  overallOutputTokens: number;
+  overallCallsCount: number;
+  unlinkedSpendInr: number;
+  unlinkedCallsCount: number;
 }
 
 export interface AdminTokenUsageUser {
