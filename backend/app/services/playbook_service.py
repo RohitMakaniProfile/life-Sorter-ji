@@ -820,7 +820,7 @@ async def run_agent_e_standalone(
     task: str,
     business_profile: dict[str, Any],
     rca_history: list[dict[str, str]],
-    crawl_summary: dict[str, Any],
+    crawl_summary: str | dict[str, Any],
     crawl_raw: dict[str, Any] = None,
 ) -> dict[str, Any]:
     """
@@ -828,10 +828,17 @@ async def run_agent_e_standalone(
     Derives ICP from raw session data (no Agent A dependency).
     ~2000 tokens, ~3s — adds 0s to critical path.
     """
-    # Build crawl text
+    # Build crawl text - handle both string and dict formats
     crawl_text = ""
-    if crawl_summary and crawl_summary.get("points"):
-        crawl_text = "\n".join(f"  • {pt}" for pt in crawl_summary["points"])
+    if crawl_summary:
+        if isinstance(crawl_summary, str) and crawl_summary.strip():
+            # crawl_summary is a plain text string (web_summary format)
+            crawl_text = crawl_summary.strip()
+        elif isinstance(crawl_summary, dict) and crawl_summary.get("points"):
+            # crawl_summary is a dict with "points" list
+            crawl_text = "\n".join(f"  • {pt}" for pt in crawl_summary["points"])
+        else:
+            crawl_text = "(No crawl data available — CRITICAL WARNING)"
     else:
         crawl_text = "(No crawl data available — CRITICAL WARNING)"
 
