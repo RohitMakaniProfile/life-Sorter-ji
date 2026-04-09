@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import OnboardingApp from './components/onboarding/OnboardingApp';
 import ErrorBoundary from './components/ErrorBoundary';
+import MobileBlocker from './components/MobileBlocker';
 import { UiAgentsProvider } from './context/UiAgentsContext';
 import ChatPage from './pages/ai/ChatPage';
 import ConversationsPage from './pages/ai/ConversationsPage';
@@ -56,6 +57,7 @@ function DefaultChat() {
 function App() {
   return (
     <ErrorBoundary>
+      <MobileBlocker />
       <UiAgentsProvider>
         <BrowserRouter>
           <Routes>
