@@ -868,7 +868,11 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import TASK_STREAM_REGISTRY
 
-    task_type = "playbook/onboarding-generate"
+    task_type = (
+        "playbook/onboarding-generate-v2"
+        if get_settings().PLAYBOOK_FLOW == "v2"
+        else "playbook/onboarding-generate"
+    )
     task_fn = TASK_STREAM_REGISTRY.get(task_type)
     if not task_fn:
         raise HTTPException(status_code=500, detail=f"Task not registered: {task_type}")

@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c \":*)",
-      "Bash(PGPASSWORD=ikshanprodadminpass psql:*)"
+      "Bash(PGPASSWORD=ikshanprodadminpass psql:*)",
+      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji -name *config* -path */app/config* -type f)"
     ]
   }
 }

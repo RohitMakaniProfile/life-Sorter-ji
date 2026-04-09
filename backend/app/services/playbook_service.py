@@ -984,3 +984,128 @@ async def run_agent_c_stream(
         "total_latency_ms": total_ms,
         "usage": result.get("usage", {}),
     }
+
+
+# ══════════════════════════════════════════════════════════════
+#  SINGLE PROMPT FLOW (v2) — One streaming LLM call
+#  Prompt fetched from prompts table (slug: "playbook").
+#  Output split by section delimiters into context_brief,
+#  website_audit, and playbook.
+# ══════════════════════════════════════════════════════════════
+
+_SECTION_DELIMITERS = {
+    "context_brief": "---SECTION:context_brief---",
+    "website_audit": "---SECTION:website_audit---",
+    "playbook":      "---SECTION:playbook---",
+}
+
+
+def _split_sections(full_text: str) -> dict[str, str]:
+    """
+    Split the single-prompt output into 3 sections using delimiters.
+    Returns {context_brief, website_audit, playbook} — empty string if section missing.
+    """
+    sections: dict[str, str] = {"context_brief": "", "website_audit": "", "playbook": ""}
+
+    # Build ordered list of (section_key, delimiter, position)
+    positions = []
+    for key, delimiter in _SECTION_DELIMITERS.items():
+        idx = full_text.find(delimiter)
+        if idx != -1:
+            positions.append((idx, key, delimiter))
+    positions.sort()
+
+    for i, (idx, key, delimiter) in enumerate(positions):
+        start = idx + len(delimiter)
+        end = positions[i + 1][0] if i + 1 < len(positions) else len(full_text)
+        sections[key] = full_text[start:end].strip()
+
+    return sections
+
+
+async def run_single_prompt_stream(
+    outcome_label: str,
+    domain: str,
+    task: str,
+    business_profile: dict[str, Any],
+    rca_history: list[dict[str, str]],
+    rca_summary: str,
+    crawl_summary: str | dict[str, Any],
+    recommended_tools: str = "",
+    gap_answers: str = "",
+    rca_handoff: str = "",
+    on_token=None,
+) -> dict[str, Any]:
+    """
+    Single-prompt playbook generation (v2).
+
+    Fetches the system prompt from the prompts table (slug: "playbook"),
+    sends one streaming LLM call, and splits the response by section
+    delimiters into context_brief, website_audit, and playbook.
+
+    Returns:
+        {
+            context_brief: str,
+            website_audit: str,
+            playbook: str,
+            latency_ms: int,
+            usage: dict,
+        }
+    """
+    from app.services.prompts_service import get_prompt
+
+    system_prompt = await get_prompt("playbook")
+    if not system_prompt:
+        raise RuntimeError("Prompt slug 'playbook' not found in prompts table")
+
+    user_message = _build_playbook_input(
+        outcome_label=outcome_label,
+        domain=domain,
+        task=task,
+        business_profile=business_profile,
+        rca_history=rca_history,
+        rca_summary=rca_summary,
+        crawl_summary=crawl_summary,
+        scale_answers=business_profile,
+        gap_answers=gap_answers,
+        rca_handoff=rca_handoff,
+    )
+    if recommended_tools:
+        user_message += (
+            f"\n\n═══ PROVIDED TOOL LIST (use these in TOOL + AI SHORTCUT where relevant) ═══\n"
+            f"{recommended_tools}"
+        )
+
+    settings = get_settings()
+    t0 = time.perf_counter()
+
+    result = await _ai.complete_stream(
+        model=settings.OPENROUTER_CLAUDE_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.7,
+        max_tokens=12000,
+        on_token=on_token,
+    )
+
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    full_text = result.get("message", "")
+    sections = _split_sections(full_text)
+
+    logger.info(
+        "Single-prompt playbook stream completed",
+        latency_ms=latency_ms,
+        has_context_brief=bool(sections["context_brief"]),
+        has_website_audit=bool(sections["website_audit"]),
+        has_playbook=bool(sections["playbook"]),
+    )
+
+    return {
+        "context_brief": sections["context_brief"],
+        "website_audit": sections["website_audit"],
+        "playbook": sections["playbook"],
+        "latency_ms": latency_ms,
+        "usage": result.get("usage", {}),
+    }

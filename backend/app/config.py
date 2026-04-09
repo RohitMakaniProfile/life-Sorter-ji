@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     # Use redis only when REDIS_URL is set; otherwise backend falls back to postgres.
     TASKSTREAM_BACKEND: str = "postgres"
 
+    # ── Playbook generation flow ────────────────────────────────
+    # "v1" = 3-agent flow (Agent A + E parallel, Agent C streaming)
+    # "v2" = single-prompt flow (one LLM call, prompt fetched from prompts table slug "playbook")
+    PLAYBOOK_FLOW: str = "v1"
+
     # ── Computed Properties ────────────────────────────────────
 
     @property
