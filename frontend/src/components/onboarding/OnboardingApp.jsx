@@ -137,6 +137,10 @@ export default function OnboardingApp() {
   const [showTransitionMessages, setShowTransitionMessages] = useState(false);
   const [checkingGapQuestions, setCheckingGapQuestions] = useState(false);
 
+  // Analysis transition state (between scale questions and RCA)
+  const [showAnalysisTransition, setShowAnalysisTransition] = useState(false);
+  const [rcaCalling, setRcaCalling] = useState(false);
+
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(() => Boolean(getUserIdFromJwt()));
   const pendingPlaybookLaunchRef = useRef(false);
@@ -160,7 +164,7 @@ export default function OnboardingApp() {
     setError,
   });
 
-  const { crawlStreaming, startForSession: startCrawlForSession, waitForCrawl, waitForCrawlDone } = useCrawlTaskStream({
+  const { crawlStreaming, crawlLabel, crawlProgress, startForSession: startCrawlForSession, waitForCrawl, waitForCrawlDone } = useCrawlTaskStream({
     ensureSession,
     setError,
   });
@@ -729,21 +733,34 @@ export default function OnboardingApp() {
         byId[q.id] = v;
       }
       await handleOnboardingFieldUpdate({ scale_answers: byId });
+
+      // Show analysis transition while waiting for crawl and RCA
+      setShowAnalysisTransition(true);
+      setShowDeeperDive(false);
+
       // Wait until the crawl task stream has finished successfully.
-      // The stream writes rca_qa to DB before emitting done — we must wait for
-      // that before calling rca-next-question, otherwise it falls back to the
-      // static tree and returns a question with no options.
       await waitForCrawlDone(90000);
+
+      // Now calling RCA API
+      setRcaCalling(true);
       const res = await rcaNextQuestion({ onboarding_id: sid });
+
       if (res?.status === 'question' && res?.question) {
         setCurrentQuestion(res.question);
         setQuestionIndex(0);
+        // Keep transition showing briefly then show diagnostic
+        setTimeout(() => {
+          setShowAnalysisTransition(false);
+          setShowDiagnostic(true);
+          setRcaCalling(false);
+          setTimeout(scrollToEnd, 50);
+        }, 800);
       } else {
         throw new Error('No diagnostic question available');
       }
-      setShowDiagnostic(true);
-      setTimeout(scrollToEnd, 50);
     } catch {
+      setShowAnalysisTransition(false);
+      setRcaCalling(false);
       setError('Failed to start diagnostic.');
     } finally {
       setLoading(false);
@@ -980,6 +997,26 @@ export default function OnboardingApp() {
     );
   }
 
+  // Analysis transition (between scale questions and diagnostic)
+  if (showAnalysisTransition) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel
+          onboardingId={onboardingIdRef.current}
+          userId={null}
+          taskTypes={['crawl', 'playbook/onboarding-generate']}
+        />
+        <AnalysisTransitionMessages
+          crawlStreaming={crawlStreaming}
+          crawlProgress={crawlProgress}
+          rcaCalling={rcaCalling}
+          isComplete={false}
+          onComplete={() => {}}
+        />
+      </StageLayout>
+    );
+  }
+
   if (showDeeperDive) {
     return (
       <StageLayout error={error} onClearError={clearError}>
@@ -1000,6 +1037,9 @@ export default function OnboardingApp() {
             setShowUrlForm(true);
           }}
           loading={loading}
+          crawlStreaming={crawlStreaming}
+          crawlLabel={crawlLabel}
+          crawlProgress={crawlProgress}
         />
       </StageLayout>
     );

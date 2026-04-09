@@ -12,6 +12,9 @@ export default function DeeperDiveStage({
   onSubmit,
   onBack,
   loading,
+  crawlStreaming,
+  crawlLabel,
+  crawlProgress,
 }) {
   const scalePages = Math.ceil(scaleQuestions.length / SCALE_PER_PAGE);
   const currentQs = scaleQuestions.slice(scalePage * SCALE_PER_PAGE, (scalePage + 1) * SCALE_PER_PAGE);
@@ -105,10 +108,27 @@ export default function DeeperDiveStage({
                     onClick={onSubmit}
                     disabled={loading}
                   >
-                    {loading ? 'Processing…' : 'Continue'}
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M9 18l6-6-6-6" />
-                    </svg>
+                    {loading ? (
+                      <>
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        {crawlStreaming ? (
+                          <span className="truncate max-w-[180px]">
+                            {crawlProgress?.pages_crawled
+                              ? `Analyzing site (${crawlProgress.pages_crawled} pages)…`
+                              : crawlLabel || 'Analyzing your website…'}
+                          </span>
+                        ) : (
+                          'Preparing questions…'
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        Continue
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M9 18l6-6-6-6" />
+                        </svg>
+                      </>
+                    )}
                   </button>
                 )}
               </div>
