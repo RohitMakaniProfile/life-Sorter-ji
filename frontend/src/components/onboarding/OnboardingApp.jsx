@@ -811,6 +811,11 @@ export default function OnboardingApp() {
           setRcaCalling(false);
           setTimeout(scrollToEnd, 50);
         }, 800);
+      } else if (res?.status === 'complete') {
+        // RCA already completed for this session — skip diagnostic, go to next step
+        setShowAnalysisTransition(false);
+        setRcaCalling(false);
+        handleStartPlaybook();
       } else {
         throw new Error('No diagnostic question available');
       }
