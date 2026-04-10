@@ -720,12 +720,11 @@ async def get_conversations(
 
 @router.get("/playbook-history")
 async def get_playbook_history(
-    sessionId: str | None = Query(default=None),
     userId: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    return await chat_repository.get_playbook_history(sessionId, userId, limit, offset)
+    return await chat_repository.get_playbook_history(userId, limit, offset)
 
 
 @router.get("/playbook-runs/{run_id}")

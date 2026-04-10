@@ -633,15 +633,24 @@ async def get_conversations(
 
 
 async def get_playbook_history(
-    session_id: str | None = None,
     user_id: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, Any]:
-    sid = str(session_id or "").strip()
     uid = str(user_id or "").strip()
     page_size = max(1, min(int(limit or 20), 100))
     page_offset = max(0, int(offset or 0))
+
+    if uid is None or uid == "":
+        return {
+            "playbooks": [],
+            "pagination": {
+                "limit": limit,
+                "offset": page_offset,
+                "total": 0,
+                "hasMore": False,
+            },
+        }
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -652,12 +661,8 @@ async def get_playbook_history(
         )
 
         params: list[Any] = []
-        if uid:
-            base_q = base_q.where(playbook_runs_t.user_id == Parameter("%s"))
-            params.append(uid)
-        elif sid:
-            base_q = base_q.where(playbook_runs_t.session_id == Parameter("%s"))
-            params.append(sid)
+        base_q = base_q.where(playbook_runs_t.user_id == Parameter("%s"))
+        params.append(uid)
 
         count_q = build_query(
             base_q.select(playbook_runs_t.session_id).distinct(),
