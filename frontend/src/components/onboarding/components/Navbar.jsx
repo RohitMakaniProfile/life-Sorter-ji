@@ -78,7 +78,7 @@ export default function Navbar() {
             </div>
           </div>
           <div className="hidden items-center gap-2 md:flex">
-            <img src="/ikshan-logo.svg" alt="Ikshan" className="h-6 w-auto" />
+            <img src="/Doable%20Claw.svg" alt="Ikshan" className="h-6 w-auto" />
             <span className="text-sm font-bold tracking-[0.2em] text-white/80">DOABLE CLAW</span>
           </div>
         </div>

@@ -40,7 +40,7 @@ export default function MobileBlocker() {
       <div className="max-w-sm w-full text-center space-y-6">
         {/* Logo and Brand */}
         <div className="flex flex-col items-center gap-3">
-          <img src="/ikshan-logo.svg" alt="Doable Claw" className="w-16 h-16" />
+          <img src="/Doable%20Claw.svg" alt="Doable Claw" className="w-16 h-16" />
           <h2 className="text-xl font-bold bg-gradient-to-r from-amber-400 to-violet-400 bg-clip-text text-transparent">
             DOABLE CLAW
           </h2>
