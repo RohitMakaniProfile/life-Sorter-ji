@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 export default function HowItWorksPage() {
   const navigate = useNavigate();
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const agentsScrollerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     observerRef.current = new IntersectionObserver(
@@ -29,22 +30,79 @@ export default function HowItWorksPage() {
     return () => observerRef.current?.disconnect();
   }, []);
 
+  useEffect(() => {
+    const el = agentsScrollerRef.current;
+    if (!el) return;
+
+    let rafId = 0;
+    let direction = 1;
+    let stopped = false;
+    let pausedUntil = 0;
+    const speedPxPerFrame = 0.55;
+
+    const pauseOnUserScroll = () => {
+      pausedUntil = Date.now() + 2500;
+    };
+
+    const tick = () => {
+      if (stopped) return;
+      const max = Math.max(0, el.scrollWidth - el.clientWidth);
+      if (max > 0 && Date.now() > pausedUntil) {
+        const next = el.scrollLeft + direction * speedPxPerFrame;
+        if (next >= max) {
+          el.scrollLeft = max;
+          direction = -1;
+        } else if (next <= 0) {
+          el.scrollLeft = 0;
+          direction = 1;
+        } else {
+          el.scrollLeft = next;
+        }
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    el.addEventListener('wheel', pauseOnUserScroll, { passive: true });
+    el.addEventListener('touchstart', pauseOnUserScroll, { passive: true });
+    rafId = window.requestAnimationFrame(tick);
+
+    return () => {
+      stopped = true;
+      window.cancelAnimationFrame(rafId);
+      el.removeEventListener('wheel', pauseOnUserScroll);
+      el.removeEventListener('touchstart', pauseOnUserScroll);
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#111] bg-[radial-gradient(circle,rgba(255,255,255,0.18)_1px,transparent_1px)] bg-[length:14px_14px] font-sans text-white overflow-x-hidden">
       {/* NAV */}
-      <nav className="fixed top-0 left-0 right-0 z-50 backdrop-blur-xl bg-[rgba(17,17,17,0.85)] border-b border-white/[0.06]">
-        <div className="max-w-[1200px] mx-auto px-8 h-16 flex items-center justify-between">
+      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-[rgba(17,17,17,0.85)] backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-[1200px] items-center gap-3 px-3 md:h-16 md:px-8">
           <button
             type="button"
             onClick={() => navigate('/')}
-            className="font-bold text-xl tracking-tight text-white flex items-center gap-1.5 cursor-pointer bg-transparent border-none"
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 border-none bg-transparent text-base font-bold tracking-tight whitespace-nowrap text-white md:text-xl"
           >
             Doable<span className="text-transparent bg-clip-text bg-gradient-to-r from-[#857BFF] to-[#BF69A2] font-mono font-bold">Claw</span>
           </button>
-          <div className="flex gap-8 items-center">
-            <a href="#how" className="text-white/60 text-sm font-medium hover:text-white transition-colors no-underline">How it works</a>
-            <a href="#agents" className="text-white/60 text-sm font-medium hover:text-white transition-colors no-underline">Claw agents</a>
-            <a href="#reports" className="text-white/60 text-sm font-medium hover:text-white transition-colors no-underline">Reports</a>
+          <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="flex w-max items-center gap-4 pr-1 md:gap-8">
+              <a href="#how" className="text-white/60 text-sm font-medium whitespace-nowrap transition-colors hover:text-white no-underline">How it works</a>
+              <a href="#agents" className="text-white/60 text-sm font-medium whitespace-nowrap transition-colors hover:text-white no-underline">Claw agents</a>
+              <a href="#reports" className="text-white/60 text-sm font-medium whitespace-nowrap transition-colors hover:text-white no-underline">Reports</a>
+            </div>
+          </div>
+          <div className="shrink-0 md:hidden">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="cursor-pointer border-none rounded-lg bg-gradient-to-r from-[#857BFF] to-[#BF69A2] px-3 py-1.5 text-xs font-semibold whitespace-nowrap text-white transition-all hover:-translate-y-0.5 hover:brightness-110"
+            >
+              Get started
+            </button>
+          </div>
+          <div className="hidden md:block">
             <button
               type="button"
               onClick={() => navigate('/')}
@@ -64,7 +122,7 @@ export default function HowItWorksPage() {
         </div>
         <h1 className="text-[clamp(2.5rem,5.5vw,4rem)] font-bold tracking-tight leading-[1.1] max-w-[800px] mx-auto mb-6">
           Pick your challenge.<br />
-          Our{' '}
+          Let Our{' '}
           <span className="animate-[ob-gradient-flow_4s_ease_infinite] bg-clip-text text-transparent bg-[linear-gradient(90deg,rgba(133,123,255,0.9),#BF69A2,rgba(133,123,255,0.9),#BF69A2)] bg-[length:300%_100%] drop-shadow-[0_0_12px_rgba(133,123,255,0.5)]">
             Claw Agents
           </span>{' '}
@@ -392,7 +450,10 @@ export default function HowItWorksPage() {
             Every growth task has a dedicated Claw Agent — pre-built with skills, connectors, and sub-agents. No setup. No pipelines. Just results.
           </p>
 
-          <div className="flex gap-3 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-white/10">
+          <div
+            ref={agentsScrollerRef}
+            className="flex gap-3 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-white/10"
+          >
             {[
               { name: 'SEO Claw', task: 'Rank higher on Google', color: '#857BFF' },
               { name: 'Conversion Claw', task: 'Fix your funnel leaks', color: '#1D9E75' },
