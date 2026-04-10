@@ -1,4 +1,24 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { coreApi } from '../../../api/services/core';
+
+const ONBOARDING_SESSION_KEY = 'doable-claw-onboarding-id';
+
+function clearOnboardingStorage() {
+  try {
+    const toDelete = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith('life-sorter') || key.startsWith('doable-claw') || key.startsWith('ikshan-taskstream')) {
+        toDelete.push(key);
+      }
+    }
+    toDelete.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    // ignore storage failures
+  }
+}
 
 const PRODUCTS = [
   {
@@ -76,6 +96,28 @@ const PRODUCTS = [
 
 export default function ProductsSidebar({ isOpen, onClose }) {
   const navigate = useNavigate();
+  const [resetting, setResetting] = useState(false);
+
+  const handleNewJourney = async () => {
+    if (resetting) return;
+    setResetting(true);
+    onClose();
+    try {
+      const onboardingId = localStorage.getItem(ONBOARDING_SESSION_KEY);
+      if (onboardingId) {
+        try {
+          await coreApi.onboardingReset({ onboarding_id: onboardingId });
+        } catch {
+          // ignore reset errors — still clear local state and restart
+        }
+      }
+      clearOnboardingStorage();
+    } catch {
+      // ignore
+    } finally {
+      window.location.href = '/?reset=1';
+    }
+  };
 
   const handleProductClick = (productId) => {
     // Navigate to new chat with product context
@@ -151,17 +193,15 @@ export default function ProductsSidebar({ isOpen, onClose }) {
         <div className="px-5 py-4 border-t border-white/10">
           <button
             type="button"
-            onClick={() => {
-              navigate('/new');
-              onClose();
-            }}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#857BFF] to-[#BF69A2] text-white text-sm font-semibold hover:brightness-110 transition-all"
+            onClick={handleNewJourney}
+            disabled={resetting}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#857BFF] to-[#BF69A2] text-white text-sm font-semibold hover:brightness-110 transition-all disabled:opacity-50"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <line x1="8" y1="3" x2="8" y2="13" strokeLinecap="round" />
-              <line x1="3" y1="8" x2="13" y2="8" strokeLinecap="round" />
+              <path d="M13 8A5 5 0 1 1 8 3" strokeLinecap="round" />
+              <polyline points="11,1 13,3 11,5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Start New Chat
+            {resetting ? '…' : 'New Journey'}
           </button>
         </div>
       </aside>

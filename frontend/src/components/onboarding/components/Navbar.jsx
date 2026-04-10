@@ -1,23 +1,48 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createConversation } from '../../../api';
+import { coreApi } from '../../../api/services/core';
 import ProductsSidebar from './ProductsSidebar';
+
+const ONBOARDING_SESSION_KEY = 'doable-claw-onboarding-id';
+
+function clearOnboardingStorage() {
+  try {
+    const toDelete = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith('life-sorter') || key.startsWith('doable-claw') || key.startsWith('ikshan-taskstream')) {
+        toDelete.push(key);
+      }
+    }
+    toDelete.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    // ignore storage failures
+  }
+}
 
 export default function Navbar() {
   const navigate = useNavigate();
-  const [creatingChat, setCreatingChat] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [productsOpen, setProductsOpen] = useState(false);
 
-  const handleNewChat = async () => {
-    if (creatingChat) return;
-    setCreatingChat(true);
+  const handleNewJourney = async () => {
+    if (resetting) return;
+    setResetting(true);
     try {
-      const { conversationId } = await createConversation({ agentId: 'business_problem_identifier' });
-      navigate(`/chat/${conversationId}`);
+      const onboardingId = localStorage.getItem(ONBOARDING_SESSION_KEY);
+      if (onboardingId) {
+        try {
+          await coreApi.onboardingReset({ onboarding_id: onboardingId });
+        } catch {
+          // ignore reset errors — still clear local state and restart
+        }
+      }
+      clearOnboardingStorage();
     } catch {
-      navigate('/new');
+      // ignore
     } finally {
-      setCreatingChat(false);
+      window.location.href = '/?reset=1';
     }
   };
 
@@ -43,15 +68,15 @@ export default function Navbar() {
               </button>
               <button
                 type="button"
-                onClick={handleNewChat}
-                disabled={creatingChat}
+                onClick={handleNewJourney}
+                disabled={resetting}
                 className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M13 8A5 5 0 1 1 8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <polyline points="11,1 13,3 11,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                {creatingChat ? '…' : 'New Chat'}
+                {resetting ? '…' : 'New Journey'}
               </button>
               <button
                 type="button"

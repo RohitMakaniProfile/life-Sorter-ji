@@ -167,13 +167,11 @@ async def get_onboarding_state(
     from app.db import get_pool
 
     oid = (onboarding_id or "").strip()
-    uid = (user_id or "").strip()
 
-    # Also try to get user_id from JWT if not provided
-    if not uid:
-        jwt_user = get_request_user(request)
-        if jwt_user:
-            uid = str(jwt_user.get("id") or "").strip()
+    jwt_user = get_request_user(request)
+    uid = None
+    if jwt_user:
+        uid = str(jwt_user.get("id") or "").strip()
 
     if not oid and not uid:
         raise HTTPException(status_code=400, detail="onboarding_id or user_id is required")
@@ -213,6 +211,7 @@ async def get_onboarding_state(
             row = await conn.fetchrow(row_q.sql, *row_q.params)
 
         # Fall back to user_id lookup only when onboarding_id is absent.
+        # Only return non-complete rows — if the latest row is complete the user should start fresh.
         if not row and uid:
             row_q = build_query(
                 PostgreSQLQuery.from_(onboarding_t)
@@ -238,9 +237,11 @@ async def get_onboarding_state(
                     onboarding_t.onboarding_completed_at,
                 )
                 .where(onboarding_t.user_id == Parameter("%s"))
+                .where(onboarding_t.onboarding_completed_at.isnull())
+                .where(onboarding_t.playbook_status != Parameter("%s"))
                 .orderby(onboarding_t.created_at, order=Order.desc)
                 .limit(1),
-                [uid],
+                [uid, "complete"],
             )
             row = await conn.fetchrow(row_q.sql, *row_q.params)
 
@@ -334,6 +335,29 @@ async def onboarding_upsert(
     except Exception as e:
         logger.exception("onboarding_upsert failed", error=str(e))
         raise HTTPException(status_code=500, detail="Onboarding save failed") from e
+
+
+class OnboardingResetRequest(BaseModel):
+    onboarding_id: str
+
+
+@router.post("/reset")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def reset_onboarding(
+    request: Request,
+    body: OnboardingResetRequest,
+) -> dict[str, Any]:
+    """Reset an onboarding row — clears all journey data, keeping only id and user_id."""
+    try:
+        result = await onboarding_service.reset_onboarding(body.onboarding_id)
+        return {"onboarding_id": result.get("onboarding_id"), "reset": True}
+    except PermissionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("reset_onboarding failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Onboarding reset failed") from e
 
 
 @router.post("/tools/by-q1-q2-q3", response_model=ToolsByQ1Q2Q3Response)

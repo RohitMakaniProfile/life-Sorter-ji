@@ -67,10 +67,9 @@ export const API_ROUTES = {
   },
   onboarding: {
     upsert: '/api/v1/onboarding',
-    state: (onboardingId?: string | null, userId?: string | null) => {
+    state: (onboardingId?: string | null) => {
       const params = new URLSearchParams();
       if (onboardingId) params.append('onboarding_id', onboardingId);
-      if (userId) params.append('user_id', userId);
       return `/api/v1/onboarding/state?${params.toString()}`;
     },
     toolsByQ1Q2Q3: '/api/v1/onboarding/tools/by-q1-q2-q3',
@@ -81,6 +80,7 @@ export const API_ROUTES = {
     playbookLaunch: '/api/v1/onboarding/playbook/launch',
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
     playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
+    reset: '/api/v1/onboarding/reset',
   },
   aiChat: {
     stream: '/api/v1/ai-chat/stream',

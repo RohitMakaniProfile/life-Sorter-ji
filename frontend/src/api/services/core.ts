@@ -31,6 +31,8 @@ export const coreApi = {
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionAnswer, payload),
   onboardingGapQuestionsStart: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.gapQuestionsStart, payload),
+  onboardingReset: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.reset, payload),
   request: apiRequest,
 };
 
