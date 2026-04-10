@@ -337,12 +337,18 @@ export async function getConversations(): Promise<{ conversations: ConversationS
   return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
 }
 
-export async function getPlaybookHistory(): Promise<{ playbooks: PlaybookHistoryItem[] }> {
+export async function getPlaybookHistory(
+  opts?: { limit?: number; offset?: number },
+): Promise<{ playbooks: PlaybookHistoryItem[]; pagination?: { limit: number; offset: number; total: number; hasMore: boolean } }> {
   const params = new URLSearchParams();
   const userId = getUserIdFromJwt();
   if (userId) params.set('userId', userId);
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
   const q = params.toString() ? `?${params}` : '';
-  return apiJson<{ playbooks: PlaybookHistoryItem[] }>(`${API_ROUTES.aiChat.playbookHistory}${q}`);
+  return apiJson<{ playbooks: PlaybookHistoryItem[]; pagination?: { limit: number; offset: number; total: number; hasMore: boolean } }>(
+    `${API_ROUTES.aiChat.playbookHistory}${q}`,
+  );
 }
 
 export async function getPlaybookRun(runId: string): Promise<PlaybookRunDetail> {

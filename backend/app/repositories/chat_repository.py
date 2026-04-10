@@ -279,15 +279,39 @@ async def get_conversations(
 async def get_playbook_history(
     session_id: str | None = None,
     user_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
 ) -> dict[str, Any]:
     sid = str(session_id or "").strip()
     uid = str(user_id or "").strip()
+    page_size = max(1, min(int(limit or 20), 100))
+    page_offset = max(0, int(offset or 0))
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        q = (
+        base_q = (
             PostgreSQLQuery.from_(playbook_runs_t)
-            .select(
+            .where(playbook_runs_t.status == "complete")
+            .where(playbook_runs_t.playbook != "")
+        )
+
+        params: list[Any] = []
+        if uid:
+            base_q = base_q.where(playbook_runs_t.user_id == Parameter("%s"))
+            params.append(uid)
+        elif sid:
+            base_q = base_q.where(playbook_runs_t.session_id == Parameter("%s"))
+            params.append(sid)
+
+        count_q = build_query(
+            base_q.select(playbook_runs_t.session_id).distinct(),
+            params,
+        )
+        all_session_rows = await conn.fetch(count_q.sql, *count_q.params)
+        total = len(all_session_rows)
+
+        q = (
+            base_q.select(
                 playbook_runs_t.id,
                 playbook_runs_t.session_id,
                 playbook_runs_t.user_id,
@@ -297,20 +321,9 @@ async def get_playbook_history(
                 playbook_runs_t.created_at,
                 playbook_runs_t.updated_at,
             )
-            .where(playbook_runs_t.status == "complete")
-            .where(playbook_runs_t.playbook != "")
             .orderby(playbook_runs_t.updated_at, order=Order.desc)
-            .limit(200)
+            .limit(max(200, page_size + page_offset + 50))
         )
-
-        params: list[Any] = []
-        if uid:
-            q = q.where(playbook_runs_t.user_id == Parameter("%s"))
-            params.append(uid)
-        elif sid:
-            q = q.where(playbook_runs_t.session_id == Parameter("%s"))
-            params.append(sid)
-
         built = build_query(q, params)
         rows = await conn.fetch(built.sql, *built.params)
 
@@ -354,7 +367,17 @@ async def get_playbook_history(
             }
         )
 
-    return {"playbooks": items}
+    paged_items = items[page_offset: page_offset + page_size]
+    has_more = (page_offset + len(paged_items)) < total
+    return {
+        "playbooks": paged_items,
+        "pagination": {
+            "limit": page_size,
+            "offset": page_offset,
+            "total": total,
+            "hasMore": has_more,
+        },
+    }
 
 
 async def get_playbook_run_for_user(run_id: str, user_id: str) -> dict[str, Any] | None:
