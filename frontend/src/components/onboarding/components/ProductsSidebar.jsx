@@ -31,9 +31,7 @@ export default function ProductsSidebar({ isOpen, onClose }) {
 
   const handlePlaybookClick = (item) => {
     if (item?.runId) {
-      navigate(`/playbook/${item.runId}`);
-    } else {
-      navigate('/');
+      window.dispatchEvent(new CustomEvent('playbook-history-select', { detail: { runId: item.runId } }));
     }
     onClose();
   };
@@ -127,4 +125,3 @@ export default function ProductsSidebar({ isOpen, onClose }) {
     </>
   );
 }
-

@@ -7,6 +7,7 @@ import UrlStage from './stages/UrlStage';
 import DeeperDiveStage from './stages/DeeperDiveStage';
 import DiagnosticStage from './stages/DiagnosticStage';
 import PlaybookStage from './stages/PlaybookStage';
+import HistoryPlaybookStage from './stages/HistoryPlaybookStage';
 import CompleteStage from './stages/CompleteStage';
 import OtpModal from './components/OtpModal';
 import OnboardingHero from './components/OnboardingHero';
@@ -929,6 +930,27 @@ export default function OnboardingApp() {
   };
 
   const clearError = () => setError(null);
+
+  const [viewingRunId, setViewingRunId] = useState(null);
+
+  useEffect(() => {
+    const handler = (e) => setViewingRunId(e.detail?.runId || null);
+    window.addEventListener('playbook-history-select', handler);
+    return () => window.removeEventListener('playbook-history-select', handler);
+  }, []);
+
+  if (viewingRunId) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <HistoryPlaybookStage
+          runId={viewingRunId}
+          onBack={() => setViewingRunId(null)}
+          onDeepAnalysis={handleDeepAnalysis}
+          onStartNewJourney={() => setViewingRunId(null)}
+        />
+      </StageLayout>
+    );
+  }
 
   if (showOtpModal) {
     return <OtpModal onboardingId={onboardingIdRef.current || ''} onVerified={handleOtpVerified} />;
