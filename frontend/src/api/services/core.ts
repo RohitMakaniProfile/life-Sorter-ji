@@ -6,6 +6,8 @@ import type {
   AgentId,
   ChatMessage,
   ConversationSummary,
+  PlaybookHistoryItem,
+  PlaybookRunDetail,
   PipelineStage,
   ProgressEvent,
   SendMessageStreamOptions,
@@ -331,6 +333,18 @@ export async function getConversations(): Promise<{ conversations: ConversationS
   if (userId) params.set('userId', userId);
   const q = params.toString() ? `?${params}` : '';
   return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
+}
+
+export async function getPlaybookHistory(): Promise<{ playbooks: PlaybookHistoryItem[] }> {
+  const params = new URLSearchParams();
+  const userId = getUserIdFromJwt();
+  if (userId) params.set('userId', userId);
+  const q = params.toString() ? `?${params}` : '';
+  return apiJson<{ playbooks: PlaybookHistoryItem[] }>(`${API_ROUTES.aiChat.playbookHistory}${q}`);
+}
+
+export async function getPlaybookRun(runId: string): Promise<PlaybookRunDetail> {
+  return apiJson<PlaybookRunDetail>(API_ROUTES.aiChat.playbookRun(runId));
 }
 
 export async function fetchSkills(): Promise<SkillMeta[]> {

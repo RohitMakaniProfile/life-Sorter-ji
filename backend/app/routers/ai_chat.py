@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.doable_claw_agent import router as agent_router
 from app.doable_claw_agent.stores import append_message, create_new_conversation, get_conversation, get_or_create_conversation, get_plan_run, update_plan_run
-from app.middleware.auth_context import get_request_user
+from app.middleware.auth_context import get_request_user, require_request_user
 from app.services import journey_service
 from app.repositories import chat_repository
 from app.services import central_chat_service
@@ -686,6 +686,25 @@ async def get_conversations(
     userId: str | None = Query(default=None),
 ) -> dict[str, Any]:
     return await chat_repository.get_conversations(sessionId, userId)
+
+
+@router.get("/playbook-history")
+async def get_playbook_history(
+    sessionId: str | None = Query(default=None),
+    userId: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await chat_repository.get_playbook_history(sessionId, userId)
+
+
+@router.get("/playbook-runs/{run_id}")
+async def get_playbook_run(request: Request, run_id: str) -> dict[str, Any]:
+    """Return saved playbook markdown + sections for the authenticated owner."""
+    user = require_request_user(request)
+    uid = str(user.get("id") or "").strip()
+    row = await chat_repository.get_playbook_run_for_user(run_id, uid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    return row
 
 
 @router.get("/skills")

@@ -77,6 +77,39 @@ export interface ConversationSummary {
   updatedAt: string;
 }
 
+export interface PlaybookHistoryItem {
+  runId: string;
+  sessionId: string;
+  conversationId?: string;
+  title: string;
+  outcome?: string;
+  domain?: string;
+  task?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlaybookRunDetail {
+  runId: string;
+  sessionId: string;
+  title: string;
+  outcome?: string;
+  domain?: string;
+  task?: string;
+  playbookData: {
+    playbook?: string;
+    websiteAudit?: string;
+    contextBrief?: string;
+    icpCard?: string;
+  };
+  crossAgentActions?: Array<{
+    label: string;
+    icon?: string;
+    agentId: string;
+    initialMessage: string;
+  }>;
+}
+
 export interface ProgressEvent {
   stage: PipelineStage;
   type: 'url' | 'page' | 'search' | 'data' | 'task' | 'info' | 'done';

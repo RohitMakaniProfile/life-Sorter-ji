@@ -39,7 +39,7 @@ export default function Navbar() {
                   <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
                   <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 </svg>
-                Our Products
+                History
               </button>
               <button
                 type="button"
@@ -52,16 +52,6 @@ export default function Navbar() {
                   <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
                 {creatingChat ? '…' : 'New Chat'}
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('/conversations')}
-                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-                History
               </button>
               <button
                 type="button"
