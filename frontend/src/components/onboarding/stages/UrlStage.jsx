@@ -107,7 +107,28 @@ export default function UrlStage({
       {earlyTools.length > 0 && (
         <div className="mb-2 flex w-full max-w-[1100px] flex-col">
           <h2 className="m-0 mb-2.5 shrink-0 text-center text-lg font-bold text-white">Best Tools For You</h2>
-          <div className="relative flex items-stretch gap-0">
+          <div className="mb-1 md:hidden">
+            <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {earlyTools.map((tool, i) => (
+                <div
+                  key={`mobile-tool-${i}`}
+                  className="min-w-0 shrink-0 snap-center basis-[84%] sm:basis-[60%]"
+                >
+                  <ToolCard
+                    name={tool.name}
+                    rating={tool.rating}
+                    description={tool.description}
+                    bullets={tool.bullets}
+                    tag={tool.tag}
+                    url={tool.url}
+                    className="min-w-0 max-w-none w-full"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="relative hidden items-stretch gap-0 md:flex">
             <button
               type="button"
               className="z-[2] flex w-11 shrink-0 cursor-pointer items-center justify-center rounded-l-xl border border-[#b3b3b3] bg-[#161616] text-white/60 transition-colors hover:bg-[rgba(165,120,255,0.15)] hover:text-white disabled:cursor-not-allowed disabled:opacity-20"
@@ -128,6 +149,7 @@ export default function UrlStage({
                   bullets={tool.bullets}
                   tag={tool.tag}
                   url={tool.url}
+                  className="min-w-0 max-w-none w-full"
                 />
               ))}
             </div>
@@ -142,7 +164,7 @@ export default function UrlStage({
               </svg>
             </button>
           </div>
-          <div className="mt-2 flex shrink-0 justify-center gap-2">
+          <div className="mt-2 hidden shrink-0 justify-center gap-2 md:flex">
             {Array.from({ length: totalPages }).map((_, i) => (
               <button
                 key={i}

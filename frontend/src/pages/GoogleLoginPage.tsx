@@ -24,7 +24,8 @@ export default function GoogleLoginPage() {
   const mode = params.get('mode') || 'login'; // 'login' | 'link'
   const isLinkMode = mode === 'link';
 
-  let next = '/chat';
+  // Default: onboarding homepage (same as phone sign-in after logout).
+  let next = '/';
   try {
     const decoded = rawNext ? decodeURIComponent(rawNext) : '';
     if (
@@ -167,7 +168,7 @@ export default function GoogleLoginPage() {
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
       <div className="w-full max-w-md border border-zinc-800 rounded-xl p-6 bg-zinc-900">
         <div className="flex justify-center mb-4">
-          <img src="/ikshan-logo.svg" alt="Ikshan" className="h-10 w-auto" />
+          <img src="/Doable%20Claw.svg" alt="Ikshan" className="h-10 w-auto" />
         </div>
         <div className="text-sm uppercase tracking-wide text-zinc-400">
           {isLinkMode ? 'Link Email' : 'Sign In'}
@@ -194,11 +195,11 @@ export default function GoogleLoginPage() {
                 navigate('/account', { replace: true });
               } else {
                 window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
-                navigate('/chat', { replace: true });
+                navigate('/', { replace: true });
               }
             }}
           >
-            {isLinkMode ? 'Cancel' : 'Back to chat'}
+            {isLinkMode ? 'Cancel' : 'Back to home'}
           </button>
         </div>
 

@@ -34,7 +34,8 @@ export default function PhoneVerifyPage() {
   const isLinkMode = mode === 'link';
   const rawNext = params.get('next') || '';
 
-  let next = '/chat';
+  // Default: onboarding homepage (not /chat, which sends empty users to /new).
+  let next = '/';
   try {
     const decoded = rawNext ? decodeURIComponent(rawNext) : '';
     if (decoded && decoded.length < 500 && !decoded.includes('/phone-verify')) {
@@ -186,7 +187,7 @@ export default function PhoneVerifyPage() {
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
       <div className="w-full max-w-md border border-zinc-800 rounded-xl p-6 bg-zinc-900">
         <div className="flex justify-center mb-4">
-          <img src="/ikshan-logo.svg" alt="Ikshan" className="h-10 w-auto" />
+          <img src="/Doable%20Claw.svg" alt="Ikshan" className="h-10 w-auto" />
         </div>
         <div className="text-sm uppercase tracking-wide text-zinc-400">
           {isLinkMode ? 'Link Phone Number' : 'Sign In'}
@@ -292,7 +293,7 @@ export default function PhoneVerifyPage() {
 
           <button
             type="button"
-            onClick={() => navigate(isLinkMode ? '/account' : '/chat', { replace: true })}
+            onClick={() => navigate(isLinkMode ? '/account' : '/', { replace: true })}
             className="w-full rounded-lg border border-zinc-700 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
           >
             Cancel

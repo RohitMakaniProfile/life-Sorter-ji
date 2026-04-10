@@ -6,6 +6,8 @@ import type {
   AgentId,
   ChatMessage,
   ConversationSummary,
+  PlaybookHistoryItem,
+  PlaybookRunDetail,
   PipelineStage,
   ProgressEvent,
   SendMessageStreamOptions,
@@ -31,6 +33,8 @@ export const coreApi = {
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionAnswer, payload),
   onboardingGapQuestionsStart: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.gapQuestionsStart, payload),
+  onboardingReset: (payload: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.reset, payload),
   request: apiRequest,
 };
 
@@ -331,6 +335,24 @@ export async function getConversations(): Promise<{ conversations: ConversationS
   if (userId) params.set('userId', userId);
   const q = params.toString() ? `?${params}` : '';
   return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
+}
+
+export async function getPlaybookHistory(
+  opts?: { limit?: number; offset?: number },
+): Promise<{ playbooks: PlaybookHistoryItem[]; pagination?: { limit: number; offset: number; total: number; hasMore: boolean } }> {
+  const params = new URLSearchParams();
+  const userId = getUserIdFromJwt();
+  if (userId) params.set('userId', userId);
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  const q = params.toString() ? `?${params}` : '';
+  return apiJson<{ playbooks: PlaybookHistoryItem[]; pagination?: { limit: number; offset: number; total: number; hasMore: boolean } }>(
+    `${API_ROUTES.aiChat.playbookHistory}${q}`,
+  );
+}
+
+export async function getPlaybookRun(runId: string): Promise<PlaybookRunDetail> {
+  return apiJson<PlaybookRunDetail>(API_ROUTES.aiChat.playbookRun(runId));
 }
 
 export async function fetchSkills(): Promise<SkillMeta[]> {

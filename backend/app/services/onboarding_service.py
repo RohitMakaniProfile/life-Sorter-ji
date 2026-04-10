@@ -215,3 +215,72 @@ async def upsert_onboarding_patch(
     out = _serialize_row(row)
     logger.debug("onboarding patched", onboarding_id=oid, fields=list(allowed.keys()))
     return out
+
+
+async def reset_onboarding(onboarding_id: str) -> dict[str, Any]:
+    """Reset an onboarding row — clear all journey data, keeping only id and user_id.
+
+    Raises ValueError if the row does not exist or has a successfully completed playbook
+    (playbook_status = 'complete' or onboarding_completed_at is set), in which case
+    the row should be preserved.
+    """
+    oid = (onboarding_id or "").strip()
+    if not oid:
+        raise ValueError("onboarding_id is required for reset")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        guard_q = build_query(
+            PostgreSQLQuery.from_(onboarding_t)
+            .select(onboarding_t.onboarding_completed_at, onboarding_t.playbook_status)
+            .where(onboarding_t.id == Parameter("%s")),
+            [oid],
+        )
+        existing = await conn.fetchrow(guard_q.sql, *guard_q.params)
+        if not existing:
+            raise ValueError("onboarding row not found")
+
+        if existing.get("onboarding_completed_at") or str(existing.get("playbook_status") or "") == "complete":
+            raise PermissionError("cannot reset a completed onboarding row")
+
+        reset_sql = (
+            "UPDATE onboarding "
+            "SET outcome = NULL, "
+            "    domain = NULL, "
+            "    task = NULL, "
+            "    website_url = NULL, "
+            "    gbp_url = NULL, "
+            "    questions_answers = '[]'::jsonb, "
+            "    rca_qa = '[]'::jsonb, "
+            "    scale_answers = '{}'::jsonb, "
+            "    business_profile = '', "
+            "    gap_questions = '[]'::jsonb, "
+            "    gap_answers = '', "
+            "    rca_summary = '', "
+            "    rca_handoff = '', "
+            "    precision_questions = '[]'::jsonb, "
+            "    precision_answers = '[]'::jsonb, "
+            "    precision_status = 'not_started', "
+            "    precision_completed_at = NULL, "
+            "    playbook_status = 'not_started', "
+            "    playbook_started_at = NULL, "
+            "    playbook_completed_at = NULL, "
+            "    playbook_error = '', "
+            "    crawl_run_id = NULL, "
+            "    crawl_cache_key = NULL, "
+            "    playbook_run_id = NULL, "
+            "    web_summary = '', "
+            "    onboarding_completed_at = NULL, "
+            "    updated_at = NOW() "
+            "WHERE id = $1 "
+            "RETURNING id, user_id, outcome, domain, task, "
+            "          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key, "
+            "          onboarding_completed_at, created_at, updated_at"
+        )
+        row = await conn.fetchrow(reset_sql, oid)
+        if not row:
+            raise ValueError("onboarding row not found")
+
+    out = _serialize_row(row)
+    logger.info("onboarding row reset", onboarding_id=oid)
+    return out

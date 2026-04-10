@@ -47,19 +47,6 @@ export function useOnboardingSession() {
     if (!sessionPromiseRef.current) {
       sessionPromiseRef.current = (async () => {
         const isAuth = isAuthenticatedUser();
-        if (isAuth) {
-          // If local onboarding_id is absent, fall back to user identity for row restoration.
-          try {
-            const state = await apiGet(API_ROUTES.onboarding.state(null, getUserIdFromJwt()));
-            if (state?.onboarding_id) {
-              sessionIdRef.current = state.onboarding_id;
-              persistSessionPayload(state);
-              return state.onboarding_id;
-            }
-          } catch {
-            // no existing onboarding row for this user yet
-          }
-        }
 
         const body =
           initialFields && typeof initialFields === 'object' && Object.keys(initialFields).length > 0
@@ -122,7 +109,7 @@ export function useOnboardingSession() {
 
     try {
       // Backend will use user_id if provided, otherwise onboarding_id.
-      const url = API_ROUTES.onboarding.state(storedId, userId);
+      const url = API_ROUTES.onboarding.state(storedId);
       console.log('[getSessionState] Fetching state from:', url);
       const state = await apiGet(url);
       console.log('[getSessionState] State received:', state);
