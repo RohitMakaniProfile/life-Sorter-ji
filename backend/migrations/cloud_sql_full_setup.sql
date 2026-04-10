@@ -445,7 +445,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL,
     session_id          TEXT,
-    onboarding_session_id TEXT,
+    onboarding_id       TEXT,
     user_id             TEXT,
     title               TEXT,
     last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
@@ -461,7 +461,7 @@ ALTER TABLE conversations
     ADD COLUMN IF NOT EXISTS user_id TEXT;
 
 ALTER TABLE conversations
-    ADD COLUMN IF NOT EXISTS onboarding_session_id TEXT;
+    ADD COLUMN IF NOT EXISTS onboarding_id TEXT;
 
 DO $$
 BEGIN
