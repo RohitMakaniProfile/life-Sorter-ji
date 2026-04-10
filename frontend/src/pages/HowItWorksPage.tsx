@@ -458,7 +458,7 @@ export default function HowItWorksPage() {
 
           <div
             ref={agentsScrollerRef}
-            className="flex w-full justify-center gap-3 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-white/10"
+            className="flex w-full justify-center gap-3 overflow-x-auto overflow-y-hidden pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {[
               { name: 'SEO Claw', task: 'Rank higher on Google', color: '#857BFF' },
@@ -526,16 +526,6 @@ export default function HowItWorksPage() {
         .anim-item.visible {
           opacity: 1 !important;
           transform: translateY(0) !important;
-        }
-        .scrollbar-thin::-webkit-scrollbar {
-          height: 4px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-thumb {
-          background: rgba(255,255,255,0.1);
-          border-radius: 2px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-track {
-          background: transparent;
         }
       `}</style>
     </div>
