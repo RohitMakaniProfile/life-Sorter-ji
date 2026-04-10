@@ -10,6 +10,7 @@ export default function Layout() {
   const isSuperAdmin = getIsSuperAdmin();
   const AUTH_JWT_STORAGE_KEY = IKSHAN_AUTH_TOKEN_KEY;
   const ACTIVE_KEY = 'ikshan-active-agent-id';
+  const ONBOARDING_SESSION_STORAGE_KEY = 'doable-claw-onboarding-id';
   const agentDef = agents.find((a) => a.id === activeAgentId) ?? agents[0] ?? {
     id: 'amazon-video',
     name: 'Agent',
@@ -120,6 +121,7 @@ export default function Layout() {
                 try {
                   window.localStorage.removeItem(AUTH_JWT_STORAGE_KEY);
                   window.localStorage.removeItem(ACTIVE_KEY);
+                  window.localStorage.removeItem(ONBOARDING_SESSION_STORAGE_KEY);
                 } catch {
                   // ignore
                 }

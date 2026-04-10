@@ -88,6 +88,9 @@ export const API_ROUTES = {
     messageBackground: '/api/v1/ai-chat/message/background',
     messages: '/api/v1/ai-chat/messages',
     conversations: '/api/v1/ai-chat/conversations',
+    playbookHistory: '/api/v1/ai-chat/playbook-history',
+    playbookRun: (runId: string) =>
+      `/api/v1/ai-chat/playbook-runs/${encodeURIComponent(runId)}`,
     newConversation: '/api/v1/ai-chat/conversations',
     conversationById: (id: string) => `/api/v1/ai-chat/conversations/${encodeURIComponent(id)}`,
     skills: '/api/v1/ai-chat/skills',

@@ -6,6 +6,7 @@ import MobileBlocker from './components/MobileBlocker';
 import { UiAgentsProvider } from './context/UiAgentsContext';
 import ChatPage from './pages/ai/ChatPage';
 import ConversationsPage from './pages/ai/ConversationsPage';
+import PlaybookRunPage from './pages/ai/PlaybookRunPage';
 import AgentsPage from './pages/ai/AgentsPage';
 import AgentContextsPage from './pages/ai/AgentContextsPage';
 import Layout from './components/ai/Layout';
@@ -70,6 +71,7 @@ function App() {
             <Route path="/payment" element={<PaymentPage />} />
             <Route path="/how-it-works" element={<HowItWorksPage />} />
             <Route path="/deep-analysis" element={<Navigate to="/payment" replace />} />
+            <Route path="/playbook/:runId" element={<PlaybookRunPage />} />
 
             <Route element={<Layout />}>
               <Route path="chat" element={<DefaultChat />} />

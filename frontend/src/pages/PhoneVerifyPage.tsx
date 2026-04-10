@@ -34,7 +34,8 @@ export default function PhoneVerifyPage() {
   const isLinkMode = mode === 'link';
   const rawNext = params.get('next') || '';
 
-  let next = '/chat';
+  // Default: onboarding homepage (not /chat, which sends empty users to /new).
+  let next = '/';
   try {
     const decoded = rawNext ? decodeURIComponent(rawNext) : '';
     if (decoded && decoded.length < 500 && !decoded.includes('/phone-verify')) {
@@ -292,7 +293,7 @@ export default function PhoneVerifyPage() {
 
           <button
             type="button"
-            onClick={() => navigate(isLinkMode ? '/account' : '/chat', { replace: true })}
+            onClick={() => navigate(isLinkMode ? '/account' : '/', { replace: true })}
             className="w-full rounded-lg border border-zinc-700 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
           >
             Cancel

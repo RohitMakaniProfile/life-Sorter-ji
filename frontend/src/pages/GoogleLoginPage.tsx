@@ -24,7 +24,8 @@ export default function GoogleLoginPage() {
   const mode = params.get('mode') || 'login'; // 'login' | 'link'
   const isLinkMode = mode === 'link';
 
-  let next = '/chat';
+  // Default: onboarding homepage (same as phone sign-in after logout).
+  let next = '/';
   try {
     const decoded = rawNext ? decodeURIComponent(rawNext) : '';
     if (
@@ -194,11 +195,11 @@ export default function GoogleLoginPage() {
                 navigate('/account', { replace: true });
               } else {
                 window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
-                navigate('/chat', { replace: true });
+                navigate('/', { replace: true });
               }
             }}
           >
-            {isLinkMode ? 'Cancel' : 'Back to chat'}
+            {isLinkMode ? 'Cancel' : 'Back to home'}
           </button>
         </div>
 
