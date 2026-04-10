@@ -1,17 +1,21 @@
 # TODO
 
-> **Updated:** 2026-04-08
+> **Updated:** 2026-04-10
 
 ---
 
 ## Harsh
 
-- [ ] Add pypika to backend and define all postgres queries using pypika (~4h) <!-- id:h1 -->
-  - Install `pypika` package in requirements.txt
-  - Refactor all raw SQL queries to use pypika query builder
-  - Define queries in each table's respective file
+- [ ] GCP Cloud Run graceful deployment for active LLM streams (~3h) <!-- id:h7 -->
+  - Configure Cloud Run to keep old revision alive during new deployments
+  - New revision goes live and receives new traffic immediately
+  - Old revision continues serving active HTTP streams until completion
+  - Set traffic migration: 100% to new, but old stays alive for in-flight requests
+  - Auto-terminate old revision after 2 hours (all streams < 15 min)
+  - Use `--no-traffic` flag + gradual traffic shift or revision tags
+  - Document the deployment process for future reference
 
-- [ ] API endpoint to fetch playbook content from DB (~2h) <!-- id:h2 -->
+- [x] API endpoint to fetch playbook content from DB (~2h) <!-- id:h2 -->
   - `GET /api/v1/onboarding/playbook?session_id=xxx`
   - Auth: JWT `user_id` if available, fallback to `session_id`
   - Query `playbook_runs`, return `{ content, status, playbookData }`
@@ -24,7 +28,7 @@
   - Track checkpoints: `approved_at`, `first_token_at`, `completed_at`
   - Store in database for future analysis
 
-- [ ] Move all LLM system prompts into `system_config` DB table (~4h) <!-- id:h5 -->
+- [x] Move all LLM system prompts into `system_config` DB table (~4h) <!-- id:h5 -->
   - Identify all hardcoded system prompts in backend services
   - Add config entries with `type: "markdown"` for prompts
 
@@ -38,6 +42,11 @@
 
 ## Rohit
 
+- [x] Add pypika to backend and define all postgres queries using pypika (~4h) <!-- id:h1 -->
+  - Install `pypika` package in requirements.txt
+  - Refactor all raw SQL queries to use pypika query builder
+  - Define queries in each table's respective file
+-
 - [ ] Attach onboarding row to conversation row (~2h) <!-- id:r1 -->
   - (Already implemented - needs testing, bug fixes, deploy & verify)
 
