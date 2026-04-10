@@ -14,6 +14,47 @@ const formatSectionMarkdown = (text: string) => {
   return r;
 };
 
+// ── Context Brief parser ──
+const CONTEXT_SECTION_META: Record<string, { icon: string; color: string; bg: string; border: string }> = {
+  'Company Snapshot': { icon: '🏢', color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe' },
+  'Goal':             { icon: '🎯', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+  'Where They Stand': { icon: '📊', color: '#065f46', bg: '#f0fdf4', border: '#bbf7d0' },
+  'Website Read':     { icon: '🌐', color: '#b45309', bg: '#fffbeb', border: '#fde68a' },
+  'What the Data Implies': { icon: '💡', color: '#dc2626', bg: '#fff8f8', border: '#fecaca' },
+};
+
+type ContextItem = { type: 'kv'; key: string; value: string } | { type: 'text'; text: string };
+interface ContextSection {
+  title: string; icon: string; color: string; bg: string; border: string;
+  items: ContextItem[];
+}
+
+const parseContextBrief = (raw: string): ContextSection[] => {
+  if (!raw) return [];
+  const lines = raw.split('\n').map(l => l.trim()).filter(l => l && !/^business context brief$/i.test(l));
+  const sections: ContextSection[] = [];
+  let current: ContextSection | null = null;
+
+  for (const line of lines) {
+    const clean = line.replace(/\*\*/g, '').trim();
+    const sectionKey = Object.keys(CONTEXT_SECTION_META).find(k => clean === k);
+    if (sectionKey) {
+      current = { title: sectionKey, ...CONTEXT_SECTION_META[sectionKey], items: [] };
+      sections.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0 && colonIdx < 55 && !line.startsWith('-')) {
+      const key = line.slice(0, colonIdx).replace(/\*\*/g, '').trim();
+      const value = line.slice(colonIdx + 1).trim();
+      if (key && value) { current.items.push({ type: 'kv', key, value }); continue; }
+    }
+    current.items.push({ type: 'text', text: line });
+  }
+  return sections;
+};
+
 // ── Parse playbook text into structured steps ──
 const PRIORITY_ORDER = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
@@ -231,10 +272,26 @@ export interface PlaybookData {
   icpCard?: string;
 }
 
-const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
-  const [phase, setPhase] = useState<'verdict' | 'quickwin' | 'playbook'>('verdict');
+const PlaybookViewer = ({
+  playbookData,
+  initialPhase,
+  phase: controlledPhase,
+  onPhaseChange,
+}: {
+  playbookData: PlaybookData;
+  initialPhase?: 'verdict' | 'quickwin' | 'playbook';
+  phase?: 'verdict' | 'quickwin' | 'playbook';
+  onPhaseChange?: (phase: 'verdict' | 'quickwin' | 'playbook') => void;
+}) => {
+  const [internalPhase, setInternalPhase] = useState<'verdict' | 'quickwin' | 'playbook'>(initialPhase ?? 'verdict');
+  const phase = controlledPhase ?? internalPhase;
+  const setPhase = (p: 'verdict' | 'quickwin' | 'playbook') => {
+    setInternalPhase(p);
+    onPhaseChange?.(p);
+  };
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [checks, setChecks] = useState<Record<string, boolean>>({});
+  const [contextBriefOpen, setContextBriefOpen] = useState(false);
 
   const phases: Array<'verdict' | 'quickwin' | 'playbook'> = ['verdict', 'quickwin', 'playbook'];
   const phaseLabels = { verdict: 'The Verdict', quickwin: 'Quick Win', playbook: 'Full Playbook' };
@@ -247,6 +304,8 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
   const bigBuildSection = parseAuditSection(audit, 'Big Build');
   const messagingGaps = parseAuditMessagingGaps(audit);
 
+  const contextBrief = playbookData.contextBrief || '';
+  const contextBriefSections = parseContextBrief(contextBrief);
   const playbookText = playbookData.playbook || '';
   const { steps, checklist } = parsePlaybookSteps(playbookText);
   const playbookTitle = parsePlaybookTitle(playbookText);
@@ -407,6 +466,80 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
       {/* ── QUICK WIN TAB ── */}
       {phase === 'quickwin' && (
         <div>
+          {contextBriefSections.length > 0 && (
+            <div style={{
+              background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
+              marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', overflow: 'hidden',
+            }}>
+              {/* Accordion header */}
+              <div
+                onClick={() => setContextBriefOpen(o => !o)}
+                style={{
+                  padding: '13px 16px', cursor: 'pointer', userSelect: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: contextBriefOpen ? '#faf5ff' : '#fff',
+                  borderBottom: contextBriefOpen ? '1px solid #ede9fe' : 'none',
+                  transition: 'background .2s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '1rem' }}>📋</span>
+                  <div>
+                    <div style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>About This Business</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#111827', marginTop: 1 }}>Business Context</div>
+                  </div>
+                </div>
+                <div style={{
+                  fontSize: 12, color: '#9ca3af', flexShrink: 0,
+                  transform: contextBriefOpen ? 'rotate(180deg)' : 'rotate(0)',
+                  transition: 'transform .25s',
+                }}>▾</div>
+              </div>
+
+              {/* Accordion body */}
+              {contextBriefOpen && (
+                <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {contextBriefSections.map((section, si) => (
+                    <div key={si} style={{
+                      borderRadius: 10, border: `1px solid ${section.border}`,
+                      background: section.bg, overflow: 'hidden',
+                    }}>
+                      {/* Section header */}
+                      <div style={{
+                        padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
+                        borderBottom: `1px solid ${section.border}`,
+                      }}>
+                        <span style={{ fontSize: '0.9rem' }}>{section.icon}</span>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: section.color, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                          {section.title}
+                        </span>
+                      </div>
+
+                      {/* Section items */}
+                      <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                        {section.items.map((item, ii) => (
+                          item.type === 'kv' ? (
+                            <div key={ii} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                              <span style={{
+                                fontSize: 10, fontWeight: 700, color: section.color,
+                                minWidth: 110, flexShrink: 0, lineHeight: 1.6, paddingTop: 1,
+                              }}>{item.key}</span>
+                              <span style={{ fontSize: 12, color: '#374151', lineHeight: 1.6, flex: 1 }}>{item.value}</span>
+                            </div>
+                          ) : (
+                            <p key={ii} style={{ margin: 0, fontSize: 12, color: '#4b5563', lineHeight: 1.7 }}>
+                              {item.text}
+                            </p>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {quickWinSection ? (
             <div style={{
               background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb',
@@ -505,6 +638,12 @@ const PlaybookViewer = ({ playbookData }: { playbookData: PlaybookData }) => {
               <div style={{ marginLeft: 'auto', fontSize: 10, color: '#9ca3af', alignSelf: 'center' }}>
                 {steps.length} total · sorted by priority
               </div>
+            </div>
+          )}
+
+          {steps.length === 0 && !playbookText && (
+            <div style={{ textAlign: 'center', padding: '2rem 0', color: '#9ca3af', fontSize: 13 }}>
+              Generating your steps…
             </div>
           )}
 

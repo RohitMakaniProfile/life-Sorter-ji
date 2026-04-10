@@ -180,7 +180,25 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
         await send("stage", stage="generating", label="Writing your playbook...")
 
         tools_res = get_tools_for_q1_q2_q3(outcome=outcome, domain=domain, task=task, limit=10)
-        recommended_tools = build_tools_toon((tools_res.get("tools") or []))
+        if isinstance(tools_res, str):
+            try:
+                tools_res = json.loads(tools_res)
+            except Exception:
+                logger.warning("Tool lookup returned non-JSON string; falling back to empty tools")
+                tools_res = {}
+
+        if isinstance(tools_res, dict):
+            raw_tools = tools_res.get("tools")
+        elif isinstance(tools_res, list):
+            raw_tools = tools_res
+        else:
+            raw_tools = []
+
+        if not isinstance(raw_tools, list):
+            raw_tools = []
+
+        safe_tools = [t for t in raw_tools if isinstance(t, dict)]
+        recommended_tools = build_tools_toon(safe_tools)
 
         # Run Agent A and Agent E in parallel (E is best-effort).
         agent_a_task = run_agent_a_merged(

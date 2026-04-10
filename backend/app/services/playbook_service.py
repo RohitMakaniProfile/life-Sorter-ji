@@ -606,7 +606,7 @@ def _build_playbook_input(
     business_profile: dict[str, Any],
     rca_history: list[dict[str, str]],
     rca_summary: str,
-    crawl_summary: dict[str, Any],
+    crawl_summary: str | dict[str, Any],
     scale_answers: dict[str, Any],
     gap_answers: str = "",
     rca_handoff: str = "",
@@ -658,10 +658,14 @@ def _build_playbook_input(
     if rca_summary:
         parts.append(f"\nROOT_CAUSE:\n{rca_summary}")
 
-    # Crawl data — compact bullets (remove indent whitespace)
-    if crawl_summary and crawl_summary.get("points"):
+    # Crawl data — support both plain text web_summary and legacy dict-with-points shape
+    if isinstance(crawl_summary, str):
+        crawl_text = crawl_summary.strip()
+        if crawl_text:
+            parts.append(f"\nCRAWL:\n{crawl_text}")
+    elif isinstance(crawl_summary, dict) and crawl_summary.get("points"):
         pts = crawl_summary["points"]
-        parts.append("\nCRAWL[{}]:\n".format(len(pts)) + "\n".join(pts))
+        parts.append("\nCRAWL[{}]:\n".format(len(pts)) + "\n".join(str(p) for p in pts))
 
     # Gap answers
     if gap_answers:

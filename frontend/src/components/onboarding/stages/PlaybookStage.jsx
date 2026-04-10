@@ -2,6 +2,32 @@ import { useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import PlaybookViewer from '../../PlaybookViewer';
 
+const SECTION_DELIMITERS = {
+  context_brief: '---SECTION:context_brief---',
+  website_audit: '---SECTION:website_audit---',
+  playbook: '---SECTION:playbook---',
+};
+
+function extractStreamSections(text) {
+  const positions = [];
+  for (const [key, delimiter] of Object.entries(SECTION_DELIMITERS)) {
+    const idx = text.indexOf(delimiter);
+    if (idx !== -1) positions.push({ idx, key, delimiter });
+  }
+  positions.sort((a, b) => a.idx - b.idx);
+
+  const sections = { context_brief: '', website_audit: '', playbook: '' };
+  for (let i = 0; i < positions.length; i++) {
+    const { key, delimiter, idx } = positions[i];
+    const start = idx + delimiter.length;
+    const end = i + 1 < positions.length ? positions[i + 1].idx : text.length;
+    sections[key] = text.slice(start, end).trim();
+  }
+  // If no delimiters found, treat entire text as playbook content
+  if (positions.length === 0) sections.playbook = text;
+  return sections;
+}
+
 export default function PlaybookStage({
   showGapQuestions,
   gapQuestions,
@@ -23,6 +49,38 @@ export default function PlaybookStage({
 }) {
   const activeGap = Array.isArray(gapQuestions) ? gapQuestions[gapCurrentIndex] : null;
   const streamContainerRef = useRef(null);
+
+  // Auto-switch tab as stream sections arrive — only until user manually switches
+  const [streamTab, setStreamTab] = useState('verdict');
+  const userSwitchedTabRef = useRef(false);
+  const sectionsSeenRef = useRef({ website_audit: false, playbook: false });
+
+  useEffect(() => {
+    if (!playbookStreaming) {
+      // Reset on each new stream
+      userSwitchedTabRef.current = false;
+      sectionsSeenRef.current = { website_audit: false, playbook: false };
+      setStreamTab('verdict');
+      return;
+    }
+  }, [playbookStreaming]);
+
+  useEffect(() => {
+    if (!playbookText || playbookDone || userSwitchedTabRef.current) return;
+    const sections = extractStreamSections(playbookText);
+    if (sections.playbook && !sectionsSeenRef.current.playbook) {
+      sectionsSeenRef.current.playbook = true;
+      setStreamTab('playbook');
+    } else if (sections.website_audit && !sectionsSeenRef.current.website_audit) {
+      sectionsSeenRef.current.website_audit = true;
+      setStreamTab('verdict');
+    }
+  }, [playbookText, playbookDone]);
+
+  const handleStreamTabChange = (tab) => {
+    userSwitchedTabRef.current = true;
+    setStreamTab(tab);
+  };
   // true = auto-scroll is active; false = user scrolled up and locked it
   const autoScrollEnabledRef = useRef(true);
   // prevents the scroll listener from reacting to our own programmatic scrolls
@@ -155,18 +213,6 @@ export default function PlaybookStage({
             <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
           )}
 
-          {!playbookDone && !playbookText && (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-20">
-              <button
-                type="button"
-                onClick={() => setShowCancelModal(true)}
-                className="cursor-pointer rounded-lg border border-white/15 bg-[#0d0d0d]/80 backdrop-blur-sm px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.08] hover:text-white/80"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-
           {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
             <div className="pt-10 text-center">
               <p className="m-0 text-sm text-white/50">
@@ -182,34 +228,59 @@ export default function PlaybookStage({
             </div>
           )}
 
-          {playbookText && !playbookDone && (
-            <>
-              <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
-                <PlaybookViewer
-                  playbookData={{
-                    playbook: `${playbookText}\n\n▍`,
-                    websiteAudit: playbookResult?.website_audit || '',
-                    contextBrief: playbookResult?.context_brief || '',
-                    icpCard: playbookResult?.icp_card || '',
-                  }}
-                />
-              </div>
-              <div className="mb-6 flex justify-center">
+          {/* During streaming: show PlaybookViewer once website_audit or playbook section is available */}
+          {playbookText && !playbookDone && (() => {
+            const sections = extractStreamSections(playbookText);
+            const hasViewer = sections.website_audit || sections.playbook;
+
+            if (hasViewer) {
+              return (
+                <>
+                  <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
+                    <PlaybookViewer
+                      phase={streamTab}
+                      onPhaseChange={handleStreamTabChange}
+                      playbookData={{
+                        playbook: sections.playbook ? `${sections.playbook}\n\n▍` : '',
+                        websiteAudit: sections.website_audit,
+                        contextBrief: sections.context_brief,
+                        icpCard: '',
+                      }}
+                    />
+                  </div>
+                  <div className="mb-6 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowCancelModal(true)}
+                      className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              );
+            }
+
+            // Still in context_brief phase — show loading
+            return (
+              <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-3">
+                <div className="text-sm text-white/40">Analysing your business…</div>
                 <button
                   type="button"
                   onClick={() => setShowCancelModal(true)}
-                  className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
+                  className="cursor-pointer rounded-lg border border-white/15 bg-[#0d0d0d]/80 backdrop-blur-sm px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.08] hover:text-white/80"
                 >
                   Cancel
                 </button>
               </div>
-            </>
-          )}
+            );
+          })()}
 
           {playbookDone && (
             <>
               <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
                 <PlaybookViewer
+                  initialPhase="playbook"
                   playbookData={{
                     playbook: playbookResult?.playbook || playbookText,
                     websiteAudit: playbookResult?.website_audit || '',

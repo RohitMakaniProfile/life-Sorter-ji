@@ -16,17 +16,17 @@ import { Globe, Brain, FileSearch, Search, MessageCircleQuestion } from 'lucide-
 
 const ANALYSIS_MESSAGES = [
   {
-    id: 'visiting',
-    icon: Globe,
-    text: 'Agent is visiting your website...',
-    subtext: 'Exploring pages and gathering information',
-    phase: 'crawl',
-  },
-  {
     id: 'understanding',
     icon: Brain,
     text: 'Agent understood your answers...',
     subtext: 'Connecting your business context with goals',
+    phase: 'crawl',
+  },
+  {
+    id: 'visiting',
+    icon: Globe,
+    text: 'Agent is visiting your website...',
+    subtext: 'Exploring pages and gathering information',
     phase: 'crawl',
   },
   {
@@ -103,8 +103,21 @@ export default function AnalysisTransitionMessages({
 
     // If this is the last message in current phase and phase hasn't changed, stay longer
     const nextMessage = ANALYSIS_MESSAGES[currentIndex + 1];
-    if (nextMessage && nextMessage.phase !== message.phase && currentPhase === message.phase) {
+    const waitingAtPhaseBoundary = Boolean(
+      nextMessage &&
+      nextMessage.phase !== message.phase &&
+      currentPhase === message.phase,
+    );
+
+    if (waitingAtPhaseBoundary) {
       duration = 4000; // Wait longer at phase boundary
+    }
+
+    // Keep the last crawl message visible until RCA actually begins.
+    // Without this, the message fades out, but cannot advance yet, causing a blank screen.
+    if (waitingAtPhaseBoundary) {
+      setFadeState('in');
+      return undefined;
     }
 
     // Start fade out before transitioning

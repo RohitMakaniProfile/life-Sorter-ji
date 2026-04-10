@@ -936,7 +936,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <div className="flex min-h-[50vh] flex-col items-center justify-center px-4">
           <div className="flex flex-col items-center text-center">
@@ -956,7 +956,7 @@ export default function OnboardingApp() {
           <DeveloperTaskStreamsPanel
             onboardingId={onboardingIdRef.current}
             userId={null}
-            taskTypes={['crawl', 'playbook/onboarding-generate']}
+            taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
           />
           <TransitionMessages
             onComplete={handleTransitionComplete}
@@ -971,7 +971,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <PlaybookStage
           showGapQuestions={showGapQuestions}
@@ -1002,7 +1002,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <CompleteStage error={error} onClearError={clearError} onDeepAnalysis={handleDeepAnalysis} />
       </StageLayout>
@@ -1017,7 +1017,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <DiagnosticStage
           currentQuestion={currentQuestion}
@@ -1048,7 +1048,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <AnalysisTransitionMessages
           crawlStreaming={crawlStreaming}
@@ -1067,7 +1067,7 @@ export default function OnboardingApp() {
         <DeveloperTaskStreamsPanel
           onboardingId={onboardingIdRef.current}
           userId={null}
-          taskTypes={['crawl', 'playbook/onboarding-generate']}
+          taskTypes={['crawl', 'playbook/onboarding-generate-v2']}
         />
         <DeeperDiveStage
           scaleQuestions={scaleQuestions}

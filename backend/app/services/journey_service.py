@@ -437,11 +437,11 @@ async def _playbook_start(acc: dict[str, Any]) -> dict[str, Any]:
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import TASK_STREAM_REGISTRY
 
-    sid = str(acc.get("onboardingSessionId") or "").strip()
-    if not sid:
+    onboarding_id = str(acc.get("onboardingSessionId") or "").strip()
+    if not onboarding_id:
         return _complete_message(acc)
 
-    task_type = "playbook/onboarding-generate"
+    task_type = "playbook/onboarding-generate-v2"
     task_fn = TASK_STREAM_REGISTRY.get(task_type)
     if not task_fn:
         return _complete_message(acc)
@@ -451,8 +451,8 @@ async def _playbook_start(acc: dict[str, Any]) -> dict[str, Any]:
         started = await service.start_task_stream(
             task_type=task_type,
             task_fn=task_fn,
-            payload={"session_id": sid},
-            session_id=sid,
+            payload={"onboarding_id": onboarding_id},
+            onboarding_id=onboarding_id,
             user_id=None,
             resume_if_exists=True,
         )
