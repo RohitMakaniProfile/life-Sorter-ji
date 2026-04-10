@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -12,7 +11,7 @@ from pypika.terms import Parameter
 from app.db import get_pool
 from app.sql_builder import build_query
 from app.services.instant_tool_service import get_tools_for_q1_q2_q3
-from app.services.playbook_service import build_tools_toon, run_agent_a_merged, run_agent_c_stream, run_agent_e_standalone
+from app.services.playbook_service import build_tools_toon, run_single_prompt_stream
 from app.task_stream.registry import register_task_stream
 
 logger = structlog.get_logger()
@@ -64,18 +63,22 @@ def _coerce_gap_answers_text(value: Any) -> str:
     return raw
 
 
-
 @register_task_stream("playbook/onboarding-generate")
 async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Onboarding-native playbook generator.
+    Single-prompt playbook generator.
+
+    
+    Uses one streaming LLM call with the prompt from prompts table (slug: "playbook").
+    Output is split server-side by section delimiters into context_brief,
+    website_audit, and playbook.
 
     Input payload:
       - onboarding_id: str (required)
 
     Emits:
       - stage events
-      - token events from Agent C
+      - token events (full stream including section delimiters)
       - done with { playbook, website_audit, context_brief, icp_card }
     """
     onboarding_id = str(payload.get("onboarding_id") or payload.get("session_id") or "").strip()
@@ -96,7 +99,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                 linked_sid = await conn.fetchval(linked_sid_q.sql, *linked_sid_q.params)
                 onboarding_id = str(linked_sid or "").strip()
             if not onboarding_id:
-                raise ValueError("onboarding_id or linked user_id is required for playbook/onboarding-generate")
+                raise ValueError("onboarding_id or linked user_id is required")
 
             onboarding_q = build_query(
                 PostgreSQLQuery.from_(onboarding_t)
@@ -138,23 +141,19 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             rca_summary = str(onboarding.get("rca_summary") or "")
             rca_handoff = str(onboarding.get("rca_handoff") or "")
             gap_answers = _coerce_gap_answers_text(onboarding.get("gap_answers"))
-
             web_summary = str(onboarding.get("web_summary") or "")
 
-            # Create a playbook_runs row (running).
-            onboarding_snapshot = json.dumps(
-                {
-                    "outcome": outcome,
-                    "domain": domain,
-                    "task": task,
-                    "website_url": website_url,
-                    "scale_answers": business_profile,
-                    "rca_qa": rca_qa,
-                    "rca_summary": rca_summary,
-                    "rca_handoff": rca_handoff,
-                    "gap_answers": gap_answers,
-                }
-            )
+            onboarding_snapshot = json.dumps({
+                "outcome": outcome,
+                "domain": domain,
+                "task": task,
+                "website_url": website_url,
+                "scale_answers": business_profile,
+                "rca_qa": rca_qa,
+                "rca_summary": rca_summary,
+                "rca_handoff": rca_handoff,
+                "gap_answers": gap_answers,
+            })
             crawl_snapshot = json.dumps({"web_summary": web_summary})
             playbook_run = await conn.fetchrow(
                 "INSERT INTO playbook_runs (session_id, user_id, status, onboarding_snapshot, crawl_snapshot) "
@@ -200,8 +199,10 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
         safe_tools = [t for t in raw_tools if isinstance(t, dict)]
         recommended_tools = build_tools_toon(safe_tools)
 
-        # Run Agent A and Agent E in parallel (E is best-effort).
-        agent_a_task = run_agent_a_merged(
+        async def _on_token(token: str) -> None:
+            await send("token", token=token)
+
+        result = await run_single_prompt_stream(
             outcome_label=_outcome_label(outcome),
             domain=domain,
             task=task,
@@ -209,46 +210,20 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             rca_history=rca_history,
             rca_summary=rca_summary,
             crawl_summary=web_summary,
+            recommended_tools=recommended_tools,
             gap_answers=gap_answers,
             rca_handoff=rca_handoff,
-        )
-        agent_e_task = run_agent_e_standalone(
-            outcome_label=_outcome_label(outcome),
-            domain=domain,
-            task=task,
-            business_profile=business_profile,
-            rca_history=rca_history,
-            crawl_summary=web_summary,
-            crawl_raw={},
-        )
-
-        agent_a, agent_e = await asyncio.gather(agent_a_task, agent_e_task, return_exceptions=True)
-        agent_a_output = "" if isinstance(agent_a, Exception) else (agent_a.get("output") or "")
-        agent_e_output = "" if isinstance(agent_e, Exception) else (agent_e.get("output") or "")
-
-        async def _on_token(token: str) -> None:
-            await send("token", token=token)
-
-        cd_result = await run_agent_c_stream(
-            agent_a_output=agent_a_output,
-            gap_answers=gap_answers,
-            recommended_tools=recommended_tools,
-            task=task,
             on_token=_on_token,
         )
 
         result_payload = {
-            "playbook": cd_result.get("agent_c_playbook", ""),
-            "website_audit": agent_e_output,
-            "context_brief": agent_a_output,
+            "playbook": result["playbook"],
+            "website_audit": result["website_audit"],
+            "context_brief": result["context_brief"],
             "icp_card": "",
         }
 
-        latencies = {
-            "agent_a": 0 if isinstance(agent_a, Exception) else int(agent_a.get("latency_ms") or 0),
-            "agent_c": int(cd_result.get("agent_c_latency_ms") or 0),
-            "agent_e": 0 if isinstance(agent_e, Exception) else int(agent_e.get("latency_ms") or 0),
-        }
+        latencies = {"single_prompt": result["latency_ms"]}
 
         async with pool.acquire() as conn:
             await conn.execute(
@@ -279,12 +254,10 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             )
             await conn.execute(set_onboarding_complete_q.sql, *set_onboarding_complete_q.params)
 
-        await asyncio.sleep(0)
         logger.info("playbook/onboarding-generate done", onboarding_id=onboarding_id, playbook_run_id=str(playbook_run_id))
         return result_payload
 
     except Exception as exc:
-        # Update onboarding and playbook_runs to reflect error state
         error_message = str(exc)
         logger.error("playbook/onboarding-generate failed", onboarding_id=onboarding_id, error=error_message)
         try:
@@ -310,5 +283,4 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
                     await conn.execute(set_onboarding_error_q.sql, *set_onboarding_error_q.params)
         except Exception as db_err:
             logger.error("playbook/onboarding-generate error update failed", error=str(db_err))
-        # Re-raise to let task stream service handle the error event
         raise

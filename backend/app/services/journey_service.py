@@ -327,106 +327,7 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
 # ── gap questions ──────────────────────────────────────────────────────────────
 
 async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
-    """Run Phase 0 gap questions, or start playbook if none needed."""
-    from app.db import get_pool
-    from app.services.playbook_service import run_phase0_gap_questions
-
-    sid = str(acc.get("onboardingSessionId") or "").strip()
-    if not sid:
-        return await _playbook_start(acc)
-
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        load_gap_ctx_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.id,
-                onboarding_t.outcome,
-                onboarding_t.domain,
-                onboarding_t.task,
-                onboarding_t.scale_answers,
-                onboarding_t.rca_qa,
-                onboarding_t.rca_summary,
-                onboarding_t.rca_handoff,
-            )
-            .where(onboarding_t.session_id == Parameter("%s")),
-            [sid],
-        )
-        row = await conn.fetchrow(load_gap_ctx_q.sql, *load_gap_ctx_q.params)
-
-    if not row:
-        return await _playbook_start(acc)
-
-    onboarding_id = row.get("id")
-    outcome = str(row.get("outcome") or "")
-    domain = str(row.get("domain") or "")
-    task = str(row.get("task") or "")
-    scale_answers = _as_dict(row.get("scale_answers"))
-    rca_qa = _as_list(row.get("rca_qa"))
-    rca_history = [
-        {"question": str(it.get("question") or ""), "answer": str(it.get("answer") or "")}
-        for it in rca_qa
-        if isinstance(it, dict) and it.get("answer") not in (None, "")
-    ]
-    rca_summary = str(row.get("rca_summary") or "")
-    rca_handoff = str(row.get("rca_handoff") or "")
-    outcome_label = _OUTCOME_LABEL.get(outcome, "")
-
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        set_playbook_starting_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.playbook_status, "starting")
-            .set(onboarding_t.playbook_started_at, fn.Coalesce(onboarding_t.playbook_started_at, fn.Now()))
-            .set(onboarding_t.playbook_error, "")
-            .set(onboarding_t.updated_at, fn.Now())
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        await conn.execute(set_playbook_starting_q.sql, *set_playbook_starting_q.params)
-
-    try:
-        phase0 = await run_phase0_gap_questions(
-            outcome_label=outcome_label,
-            domain=domain,
-            task=task,
-            business_profile=scale_answers,
-            rca_history=rca_history,
-            rca_summary=rca_summary,
-            crawl_summary={},
-            rca_handoff=rca_handoff,
-        )
-        gap_text = str(phase0.get("gap_questions_text") or "")
-    except Exception:
-        gap_text = ""
-
-    from app.routers.onboarding import _parse_gap_questions
-    parsed = _parse_gap_questions(gap_text) if gap_text else []
-
-    pool = get_pool()
-    if parsed:
-        async with pool.acquire() as conn:
-            set_gap_questions_q = build_query(
-                PostgreSQLQuery.update(onboarding_t)
-                .set(onboarding_t.gap_questions, Parameter("%s"))
-                .set(onboarding_t.playbook_status, "awaiting_gap_answers")
-                .set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id == Parameter("%s")),
-                [json.dumps(parsed), onboarding_id],
-            )
-            await conn.execute(set_gap_questions_q.sql, *set_gap_questions_q.params)
-        return _gap_question_message(parsed[0], 0, parsed, acc)
-
-    async with pool.acquire() as conn:
-        clear_gap_questions_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.gap_questions, Parameter("%s"))
-            .set(onboarding_t.playbook_status, "ready")
-            .set(onboarding_t.updated_at, fn.Now())
-            .where(onboarding_t.id == Parameter("%s")),
-            [json.dumps([]), onboarding_id],
-        )
-        await conn.execute(clear_gap_questions_q.sql, *clear_gap_questions_q.params)
+    """Gap questions are now handled via the REST API (/gap-questions/start). Go straight to playbook."""
     return await _playbook_start(acc)
 
 
@@ -441,7 +342,7 @@ async def _playbook_start(acc: dict[str, Any]) -> dict[str, Any]:
     if not onboarding_id:
         return _complete_message(acc)
 
-    task_type = "playbook/onboarding-generate-v2"
+    task_type = "playbook/onboarding-generate"
     task_fn = TASK_STREAM_REGISTRY.get(task_type)
     if not task_fn:
         return _complete_message(acc)

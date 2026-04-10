@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/services/taskStream';
 import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError } from '../../../api/services/taskStreamMonitor';
 
-const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate-v2';
+const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 const STORAGE_PLAYBOOK_STEP_REACHED = 'doable-claw-playbook-step-reached';
 const PARTIAL_PLAYBOOK_PREFIX = 'life-sorter-playbook-partial:';
 
