@@ -822,10 +822,8 @@ async def list_conversations(
             )
             rows = await conn.fetch(conversations_q.sql, *conversations_q.params)
         else:
-            conversations_q = build_query(
-                PostgreSQLQuery.from_(conversations_t).select("*").orderby(conversations_t.updated_at, order=Order.desc)
-            )
-            rows = await conn.fetch(conversations_q.sql, *conversations_q.params)
+            # No user_id and no session_id: never return all rows (cross-tenant leak).
+            rows = []
     out: list[dict[str, Any]] = []
     for r in rows:
         count = 0
