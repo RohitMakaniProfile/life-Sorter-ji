@@ -44,6 +44,12 @@ export default function HowItWorksPage() {
       pausedUntil = Date.now() + 2500;
     };
 
+    // Start from center so agent cards appear balanced on load.
+    const initialMax = Math.max(0, el.scrollWidth - el.clientWidth);
+    if (initialMax > 0) {
+      el.scrollLeft = initialMax / 2;
+    }
+
     const tick = () => {
       if (stopped) return;
       const max = Math.max(0, el.scrollWidth - el.clientWidth);
@@ -440,8 +446,8 @@ export default function HowItWorksPage() {
       </section>
 
       {/* CLAW AGENTS */}
-      <section id="agents" className="py-20 px-8">
-        <div className="max-w-[1100px] mx-auto">
+      <section id="agents" className="py-20 px-4 md:px-8">
+        <div className="w-full">
           <div className="text-xs font-mono uppercase tracking-[0.15em] text-[#857BFF] font-bold mb-3">100+ Claw agents</div>
           <h2 className="text-[clamp(1.75rem,3.5vw,2.5rem)] font-bold tracking-tight leading-[1.15] mb-4">
             One agent per task. Activate and go.
@@ -452,7 +458,7 @@ export default function HowItWorksPage() {
 
           <div
             ref={agentsScrollerRef}
-            className="flex gap-3 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-white/10"
+            className="flex w-full justify-center gap-3 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-white/10"
           >
             {[
               { name: 'SEO Claw', task: 'Rank higher on Google', color: '#857BFF' },
