@@ -29,7 +29,7 @@ async def run_standard_chat(
     conv = await get_or_create_conversation(
         conversation_id,
         agent_id="assistant",
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
 

@@ -18,9 +18,25 @@ from app.doable_claw_agent.stores import (
 )
 from app.sql_builder import build_query
 from app.skills.service import list_skills
+from app.services.journey_service import (
+    JOURNEY_STEP_OUTCOME,
+    JOURNEY_STEP_DOMAIN,
+    JOURNEY_STEP_TASK,
+    JOURNEY_STEP_URL,
+    JOURNEY_STEP_SCALE,
+    JOURNEY_STEP_DIAGNOSTIC,
+    JOURNEY_STEP_PRECISION,
+    JOURNEY_STEP_GAP,
+    JOURNEY_STEP_PLAYBOOK,
+    get_outcome_options,
+    get_domain_options,
+    get_task_options,
+    get_scale_question_by_id,
+)
 
 playbook_runs_t = Table("playbook_runs")
 onboarding_t = Table("onboarding")
+task_stream_streams_t = Table("task_stream_streams")
 
 
 def _as_list(value: Any) -> list[dict[str, Any]]:
@@ -35,11 +51,27 @@ def _as_list(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
 def _has_onboarding_markers(messages: list[dict[str, Any]]) -> bool:
     for msg in messages:
         step = str(msg.get("journeyStep") or "")
         mid = str(msg.get("messageId") or "")
-        if step.startswith("onboarding_") or mid.startswith("onboarding:"):
+        if step in (JOURNEY_STEP_OUTCOME, JOURNEY_STEP_DOMAIN, JOURNEY_STEP_TASK,
+                    JOURNEY_STEP_URL, JOURNEY_STEP_SCALE, JOURNEY_STEP_DIAGNOSTIC,
+                    JOURNEY_STEP_PRECISION, JOURNEY_STEP_GAP, JOURNEY_STEP_PLAYBOOK):
+            return True
+        if mid.startswith("onboarding:"):
             return True
     return False
 
@@ -49,6 +81,18 @@ async def _attach_onboarding_transcript(
     *,
     onboarding_session_id: str | None,
 ) -> list[dict[str, Any]]:
+    """
+    Convert onboarding table row into messages matching the business_problem_identifier
+    journey flow format. Messages include:
+    - Outcome question + answer
+    - Domain question + answer
+    - Task question + answer
+    - URL question + answer
+    - Scale questions + answers
+    - Diagnostic (RCA) questions + answers
+    - Precision questions + answers
+    - Gap questions + answers
+    """
     sid = str(onboarding_session_id or "").strip()
     if not sid:
         return messages
@@ -65,7 +109,12 @@ async def _attach_onboarding_transcript(
                 onboarding_t.task,
                 onboarding_t.website_url,
                 onboarding_t.gbp_url,
-                onboarding_t.questions_answers,
+                onboarding_t.scale_answers,
+                onboarding_t.rca_qa,
+                onboarding_t.precision_questions,
+                onboarding_t.precision_answers,
+                onboarding_t.gap_questions,
+                onboarding_t.gap_answers,
             )
             .where(onboarding_t.id == Parameter("%s"))
             .limit(1),
@@ -76,61 +125,297 @@ async def _attach_onboarding_transcript(
     if not row:
         return messages
 
-    summary = {
-        "role": "assistant",
-        "content": "Onboarding selections and Q&A imported into this conversation.",
-        "createdAt": now_iso(),
-        "journeyStep": "onboarding_summary",
-        "messageId": f"onboarding:summary:{sid}",
-        "journeySelections": {
-            "onboardingSessionId": sid,
-            "outcome": str(row.get("outcome") or ""),
-            "domain": str(row.get("domain") or ""),
-            "task": str(row.get("task") or ""),
-            "websiteUrl": str(row.get("website_url") or ""),
-            "gbpUrl": str(row.get("gbp_url") or ""),
-        },
-    }
-    onboarding_msgs: list[dict[str, Any]] = [summary]
-    qa = _as_list(row.get("questions_answers"))
-    for idx, item in enumerate(qa):
-        q = str(item.get("question") or "").strip()
-        a = str(item.get("answer") or "").strip()
-        if q:
-            onboarding_msgs.append(
-                {
-                    "role": "assistant",
-                    "content": q,
-                    "createdAt": now_iso(),
-                    "journeyStep": "onboarding_question",
-                    "messageId": f"onboarding:q:{sid}:{idx}",
-                }
-            )
-        if a:
-            onboarding_msgs.append(
-                {
-                    "role": "user",
-                    "content": a,
-                    "createdAt": now_iso(),
-                    "journeyStep": "onboarding_answer",
-                    "messageId": f"onboarding:a:{sid}:{idx}",
-                }
-            )
+    outcome = str(row.get("outcome") or "").strip()
+    domain = str(row.get("domain") or "").strip()
+    task = str(row.get("task") or "").strip()
+    website_url = str(row.get("website_url") or "").strip()
+    scale_answers = _as_dict(row.get("scale_answers"))
+    rca_qa = _as_list(row.get("rca_qa"))
+    precision_questions = _as_list(row.get("precision_questions"))
+    precision_answers = _as_list(row.get("precision_answers"))
+    gap_questions = _as_list(row.get("gap_questions"))
+    gap_answers_raw = str(row.get("gap_answers") or "").strip()
+
+    # Parse gap_answers (can be JSON dict like {"Q1": "A", "Q2": "B"})
+    gap_answers_map: dict[str, str] = {}
+    if gap_answers_raw:
+        try:
+            parsed = json.loads(gap_answers_raw)
+            if isinstance(parsed, dict):
+                gap_answers_map = {str(k): str(v) for k, v in parsed.items()}
+        except Exception:
+            pass
+
+    onboarding_msgs: list[dict[str, Any]] = []
+    created_at = now_iso()
+    acc: dict[str, Any] = {"onboardingSessionId": sid}
+
+    # ── Outcome Q&A ──
+    if outcome:
+        # Map outcome id to label
+        outcome_labels = {
+            "lead-generation": "Lead Generation",
+            "sales-retention": "Sales & Retention",
+            "business-strategy": "Business Strategy",
+            "save-time": "Save Time",
+        }
+        outcome_text = outcome_labels.get(outcome, outcome)
+
+        onboarding_msgs.append({
+            "role": "assistant",
+            "content": "What outcome are you looking to achieve?",
+            "options": get_outcome_options(),
+            "allowCustomAnswer": False,
+            "journeyStep": JOURNEY_STEP_OUTCOME,
+            "journeySelections": acc,
+            "kind": "final",
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:outcome:q",
+        })
+        onboarding_msgs.append({
+            "role": "user",
+            "content": outcome_text,
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:outcome:a",
+        })
+        acc["outcome"] = outcome
+
+    # ── Domain Q&A ──
+    if domain:
+        domain_options = get_domain_options(outcome) if outcome else None
+        onboarding_msgs.append({
+            "role": "assistant",
+            "content": "Which domain applies to your business?",
+            "options": domain_options or [],
+            "allowCustomAnswer": False,
+            "journeyStep": JOURNEY_STEP_DOMAIN,
+            "journeySelections": acc,
+            "kind": "final",
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:domain:q",
+        })
+        onboarding_msgs.append({
+            "role": "user",
+            "content": domain,
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:domain:a",
+        })
+        acc["domain"] = domain
+
+    # ── Task Q&A ──
+    if task:
+        task_options = get_task_options(domain) if domain else None
+        onboarding_msgs.append({
+            "role": "assistant",
+            "content": "What's the specific task or challenge you want to address?",
+            "options": task_options or [],
+            "allowCustomAnswer": False,
+            "journeyStep": JOURNEY_STEP_TASK,
+            "journeySelections": acc,
+            "kind": "final",
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:task:q",
+        })
+        onboarding_msgs.append({
+            "role": "user",
+            "content": task,
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:task:a",
+        })
+        acc["task"] = task
+
+    # ── URL Q&A ──
+    if website_url:
+        onboarding_msgs.append({
+            "role": "assistant",
+            "content": "What's your website URL? (or type 'Skip' to continue without one)",
+            "options": ["Skip"],
+            "allowCustomAnswer": True,
+            "journeyStep": JOURNEY_STEP_URL,
+            "journeySelections": acc,
+            "kind": "final",
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:url:q",
+        })
+        onboarding_msgs.append({
+            "role": "user",
+            "content": website_url,
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:url:a",
+        })
+        acc["websiteUrl"] = website_url
+
+    # ── Scale Questions Q&A ──
+    if scale_answers:
+        for q_id, answer in scale_answers.items():
+            answer_text = ", ".join(answer) if isinstance(answer, list) else str(answer)
+
+            # Get the actual question from scale_questions.json
+            scale_q = get_scale_question_by_id(q_id)
+            if scale_q:
+                question_text = f"**{scale_q.get('question', q_id)}**"
+                options = scale_q.get("options") or []
+            else:
+                question_text = f"**{q_id}**"
+                options = []
+
+            onboarding_msgs.append({
+                "role": "assistant",
+                "content": question_text,
+                "options": options,
+                "allowCustomAnswer": False,
+                "journeyStep": JOURNEY_STEP_SCALE,
+                "journeySelections": {**acc, "scaleAnswers": scale_answers},
+                "kind": "final",
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:scale:{q_id}:q",
+            })
+            onboarding_msgs.append({
+                "role": "user",
+                "content": answer_text,
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:scale:{q_id}:a",
+            })
+        acc["scaleAnswers"] = scale_answers
+
+    # ── Diagnostic (RCA) Q&A ──
+    for idx, item in enumerate(rca_qa):
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        options = item.get("options") or []
+
+        if question:
+            onboarding_msgs.append({
+                "role": "assistant",
+                "content": question,
+                "options": options,
+                "allowCustomAnswer": True,
+                "journeyStep": JOURNEY_STEP_DIAGNOSTIC,
+                "journeySelections": acc,
+                "kind": "final",
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:diagnostic:{idx}:q",
+            })
+        if answer:
+            onboarding_msgs.append({
+                "role": "user",
+                "content": answer,
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:diagnostic:{idx}:a",
+            })
+
+    # ── Precision Q&A ──
+    for idx, pq in enumerate(precision_questions):
+        question = str(pq.get("question") or "").strip()
+        options = pq.get("options") or []
+
+        # Find matching answer
+        answer = ""
+        for pa in precision_answers:
+            if pa.get("question_index") == idx:
+                answer = str(pa.get("answer") or "").strip()
+                break
+
+        if question:
+            onboarding_msgs.append({
+                "role": "assistant",
+                "content": question,
+                "options": options,
+                "allowCustomAnswer": True,
+                "journeyStep": JOURNEY_STEP_PRECISION,
+                "journeySelections": acc,
+                "kind": "final",
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:precision:{idx}:q",
+            })
+        if answer:
+            onboarding_msgs.append({
+                "role": "user",
+                "content": answer,
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:precision:{idx}:a",
+            })
+
+    # ── Gap Q&A ──
+    for idx, gq in enumerate(gap_questions):
+        question = str(gq.get("question") or "").strip()
+        options = gq.get("options") or []
+        q_id = str(gq.get("id") or f"Q{idx+1}")
+
+        # Find matching answer from gap_answers_map
+        answer = gap_answers_map.get(q_id, "")
+        # Also try by index
+        if not answer:
+            for opt in options:
+                if opt.startswith(f"{answer})"):
+                    break
+
+        if question:
+            onboarding_msgs.append({
+                "role": "assistant",
+                "content": question,
+                "options": options,
+                "allowCustomAnswer": True,
+                "journeyStep": JOURNEY_STEP_GAP,
+                "journeySelections": acc,
+                "kind": "final",
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:gap:{idx}:q",
+            })
+        if answer:
+            # Convert answer key to full option text if possible
+            answer_text = answer
+            for opt in options:
+                if opt.startswith(f"{answer})"):
+                    answer_text = opt
+                    break
+            onboarding_msgs.append({
+                "role": "user",
+                "content": answer_text,
+                "createdAt": created_at,
+                "messageId": f"onboarding:{sid}:gap:{idx}:a",
+            })
+
+    # ── Playbook Placeholder ──
+    # Add the playbook placeholder message so _attach_playbook_content can attach
+    # the actual playbook content. This is needed because onboarding-based conversations
+    # don't have stored messages with the journeyStep == "playbook".
+    if outcome or domain or task:  # Only add if onboarding has some data
+        onboarding_msgs.append({
+            "role": "assistant",
+            "content": (
+                "Generating your personalised playbook — this may take a moment. "
+                "I'll show it here as soon as it's ready."
+            ),
+            "options": [],
+            "allowCustomAnswer": False,
+            "journeyStep": JOURNEY_STEP_PLAYBOOK,
+            "journeySelections": acc,
+            "kind": "final",
+            "createdAt": created_at,
+            "messageId": f"onboarding:{sid}:playbook:placeholder",
+        })
+
     return onboarding_msgs + messages
 
 
 async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Post-processor: if the last assistant message is the playbook placeholder
-    (journeyStep == "playbook"), look up the completed playbook from
-    playbook_runs and inject it as an additional assistant message.
+    Post-processor: if there's a playbook placeholder message (journeyStep == "playbook"),
+    either:
+    1. Attach the completed playbook content if available
+    2. Add stream status info (streamId, canRetry) so UI can show progress or retry button
+
+    Lookup strategy for playbook:
+    1. First try playbook_runs.session_id = onboarding_id (legacy/compatible)
+    2. Fallback: via onboarding.playbook_run_id FK
     """
     if not messages:
         return messages
 
     # Find the playbook placeholder message (scan from end)
     playbook_msg_idx: int | None = None
-    session_id: str = ""
+    onboarding_id: str = ""
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if (
@@ -141,10 +426,10 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
             sid = str(selections.get("onboardingSessionId") or "").strip()
             if sid:
                 playbook_msg_idx = i
-                session_id = sid
+                onboarding_id = sid
             break
 
-    if playbook_msg_idx is None or not session_id:
+    if playbook_msg_idx is None or not onboarding_id:
         return messages
 
     # Check if playbook content already exists as a subsequent message
@@ -158,7 +443,9 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
             return messages
 
     # Look up completed playbook from playbook_runs
+    # Strategy 1: session_id = onboarding_id (most playbooks use this)
     pool = get_pool()
+    row = None
     async with pool.acquire() as conn:
         fetch_playbook_q = build_query(
             PostgreSQLQuery.from_(playbook_runs_t)
@@ -172,52 +459,120 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
             .where(playbook_runs_t.session_id == Parameter("%s"))
             .orderby(playbook_runs_t.updated_at, order=Order.desc)
             .limit(1),
-            [session_id],
+            [onboarding_id],
         )
         row = await conn.fetchrow(fetch_playbook_q.sql, *fetch_playbook_q.params)
+        
+        # Strategy 2: If not found via session_id, try via onboarding.playbook_run_id FK
+        if not row or row["status"] != "complete":
+            fetch_via_fk_q = build_query(
+                PostgreSQLQuery.from_(onboarding_t)
+                .join(playbook_runs_t)
+                .on(onboarding_t.playbook_run_id == playbook_runs_t.id)
+                .select(
+                    playbook_runs_t.playbook,
+                    playbook_runs_t.website_audit,
+                    playbook_runs_t.context_brief,
+                    playbook_runs_t.icp_card,
+                    playbook_runs_t.status,
+                )
+                .where(onboarding_t.id == Parameter("%s"))
+                .limit(1),
+                [onboarding_id],
+            )
+            row = await conn.fetchrow(fetch_via_fk_q.sql, *fetch_via_fk_q.params)
 
-    if not row or row["status"] != "complete":
-        return messages
+    # If playbook is complete, inject it as a message
+    if row and row["status"] == "complete":
+        playbook_text = str(row["playbook"] or "").strip()
+        if playbook_text:
+            # Build the playbookData object matching the frontend PlaybookData interface
+            playbook_data: dict[str, str] = {
+                "playbook": playbook_text,
+                "websiteAudit": str(row["website_audit"] or "").strip(),
+                "contextBrief": str(row["context_brief"] or "").strip(),
+                "icpCard": str(row["icp_card"] or "").strip(),
+            }
 
-    playbook_text = str(row["playbook"] or "").strip()
-    if not playbook_text:
-        return messages
+            # Extract websiteUrl from the placeholder message's journeySelections
+            placeholder_selections = messages[playbook_msg_idx].get("journeySelections") or {}
+            website_url = str(placeholder_selections.get("websiteUrl") or "").strip()
 
-    # Build the playbookData object matching the frontend PlaybookData interface
-    playbook_data: dict[str, str] = {
-        "playbook": playbook_text,
-        "websiteAudit": str(row["website_audit"] or "").strip(),
-        "contextBrief": str(row["context_brief"] or "").strip(),
-        "icpCard": str(row["icp_card"] or "").strip(),
-    }
+            # Build cross-agent actions (e.g. "Do Deep Analysis" → research-orchestrator)
+            cross_agent_actions: list[dict[str, str]] = []
+            if website_url:
+                cross_agent_actions.append({
+                    "label": "Do Deep Analysis",
+                    "icon": "🔬",
+                    "agentId": "research-orchestrator",
+                    "initialMessage": f"Do deep analysis of {website_url}",
+                })
 
-    # Extract websiteUrl from the placeholder message's journeySelections
-    placeholder_selections = messages[playbook_msg_idx].get("journeySelections") or {}
-    website_url = str(placeholder_selections.get("websiteUrl") or "").strip()
+            # Inject the playbook as an additional assistant message right after the placeholder
+            playbook_content_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": playbook_text,
+                "createdAt": now_iso(),
+                "journeyStep": "playbook_content",
+                "playbookData": playbook_data,
+            }
+            if cross_agent_actions:
+                playbook_content_msg["crossAgentActions"] = cross_agent_actions
 
-    # Build cross-agent actions (e.g. "Do Deep Analysis" → research-orchestrator)
-    cross_agent_actions: list[dict[str, str]] = []
-    if website_url:
-        cross_agent_actions.append({
-            "label": "Do Deep Analysis",
-            "icon": "🔬",
-            "agentId": "research-orchestrator",
-            "initialMessage": f"Do deep analysis of {website_url}",
-        })
+            result = list(messages)
+            result.insert(playbook_msg_idx + 1, playbook_content_msg)
+            return result
 
-    # Inject the playbook as an additional assistant message right after the placeholder
-    playbook_content_msg: dict[str, Any] = {
-        "role": "assistant",
-        "content": playbook_text,
-        "createdAt": now_iso(),
-        "journeyStep": "playbook_content",
-        "playbookData": playbook_data,
-    }
-    if cross_agent_actions:
-        playbook_content_msg["crossAgentActions"] = cross_agent_actions
-
+    # Playbook not complete — check task stream status for retry/resume info
     result = list(messages)
-    result.insert(playbook_msg_idx + 1, playbook_content_msg)
+    async with pool.acquire() as conn:
+        stream_q = build_query(
+            PostgreSQLQuery.from_(task_stream_streams_t)
+            .select(
+                task_stream_streams_t.stream_id,
+                task_stream_streams_t.status,
+            )
+            .where(task_stream_streams_t.session_id == Parameter("%s"))
+            .where(task_stream_streams_t.task_type == "playbook/onboarding-generate")
+            .orderby(task_stream_streams_t.created_at, order=Order.desc)
+            .limit(1),
+            [onboarding_id],
+        )
+        stream_row = await conn.fetchrow(stream_q.sql, *stream_q.params)
+
+    # Update the placeholder message with stream status
+    placeholder = result[playbook_msg_idx]
+    if stream_row:
+        stream_id = str(stream_row["stream_id"] or "")
+        stream_status = str(stream_row["status"] or "")
+
+        placeholder["streamId"] = stream_id
+        placeholder["streamStatus"] = stream_status
+        # Also put streamId in journeySelections for frontend compatibility
+        if "journeySelections" in placeholder:
+            placeholder["journeySelections"]["streamId"] = stream_id
+
+        # If stream is in error/cancelled state, allow retry
+        if stream_status in ("error", "cancelled", "failed"):
+            placeholder["canRetry"] = True
+            placeholder["options"] = ["Retry Playbook"]
+            placeholder["content"] = (
+                "⚠️ Playbook generation failed. Click **Retry Playbook** to try again."
+            )
+        elif stream_status == "running":
+            placeholder["canRetry"] = False
+            # Keep the generating message
+        elif stream_status == "complete":
+            # Stream completed but playbook not in playbook_runs yet — might be race condition
+            placeholder["canRetry"] = False
+    else:
+        # No stream found — allow retry to start fresh
+        placeholder["canRetry"] = True
+        placeholder["options"] = ["Retry Playbook"]
+        placeholder["content"] = (
+            "⚠️ Playbook generation hasn't started. Click **Retry Playbook** to generate your playbook."
+        )
+
     return result
 
 
@@ -228,11 +583,12 @@ async def get_messages(
 ) -> dict[str, Any]:
     conv = await get_or_create_conversation(
         conversation_id,
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
+
     messages = conv.get("messages") or []
-    onboarding_sid = str(conv.get("onboardingSessionId") or session_id or "").strip() or None
+    onboarding_sid = str(conv.get("onboardingId") or session_id or "").strip() or None
     messages = await _attach_onboarding_transcript(messages, onboarding_session_id=onboarding_sid)
     messages = await _attach_playbook_content(messages)
     return {

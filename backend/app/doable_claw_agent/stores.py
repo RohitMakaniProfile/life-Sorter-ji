@@ -345,7 +345,7 @@ async def get_or_create_conversation(
     conversation_id: str | None,
     agent_id: str | None = None,
     *,
-    session_id: str | None = None,
+    onboarding_id: str | None = None,
     user_id: str | None = None,
 ) -> dict[str, Any]:
     existing = await get_conversation(conversation_id) if conversation_id else None
@@ -359,7 +359,7 @@ async def get_or_create_conversation(
         all_agents = await list_agents()
         selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
 
-    sid = (session_id or "").strip() or None
+    oid = (onboarding_id or "").strip() or None
     uid = (user_id or "").strip() or None
 
     pool = get_pool()
@@ -376,21 +376,21 @@ async def get_or_create_conversation(
             existing_for_user = await conn.fetchrow(existing_for_user_q.sql, *existing_for_user_q.params)
             if existing_for_user:
                 return await get_conversation(str(existing_for_user["id"])) or {}
-        elif sid:
-            existing_for_session_q = build_query(
+        elif oid:
+            existing_for_onboarding_q = build_query(
                 PostgreSQLQuery.from_(conversations_t)
                 .select(conversations_t.id)
-                .where(conversations_t.session_id == Parameter("%s"))
+                .where(conversations_t.onboarding_id == Parameter("%s"))
                 .where(conversations_t.user_id.isnull())
                 .orderby(conversations_t.updated_at, order=Order.desc)
                 .limit(1),
-                [sid],
+                [oid],
             )
-            existing_for_session = await conn.fetchrow(
-                existing_for_session_q.sql, *existing_for_session_q.params
+            existing_for_onboarding = await conn.fetchrow(
+                existing_for_onboarding_q.sql, *existing_for_onboarding_q.params
             )
-            if existing_for_session:
-                return await get_conversation(str(existing_for_session["id"])) or {}
+            if existing_for_onboarding:
+                return await get_conversation(str(existing_for_onboarding["id"])) or {}
 
     cid = str(uuid4())
     now = now_dt()
@@ -400,7 +400,6 @@ async def get_or_create_conversation(
             .columns(
                 conversations_t.id,
                 conversations_t.agent_id,
-                conversations_t.session_id,
                 conversations_t.onboarding_id,
                 conversations_t.user_id,
                 conversations_t.created_at,
@@ -413,16 +412,15 @@ async def get_or_create_conversation(
                 Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
-                Parameter("%s"),
             ),
-            [cid, selected_agent, sid, sid, uid, now, now],
+            [cid, selected_agent, oid, uid, now, now],
         )
         await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
         "agentId": selected_agent,
-        "onboardingSessionId": sid,
+        "onboardingId": oid,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -434,7 +432,7 @@ async def get_or_create_conversation(
 async def create_new_conversation(
     agent_id: str,
     *,
-    session_id: str | None = None,
+    onboarding_id: str | None = None,
     user_id: str | None = None,
 ) -> dict[str, Any]:
     """Always creates a brand-new conversation, never reuses an existing one."""
@@ -444,7 +442,7 @@ async def create_new_conversation(
         all_agents = await list_agents()
         selected_agent = all_agents[0]["id"] if all_agents else DEFAULT_AGENT_ID
 
-    sid = (session_id or "").strip() or None
+    oid = (onboarding_id or "").strip() or None
     uid = (user_id or "").strip() or None
     cid = str(uuid4())
     now = now_dt()
@@ -455,7 +453,6 @@ async def create_new_conversation(
             .columns(
                 conversations_t.id,
                 conversations_t.agent_id,
-                conversations_t.session_id,
                 conversations_t.onboarding_id,
                 conversations_t.user_id,
                 conversations_t.created_at,
@@ -468,16 +465,15 @@ async def create_new_conversation(
                 Parameter("%s"),
                 Parameter("%s"),
                 Parameter("%s"),
-                Parameter("%s"),
             ),
-            [cid, selected_agent, sid, sid, uid, now, now],
+            [cid, selected_agent, oid, uid, now, now],
         )
         await conn.execute(create_conversation_q.sql, *create_conversation_q.params)
 
     return {
         "id": cid,
         "agentId": selected_agent,
-        "onboardingSessionId": sid,
+        "onboardingId": oid,
         "messages": [],
         "createdAt": now,
         "updatedAt": now,
@@ -544,8 +540,7 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
     return {
         "id": conv["id"],
         "agentId": conv["agent_id"] or DEFAULT_AGENT_ID,
-        "sessionId": conv["session_id"],
-        "onboardingSessionId": conv.get("onboarding_id"),
+        "onboardingId": conv.get("onboarding_id"),
         "userId": conv["user_id"],
         "title": conv["title"] or None,
         "messages": [_message_from_row(m) for m in messages],
@@ -819,8 +814,8 @@ async def list_conversations(
                 PostgreSQLQuery.from_(conversations_t)
                 .select("*")
                 .where(
-                    (conversations_t.session_id == Parameter("%s"))
-                    | ((conversations_t.session_id == Parameter("%s")) & conversations_t.user_id.isnull())
+                    (conversations_t.onboarding_id == Parameter("%s"))
+                    | ((conversations_t.onboarding_id == Parameter("%s")) & conversations_t.user_id.isnull())
                 )
                 .orderby(conversations_t.updated_at, order=Order.desc),
                 [sid, sid],
@@ -846,8 +841,7 @@ async def list_conversations(
             {
                 "id": r["id"],
                 "agentId": r["agent_id"] or DEFAULT_AGENT_ID,
-                "sessionId": r["session_id"],
-                "onboardingSessionId": r.get("onboarding_id"),
+                "onboardingId": r.get("onboarding_id"),
                 "userId": r["user_id"],
                 "title": r["title"] or "New conversation",
                 "messageCount": count,

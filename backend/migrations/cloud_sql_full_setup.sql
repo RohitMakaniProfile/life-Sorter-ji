@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS onboarding (
     crawl_run_id     UUID,
     crawl_cache_key  TEXT,
     playbook_run_id  UUID,
+    conversation_id  TEXT,  -- Links to conversations table for Phase 2 access
 
     -- Crawl summary (generated from crawl service)
     web_summary      TEXT NOT NULL DEFAULT '',
@@ -99,6 +100,10 @@ CREATE TABLE IF NOT EXISTS onboarding (
 CREATE INDEX IF NOT EXISTS idx_onboarding_user_id
     ON onboarding (user_id)
     WHERE user_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_conversation_id
+    ON onboarding (conversation_id)
+    WHERE conversation_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS trg_onboarding_updated_at ON onboarding;
 CREATE TRIGGER trg_onboarding_updated_at

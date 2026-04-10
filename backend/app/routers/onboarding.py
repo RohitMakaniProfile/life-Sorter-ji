@@ -698,6 +698,43 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         )
         await conn.execute(playbook_start_q.sql, *playbook_start_q.params)
 
+    # Create conversation for the onboarding before playbook generation
+    # This ensures the playbook can be accessed later via conversations even if user leaves
+    user = require_request_user(request)
+    user_id = str(user.get("id") or "").strip() or None
+    from app.doable_claw_agent.stores import create_new_conversation
+    try:
+        conv = await create_new_conversation(
+            agent_id="business_problem_identifier",
+            onboarding_id=onboarding_id,
+            user_id=user_id,
+        )
+        conversation_id = conv.get("id")
+        logger.info(
+            "Created conversation for playbook generation",
+            onboarding_id=onboarding_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        # Update onboarding row with the conversation_id
+        if conversation_id:
+            async with pool.acquire() as conn:
+                update_conv_q = build_query(
+                    PostgreSQLQuery.update(onboarding_t)
+                    .set(onboarding_t.conversation_id, Parameter("%s"))
+                    .set(onboarding_t.updated_at, fn.CurTimestamp())
+                    .where(onboarding_t.id == Parameter("%s")),
+                    [conversation_id, onboarding_id],
+                )
+                await conn.execute(update_conv_q.sql, *update_conv_q.params)
+    except Exception as conv_err:
+        # Don't fail playbook generation if conversation creation fails
+        logger.warning(
+            "Failed to create conversation for playbook",
+            onboarding_id=onboarding_id,
+            error=str(conv_err),
+        )
+
     # Start the playbook generation task stream
     from app.task_stream.service import TaskStreamService
     from app.task_stream.registry import TASK_STREAM_REGISTRY

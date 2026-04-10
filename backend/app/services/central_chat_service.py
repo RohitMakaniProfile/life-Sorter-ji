@@ -93,7 +93,7 @@ async def run_message(payload: dict[str, Any]) -> dict[str, Any]:
     conv = await get_or_create_conversation(
         str(payload.get("conversationId") or "").strip() or None,
         resolved["agentId"],
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
     await append_message(conv["id"], "user", message)
@@ -184,7 +184,7 @@ async def run_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
     conv = await get_or_create_conversation(
         str(payload.get("conversationId") or "").strip() or None,
         resolved["agentId"],
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
     await append_message(conv["id"], "user", message)

@@ -224,9 +224,11 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
           lastMappedMsg?.role === 'assistant' &&
           (lastMappedMsg as any).journeyStep === 'playbook'
         ) {
-          const playbookStreamId = (lastMappedMsg as any).journeySelections?.streamId as string | undefined;
+          const playbookStreamId = ((lastMappedMsg as any).streamId || (lastMappedMsg as any).journeySelections?.streamId) as string | undefined;
           const playbookWebsiteUrl = (lastMappedMsg as any).journeySelections?.websiteUrl as string | undefined;
-          if (playbookStreamId) {
+          const streamStatus = (lastMappedMsg as any).streamStatus as string | undefined;
+          // Only subscribe if stream is running (not error/cancelled)
+          if (playbookStreamId && streamStatus !== 'error' && streamStatus !== 'cancelled' && streamStatus !== 'failed') {
             setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: loadedAgentId } as any]);
             const handlePlaybookError = (msg: string) => {
               setMessages((prev) => {
@@ -593,9 +595,11 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
           // If last message is playbook step, subscribe to task stream.
           const lastLoaded = loaded[loaded.length - 1];
           if (lastLoaded?.role === 'assistant' && (lastLoaded as any).journeyStep === 'playbook') {
-            const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            const streamId = ((lastLoaded as any).streamId || (lastLoaded as any).journeySelections?.streamId) as string | undefined;
             const websiteUrl = (lastLoaded as any).journeySelections?.websiteUrl as string | undefined;
-            if (streamId) {
+            const streamStatus = (lastLoaded as any).streamStatus as string | undefined;
+            // Only subscribe if stream is running (not error/cancelled)
+            if (streamId && streamStatus !== 'error' && streamStatus !== 'cancelled' && streamStatus !== 'failed') {
               setMessages((prev) => [
                 ...prev,
                 { role: 'assistant', content: '', agentId: loadedAgentId } as any,
@@ -923,9 +927,11 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
             lastLoaded?.role === 'assistant' &&
             (lastLoaded as any).journeyStep === 'playbook'
           ) {
-            const streamId = (lastLoaded as any).journeySelections?.streamId as string | undefined;
+            const streamId = ((lastLoaded as any).streamId || (lastLoaded as any).journeySelections?.streamId) as string | undefined;
             const websiteUrl2 = (lastLoaded as any).journeySelections?.websiteUrl as string | undefined;
-            if (streamId) {
+            const streamStatus = (lastLoaded as any).streamStatus as string | undefined;
+            // Only subscribe if stream is running (not error/cancelled)
+            if (streamId && streamStatus !== 'error' && streamStatus !== 'cancelled' && streamStatus !== 'failed') {
               setLoading(true);
               // Append a streaming assistant message.
               setMessages((prev) => [

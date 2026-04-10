@@ -209,9 +209,39 @@ async def send_message(req: Request) -> dict[str, Any]:
         if conv:
             msgs = conv.get("messages") or []
             last_asst = next((m for m in reversed(msgs) if m.get("role") == "assistant"), None)
+            user_text = str(body.get("message") or "").strip()
+            onboarding_id = str(conv.get("onboardingId") or "").strip()
+
+            # Handle "Retry Playbook" for any onboarding-based conversation
+            # This takes priority over other journey step handling
+            if onboarding_id and user_text.lower() in ("retry playbook", "retry"):
+                # This is a playbook retry for an onboarding conversation
+                prev_selections = {"onboardingSessionId": onboarding_id}
+                next_msg = await journey_service.next_step(
+                    journey_service.JOURNEY_STEP_PLAYBOOK, user_text, prev_selections
+                )
+                if next_msg is not None:
+                    await append_message(conversation_id_ft, "user", user_text)
+                    await append_message(
+                        conversation_id_ft,
+                        "assistant",
+                        next_msg["content"],
+                        options=next_msg["options"],
+                        allowCustomAnswer=next_msg["allowCustomAnswer"],
+                        journeyStep=next_msg["journeyStep"],
+                        journeySelections=next_msg.get("journeySelections", {}),
+                        kind="final",
+                    )
+                    conv = await get_conversation(conversation_id_ft) or {}
+                    return {
+                        "mode": "journey",
+                        "conversationId": conversation_id_ft,
+                        "journeyStep": next_msg["journeyStep"],
+                        "messages": conv.get("messages") or [],
+                    }
+
             if last_asst:
                 step = str(last_asst.get("journeyStep") or "").strip()
-                user_text = str(body.get("message") or "").strip()
                 prev_selections = last_asst.get("journeySelections") or {}
 
                 # URL free-text (enter website URL or type anything non-Skip)
@@ -645,8 +675,8 @@ async def create_conversation(req: Request) -> dict[str, Any]:
     # ── Plan access check ──
     await _enforce_agent_access(req, agent_id)
 
-    # Keep onboarding and chat tied to one canonical session actor key.
-    conv = await create_new_conversation(agent_id, session_id=onboarding_session_id, user_id=user_id)
+    # Keep onboarding and chat tied to one canonical onboarding_id key.
+    conv = await create_new_conversation(agent_id, onboarding_id=onboarding_session_id, user_id=user_id)
     conversation_id = conv["id"]
 
     initial = AGENT_INITIAL_MESSAGES.get(agent_id)

@@ -1183,6 +1183,102 @@ Only return valid JSON. No markdown, no explanation outside the JSON.
 """.strip()
 
 
+def _parse_gap_questions_markdown(content: str) -> list[dict[str, Any]]:
+    """
+    Fallback parser for gap questions when LLM returns markdown instead of JSON.
+    Extracts questions from format like:
+      Q1 — Label: Question text
+      ↳ Why this matters: reason
+      A) option text
+      B) option text
+      ...
+    """
+    import re
+
+    questions: list[dict[str, Any]] = []
+
+    # Split by Q1, Q2, Q3 markers
+    q_pattern = re.compile(r'Q(\d+)\s*[—–\-]\s*(.+?)(?=Q\d+\s*[—–\-]|$)', re.DOTALL)
+    matches = q_pattern.findall(content)
+
+    if not matches:
+        # Try alternate format: just "Q1 —" without label
+        q_pattern2 = re.compile(r'Q(\d+)\s*[—–\-]\s*(.+?)(?=Q\d+\s*[—–\-]|$)', re.DOTALL | re.IGNORECASE)
+        matches = q_pattern2.findall(content)
+
+    for q_num, q_content in matches:
+        q_content = q_content.strip()
+
+        # Extract label and question from first line
+        first_line_match = re.match(r'^([^:?\n]+?):\s*(.+?)(?:\n|$)', q_content)
+        if first_line_match:
+            label = first_line_match.group(1).strip()
+            question_start = first_line_match.group(2).strip()
+        else:
+            # No colon - first line is the question
+            first_line = q_content.split('\n')[0].strip()
+            label = f"Question {q_num}"
+            question_start = first_line
+
+        # Extract full question (before options or why_matters)
+        question_lines = []
+        why_matters = ""
+        options: list[str] = []
+
+        lines = q_content.split('\n')
+        in_options = False
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for why_matters
+            why_match = re.match(r'^[↳→]?\s*Why this matters:?\s*(.+)', line, re.IGNORECASE)
+            if why_match:
+                why_matters = why_match.group(1).strip()
+                continue
+
+            # Check for options A) B) C) D) E)
+            opt_match = re.match(r'^([A-E])\)\s*(.+)', line)
+            if opt_match:
+                in_options = True
+                options.append(line)
+                continue
+
+            # If not in options yet and not the first line (which has label), add to question
+            if not in_options and line != lines[0].strip():
+                question_lines.append(line)
+
+        # Build question text
+        question_text = question_start
+        if question_lines:
+            question_text = question_start + ' ' + ' '.join(question_lines)
+        question_text = question_text.strip()
+
+        # Clean up question text - remove trailing options if inline
+        inline_opt = re.search(r'\s*[—–\-]?\s*A\)\s', question_text)
+        if inline_opt:
+            question_text = question_text[:inline_opt.start()].strip()
+
+        if question_text:
+            questions.append({
+                "id": f"Q{q_num}",
+                "label": label,
+                "question": question_text,
+                "why_matters": why_matters,
+                "options": options if options else [
+                    "A) Option A",
+                    "B) Option B",
+                    "C) Option C",
+                    "D) Option D",
+                    "E) None of these — my answer is: ___"
+                ],
+            })
+
+    return questions[:3]
+
+
 async def generate_gap_questions(
     outcome: str,
     outcome_label: str,
@@ -1245,13 +1341,20 @@ async def generate_gap_questions(
             logger.warning("Gap questions: empty response — treating as no questions")
             return []
 
-        parsed = json.loads(_extract_json_value(content))
-        if isinstance(parsed, dict):
-            questions = parsed.get("questions", [])
-        elif isinstance(parsed, list):
-            questions = parsed
-        else:
-            questions = []
+        # Try JSON parsing first
+        questions = []
+        try:
+            parsed = json.loads(_extract_json_value(content))
+            if isinstance(parsed, dict):
+                questions = parsed.get("questions", [])
+            elif isinstance(parsed, list):
+                questions = parsed
+        except (json.JSONDecodeError, ValueError):
+            # Fallback to markdown parsing
+            logger.info("Gap questions: JSON parse failed, trying markdown fallback")
+            questions = _parse_gap_questions_markdown(content)
+            if questions:
+                logger.info("Gap questions: markdown fallback succeeded", count=len(questions))
 
         # Attach metadata for context pool to each question
         _meta = {
@@ -1282,7 +1385,7 @@ async def generate_gap_questions(
             body=e.response.text[:300],
         )
         return None
-    except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+    except (KeyError, IndexError) as e:
         logger.error("Gap questions parse error", error=str(e))
         return None
     except httpx.RequestError as e:

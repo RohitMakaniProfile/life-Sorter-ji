@@ -479,7 +479,7 @@ async def create_plan_draft(
     conv = await get_or_create_conversation(
         body.get("conversationId"),
         resolved["agentId"],
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
     contexts = resolved.get("contexts", {})
@@ -880,7 +880,7 @@ async def prepare_plan_approval(body: dict[str, Any]) -> tuple[dict[str, Any], d
     conv = await get_or_create_conversation(
         body.get("conversationId"),
         resolved["agentId"],
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
 
@@ -1035,7 +1035,7 @@ async def ensure_plan_approval_background(body: dict[str, Any]) -> dict[str, Any
     conv = await get_or_create_conversation(
         body.get("conversationId"),
         resolved["agentId"],
-        session_id=session_id,
+        onboarding_id=session_id,
         user_id=user_id,
     )
 

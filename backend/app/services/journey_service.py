@@ -84,6 +84,19 @@ def get_task_options(selected_domain: str) -> list[str] | None:
     return list(tasks) if tasks else None
 
 
+def get_scale_questions() -> list[dict[str, Any]]:
+    """Return all scale questions with their IDs, question text, and options."""
+    return _SCALE_QUESTIONS
+
+
+def get_scale_question_by_id(q_id: str) -> dict[str, Any] | None:
+    """Return a specific scale question by its ID."""
+    for q in _SCALE_QUESTIONS:
+        if q.get("id") == q_id:
+            return q
+    return None
+
+
 def _build_scale_message(index: int, acc: dict[str, Any]) -> dict[str, Any]:
     """Build assistant message for one scale question, carrying accumulated context."""
     q = _SCALE_QUESTIONS[index]
@@ -241,7 +254,7 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
                 onboarding_t.scale_answers,
                 onboarding_t.rca_qa,
             )
-            .where(onboarding_t.session_id == Parameter("%s")),
+            .where(onboarding_t.id == Parameter("%s")),
             [sid],
         )
         row = await conn.fetchrow(load_precision_ctx_q.sql, *load_precision_ctx_q.params)
@@ -290,7 +303,7 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
                 .set(onboarding_t.precision_status, "complete")
                 .set(onboarding_t.precision_completed_at, fn.Now())
                 .set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.session_id == Parameter("%s")),
+                .where(onboarding_t.id == Parameter("%s")),
                 [json.dumps([]), json.dumps([]), sid],
             )
             await conn.execute(mark_precision_empty_q.sql, *mark_precision_empty_q.params)
@@ -316,7 +329,7 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
             .set(onboarding_t.precision_status, "awaiting_answers")
             .set(onboarding_t.precision_completed_at, None)
             .set(onboarding_t.updated_at, fn.Now())
-            .where(onboarding_t.session_id == Parameter("%s")),
+            .where(onboarding_t.id == Parameter("%s")),
             [json.dumps(cleaned), json.dumps([]), sid],
         )
         await conn.execute(save_precision_questions_q.sql, *save_precision_questions_q.params)
@@ -475,7 +488,7 @@ async def next_step(
         sid = await _ensure_onboarding_session({**acc})
         acc["onboardingSessionId"] = sid
 
-        rca = await generate_next_rca_question_for_onboarding(session_id=sid, answer=None)
+        rca = await generate_next_rca_question_for_onboarding(onboarding_id=sid, answer=None)
         if rca.get("status") == "question" and rca.get("question"):
             q_dict = rca["question"]
             if hasattr(q_dict, "__dict__"):
@@ -494,7 +507,7 @@ async def next_step(
             sid = await _ensure_onboarding_session(prev)
             prev = {**prev, "onboardingSessionId": sid}
 
-        rca = await generate_next_rca_question_for_onboarding(session_id=sid, answer=selected_option)
+        rca = await generate_next_rca_question_for_onboarding(onboarding_id=sid, answer=selected_option)
 
         if rca.get("status") == "question" and rca.get("question"):
             q_dict = rca["question"]
@@ -522,7 +535,7 @@ async def next_step(
                     onboarding_t.precision_answers,
                     onboarding_t.questions_answers,
                 )
-                .where(onboarding_t.session_id == Parameter("%s")),
+                .where(onboarding_t.id == Parameter("%s")),
                 [sid],
             )
             row = await conn.fetchrow(load_precision_state_q.sql, *load_precision_state_q.params)
@@ -565,7 +578,7 @@ async def next_step(
                     .set(onboarding_t.precision_completed_at, fn.Now())
                     .set(onboarding_t.questions_answers, Parameter("%s"))
                     .set(onboarding_t.updated_at, fn.Now())
-                    .where(onboarding_t.session_id == Parameter("%s")),
+                    .where(onboarding_t.id == Parameter("%s")),
                     [json.dumps(precision_answers), json.dumps(qa_log), sid],
                 )
                 await conn.execute(persist_precision_complete_q.sql, *persist_precision_complete_q.params)
@@ -576,7 +589,7 @@ async def next_step(
                     .set(onboarding_t.precision_status, "awaiting_answers")
                     .set(onboarding_t.questions_answers, Parameter("%s"))
                     .set(onboarding_t.updated_at, fn.Now())
-                    .where(onboarding_t.session_id == Parameter("%s")),
+                    .where(onboarding_t.id == Parameter("%s")),
                     [json.dumps(precision_answers), json.dumps(qa_log), sid],
                 )
                 await conn.execute(persist_precision_progress_q.sql, *persist_precision_progress_q.params)
@@ -627,7 +640,7 @@ async def next_step(
                     .set(onboarding_t.gap_answers, Parameter("%s"))
                     .set(onboarding_t.playbook_status, "ready")
                     .set(onboarding_t.updated_at, fn.Now())
-                    .where(onboarding_t.session_id == Parameter("%s")),
+                    .where(onboarding_t.id == Parameter("%s")),
                     [formatted_answers, sid],
                 )
                 await conn.execute(persist_gap_answers_q.sql, *persist_gap_answers_q.params)
