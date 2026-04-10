@@ -692,13 +692,23 @@ async def token_usage_summary(request: Request):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT "
-            "COALESCE(SUM(cost_inr), 0) AS spend_inr, "
-            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-            "COUNT(*) FILTER (WHERE user_id IS NOT NULL) AS calls_count, "
-            "COUNT(*) FILTER (WHERE user_id IS NOT NULL AND cost_inr IS NULL) AS unknown_priced_calls, "
-            "COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS users_count "
-            "FROM token_usage"
+            # Linked (authenticated users) totals used by per-user list.
+            "COALESCE(SUM(t.cost_inr), 0) AS spend_inr, "
+            "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls_count, "
+            "COUNT(*) FILTER (WHERE t.cost_inr IS NULL) AS unknown_priced_calls, "
+            "COUNT(DISTINCT t.user_id) AS users_count, "
+            # Global totals for full admin visibility (includes unlinked rows).
+            "(SELECT COALESCE(SUM(cost_inr), 0) FROM token_usage) AS overall_spend_inr, "
+            "(SELECT COALESCE(SUM(input_tokens), 0) FROM token_usage) AS overall_input_tokens, "
+            "(SELECT COALESCE(SUM(output_tokens), 0) FROM token_usage) AS overall_output_tokens, "
+            "(SELECT COUNT(*) FROM token_usage) AS overall_calls_count, "
+            "(SELECT COALESCE(SUM(cost_inr), 0) FROM token_usage WHERE user_id IS NULL) AS unlinked_spend_inr, "
+            "(SELECT COUNT(*) FROM token_usage WHERE user_id IS NULL) AS unlinked_calls_count "
+            "FROM token_usage t "
+            "JOIN users u ON u.id::text = t.user_id "
+            "WHERE t.user_id IS NOT NULL"
         )
     return {
         "spendInr": float(row.get("spend_inr") or 0),
@@ -707,6 +717,12 @@ async def token_usage_summary(request: Request):
         "callsCount": int(row.get("calls_count") or 0),
         "unknownPricedCalls": int(row.get("unknown_priced_calls") or 0),
         "usersCount": int(row.get("users_count") or 0),
+        "overallSpendInr": float(row.get("overall_spend_inr") or 0),
+        "overallInputTokens": int(row.get("overall_input_tokens") or 0),
+        "overallOutputTokens": int(row.get("overall_output_tokens") or 0),
+        "overallCallsCount": int(row.get("overall_calls_count") or 0),
+        "unlinkedSpendInr": float(row.get("unlinked_spend_inr") or 0),
+        "unlinkedCallsCount": int(row.get("unlinked_calls_count") or 0),
     }
 
 

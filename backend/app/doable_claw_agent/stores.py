@@ -59,6 +59,9 @@ MODEL_PRICING_USD_PER_TOKEN: dict[str, tuple[float, float]] = {
     "gpt-4o": (5.0 / 1_000_000, 15.0 / 1_000_000),
     "claude-3-5-sonnet-20241022": (3.0 / 1_000_000, 15.0 / 1_000_000),
     "claude-3-7-sonnet-20250219": (3.0 / 1_000_000, 15.0 / 1_000_000),
+    # OpenRouter aliases seen in token_usage
+    "claude-opus-4-6": (15.0 / 1_000_000, 75.0 / 1_000_000),
+    "z-ai/glm-5": (0.30 / 1_000_000, 1.20 / 1_000_000),
 }
 
 DEFAULT_AGENTS = [

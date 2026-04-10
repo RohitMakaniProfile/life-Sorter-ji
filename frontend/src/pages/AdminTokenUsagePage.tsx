@@ -44,11 +44,15 @@ export default function AdminTokenUsagePage() {
       <div className="max-w-7xl mx-auto space-y-6">
         <h1 className="text-xl font-bold text-slate-100">Token Usage</h1>
         {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-            <Card label="Spend (INR)" value={`₹${summary.spendInr.toFixed(2)}`} />
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+            <Card label="Spend (Linked INR)" value={`₹${summary.spendInr.toFixed(2)}`} />
+            <Card label="Spend (Overall INR)" value={`₹${summary.overallSpendInr.toFixed(2)}`} />
+            <Card label="Unlinked spend (INR)" value={`₹${summary.unlinkedSpendInr.toFixed(2)}`} />
             <Card label="Input tokens" value={String(summary.inputTokens)} />
             <Card label="Output tokens" value={String(summary.outputTokens)} />
             <Card label="Calls" value={String(summary.callsCount)} />
+            <Card label="Overall calls" value={String(summary.overallCallsCount)} />
+            <Card label="Unlinked calls" value={String(summary.unlinkedCallsCount)} />
             <Card label="Users" value={String(summary.usersCount)} />
             <Card label="Unknown priced" value={String(summary.unknownPricedCalls)} />
           </div>
