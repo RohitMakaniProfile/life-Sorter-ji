@@ -6,6 +6,7 @@ import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
 import ProductsSidebar from './ProductsSidebar';
 
 const ACTIVE_AGENT_STORAGE_KEY = 'ikshan-active-agent-id';
+const ONBOARDING_SESSION_STORAGE_KEY = 'doable-claw-onboarding-id';
 
 function formatPhoneForDisplay(raw) {
   const digits = String(raw || '').replace(/\D/g, '');
@@ -37,6 +38,7 @@ export default function Navbar() {
     try {
       window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
       window.localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY);
+      window.localStorage.removeItem(ONBOARDING_SESSION_STORAGE_KEY);
     } catch {
       // ignore
     }
