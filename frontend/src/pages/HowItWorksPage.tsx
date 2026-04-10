@@ -505,13 +505,6 @@ export default function HowItWorksPage() {
         >
           Start free audit →
         </button>
-        <button
-          type="button"
-          onClick={() => navigate('/new')}
-          className="inline-flex items-center gap-2 bg-transparent text-white px-8 py-3.5 rounded-xl font-semibold text-base cursor-pointer border border-white/[0.1] hover:border-white/30 transition-all ml-4"
-        >
-          Browse all agents
-        </button>
       </section>
 
       {/* FOOTER */}
