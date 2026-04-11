@@ -70,3 +70,22 @@
   - Send conversation link after report completes
   - Only if user has phone number
   - Add system config toggle to enable/disable
+
+
+
+
+
+
+
+===================
+# direct link to any playbook/onboarding so via single link user can view playbook or trigger phase2
+# coming soon for plan 2
+# playbook dark mode
+# doable claw loading icon
+# ikshan to doable claw icon in payment page
+# 2 login pages to single
+# change last scale question either to static but defined as per selected task or move with rca to llm generated
+# playbook should be half visible then for full playbook there should be otp verification instead of before playbook. show otp in 3rd tab.
+# gap question background
+# google map correct data scrapping
+# all claw agents direct to url stage
