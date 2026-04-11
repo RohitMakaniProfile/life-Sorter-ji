@@ -330,10 +330,13 @@ export async function getMessages(conversationId?: string): Promise<{
 }
 
 export async function getConversations(): Promise<{ conversations: ConversationSummary[] }> {
-  const params = new URLSearchParams();
   const userId = getUserIdFromJwt();
-  if (userId) params.set('userId', userId);
-  const q = params.toString() ? `?${params}` : '';
+  if (!userId) {
+    return { conversations: [] };
+  }
+  const params = new URLSearchParams();
+  params.set('userId', userId);
+  const q = `?${params}`;
   return apiJson<{ conversations: ConversationSummary[] }>(`${API_ROUTES.aiChat.conversations}${q}`);
 }
 
