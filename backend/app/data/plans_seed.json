@@ -25,7 +25,8 @@
       "credits_allocation": null,
       "features": {
         "deep_analysis_report": false,
-        "execute_report_actions": true
+        "execute_report_actions": true,
+        "coming_soon": true
       },
       "display_order": 2,
       "active": true

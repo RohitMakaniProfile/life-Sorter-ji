@@ -10,6 +10,10 @@ from app.sql_builder import build_query
 
 token_usage_t = Table("token_usage")
 
+# Note: Complex aggregation queries (fetch_summary, fetch_users, fetch_user_conversations,
+# fetch_conversation_calls) use raw SQL for readability. These include PostgreSQL-specific
+# features like FILTER, GROUP BY, subqueries, and id::text casts that are clearer in raw SQL.
+
 
 async def insert(
     conn,

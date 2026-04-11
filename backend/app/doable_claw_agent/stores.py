@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 import traceback
-t
 from asyncpg import UniqueViolationError
 
 from app.db import get_pool

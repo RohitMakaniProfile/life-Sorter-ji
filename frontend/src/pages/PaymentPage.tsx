@@ -439,17 +439,29 @@ export default function PaymentPage() {
                 const highlight = plan.slug === defaultHighlightSlug;
                 const paying = payLoadingSlug === plan.slug;
                 const features = planFeatures(plan);
+                const comingSoon = Boolean(plan.features?.coming_soon);
                 return (
                   <div
                     key={plan.slug}
                     className={`relative flex flex-col overflow-hidden rounded-2xl border p-6 backdrop-blur-sm transition-all duration-300 ${
-                      highlight
+                      comingSoon
+                        ? 'border-white/[0.06] bg-white/[0.02] opacity-75'
+                        : highlight
                         ? 'border-violet-400/40 bg-violet-500/[0.06] shadow-lg shadow-violet-500/10 ring-1 ring-violet-400/20'
                         : 'border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.05]'
                     }`}
                   >
+                    {/* Coming Soon badge */}
+                    {comingSoon && (
+                      <div className="absolute top-4 right-4">
+                        <span className="rounded-full bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow-md">
+                          Coming Soon
+                        </span>
+                      </div>
+                    )}
+
                     {/* Recommended badge */}
-                    {highlight && (
+                    {highlight && !comingSoon && (
                       <div className="absolute top-4 right-4">
                         <span className="rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow-md">
                           Recommended
@@ -484,15 +496,25 @@ export default function PaymentPage() {
                     {/* CTA button */}
                     <button
                       type="button"
-                      onClick={() => handlePayPlan(plan)}
-                      disabled={paying || payLoadingSlug != null}
+                      onClick={() => !comingSoon && handlePayPlan(plan)}
+                      disabled={comingSoon || paying || payLoadingSlug != null}
                       className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border-none py-3.5 text-sm font-bold text-white shadow-lg transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                        highlight
+                        comingSoon
+                          ? 'bg-white/5 shadow-none cursor-not-allowed'
+                          : highlight
                           ? 'bg-gradient-to-r from-violet-600 to-indigo-600 shadow-violet-500/20 hover:shadow-violet-500/30'
                           : 'bg-white/10 shadow-none hover:bg-white/[0.14]'
                       }`}
                     >
-                      {paying ? (
+                      {comingSoon ? (
+                        <>
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">
+                            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M8 5v3l2 1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          Coming Soon
+                        </>
+                      ) : paying ? (
                         <>
                           <div className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
                           Redirecting…

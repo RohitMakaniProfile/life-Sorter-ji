@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pypika import Order, Table
+from pypika import Order, Table, functions as fn
 from pypika.dialects import PostgreSQLQuery
 from pypika.terms import Parameter
 
@@ -11,24 +11,11 @@ from app.sql_builder import build_query
 
 agents_t = Table("agents")
 
-# Kept as raw SQL: asyncpg list binding for text[] is straightforward this way
-SQL_INSERT_AGENT_IGNORE = """
-    INSERT INTO agents (
-        id, name, emoji, description,
-        allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-        created_at, updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-    ON CONFLICT (id) DO NOTHING
-"""
-
-SQL_INSERT_AGENT_RETURNING = """
-    INSERT INTO agents (
-        id, name, emoji, description,
-        allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-        created_at, updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-    RETURNING *
-"""
+_INSERT_COLS = (
+    agents_t.id, agents_t.name, agents_t.emoji, agents_t.description,
+    agents_t.allowed_skill_ids, agents_t.skill_selector_context,
+    agents_t.final_output_formatting_context, agents_t.created_at, agents_t.updated_at,
+)
 
 
 async def insert_ignore(
@@ -36,12 +23,18 @@ async def insert_ignore(
     allowed_skill_ids: list[str], skill_selector_context: str,
     final_output_formatting_context: str, now: datetime,
 ) -> None:
-    await conn.execute(
-        SQL_INSERT_AGENT_IGNORE,
-        agent_id, name, emoji, description,
-        allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-        now, now,
+    q = build_query(
+        PostgreSQLQuery.into(agents_t)
+        .columns(*_INSERT_COLS)
+        .insert(
+            Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
+            Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
+        )
+        .on_conflict(agents_t.id).do_nothing(),
+        [agent_id, name, emoji, description, allowed_skill_ids,
+         skill_selector_context, final_output_formatting_context, now, now],
     )
+    await conn.execute(q.sql, *q.params)
 
 
 async def insert_returning(
@@ -49,12 +42,18 @@ async def insert_returning(
     allowed_skill_ids: list[str], skill_selector_context: str,
     final_output_formatting_context: str, now: datetime,
 ) -> Any:
-    return await conn.fetchrow(
-        SQL_INSERT_AGENT_RETURNING,
-        agent_id, name, emoji, description,
-        allowed_skill_ids, skill_selector_context, final_output_formatting_context,
-        now, now,
+    q = build_query(
+        PostgreSQLQuery.into(agents_t)
+        .columns(*_INSERT_COLS)
+        .insert(
+            Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
+            Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
+        )
+        .returning("*"),
+        [agent_id, name, emoji, description, allowed_skill_ids,
+         skill_selector_context, final_output_formatting_context, now, now],
     )
+    return await conn.fetchrow(q.sql, *q.params)
 
 
 async def find_all(conn) -> list[Any]:
@@ -77,26 +76,29 @@ async def find_by_id(conn, agent_id: str) -> Any:
 async def update_fields(conn, agent_id: str, fields: dict[str, Any], now: datetime) -> Any:
     """Dynamic UPDATE — only sets columns present in `fields`. Returns updated row or None."""
     col_map = {
-        "name": "name",
-        "emoji": "emoji",
-        "description": "description",
-        "allowedSkillIds": "allowed_skill_ids",
-        "skillSelectorContext": "skill_selector_context",
-        "finalOutputFormattingContext": "final_output_formatting_context",
+        "name": agents_t.name,
+        "emoji": agents_t.emoji,
+        "description": agents_t.description,
+        "allowedSkillIds": agents_t.allowed_skill_ids,
+        "skillSelectorContext": agents_t.skill_selector_context,
+        "finalOutputFormattingContext": agents_t.final_output_formatting_context,
     }
-    set_parts: list[str] = []
-    values: list[Any] = []
+    qb = PostgreSQLQuery.update(agents_t)
+    vals: list[Any] = []
     for key, col in col_map.items():
         if key in fields:
-            set_parts.append(f"{col} = ${len(values) + 1}")
-            values.append(fields[key])
-    if not set_parts:
+            qb = qb.set(col, Parameter("%s"))
+            vals.append(fields[key])
+    if not vals:
         return None  # Nothing to update — caller should return current row unchanged
-    set_parts.append(f"updated_at = ${len(values) + 1}")
-    values.append(now)
-    values.append(agent_id)
-    sql = f"UPDATE agents SET {', '.join(set_parts)} WHERE id = ${len(values)} RETURNING *"
-    return await conn.fetchrow(sql, *values)
+    qb = qb.set(agents_t.updated_at, Parameter("%s"))
+    vals.append(now)
+    vals.append(agent_id)
+    q = build_query(
+        qb.where(agents_t.id == Parameter("%s")).returning("*"),
+        vals,
+    )
+    return await conn.fetchrow(q.sql, *q.params)
 
 
 async def reassign_conversations_agent(conn, old_agent_id: str, new_agent_id: str) -> None:
@@ -105,20 +107,11 @@ async def reassign_conversations_agent(conn, old_agent_id: str, new_agent_id: st
     q = build_query(
         PostgreSQLQuery.update(conversations_t)
         .set(conversations_t.agent_id, Parameter("%s"))
-        .set(conversations_t.updated_at, Parameter("%s"))
-        .where(conversations_t.agent_id == Parameter("%s")),
-        [new_agent_id, None, old_agent_id],  # updated_at uses fn.Now() below
-    )
-    # Use raw update to get fn.Now() behavior
-    from pypika import functions as fn
-    q2 = build_query(
-        PostgreSQLQuery.update(conversations_t)
-        .set(conversations_t.agent_id, Parameter("%s"))
         .set(conversations_t.updated_at, fn.Now())
         .where(conversations_t.agent_id == Parameter("%s")),
         [new_agent_id, old_agent_id],
     )
-    await conn.execute(q2.sql, *q2.params)
+    await conn.execute(q.sql, *q.params)
 
 
 async def delete_by_id(conn, agent_id: str) -> bool:

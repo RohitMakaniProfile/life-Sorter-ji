@@ -3,11 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pypika import Order, Table, functions as fn
+from pypika import Order, Table, functions as fn, CustomFunction
 from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Cast, Parameter
+from pypika.terms import Parameter, LiteralValue
 
 from app.sql_builder import build_query
+
+
+def _cast_jsonb(param: Parameter) -> LiteralValue:
+    """Cast a parameter to jsonb type using raw SQL."""
+    return LiteralValue(f"{param}::jsonb")
+
 
 messages_t = Table("messages")
 
@@ -48,7 +54,7 @@ async def insert_atomic(
             )
             .insert(
                 Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
-                Parameter("%s"), Parameter("%s"), Cast(Parameter("%s"), "jsonb"),
+                Parameter("%s"), Parameter("%s"), _cast_jsonb(Parameter("%s")),
             ),
             [conversation_id, next_index, role, content, created_at, output_file, message_json],
         )
@@ -105,7 +111,7 @@ async def update_content(conn, conversation_id: str, message_index: int,
         PostgreSQLQuery.update(messages_t)
         .set(messages_t.content, Parameter("%s"))
         .set(messages_t.output_file, fn.Coalesce(Parameter("%s"), messages_t.output_file))
-        .set(messages_t.message, Cast(Parameter("%s"), "jsonb"))
+        .set(messages_t.message, _cast_jsonb(Parameter("%s")))
         .where(messages_t.conversation_id == Parameter("%s"))
         .where(messages_t.message_index == Parameter("%s")),
         [content, output_file, message_json, conversation_id, message_index],
@@ -116,7 +122,7 @@ async def update_content(conn, conversation_id: str, message_index: int,
 async def update_meta(conn, conversation_id: str, message_index: int, message_json: str) -> None:
     q = build_query(
         PostgreSQLQuery.update(messages_t)
-        .set(messages_t.message, Cast(Parameter("%s"), "jsonb"))
+        .set(messages_t.message, _cast_jsonb(Parameter("%s")))
         .where(messages_t.conversation_id == Parameter("%s"))
         .where(messages_t.message_index == Parameter("%s")),
         [message_json, conversation_id, message_index],

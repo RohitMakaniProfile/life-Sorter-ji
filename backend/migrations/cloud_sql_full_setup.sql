@@ -168,7 +168,7 @@ VALUES
         'Run and execute action items generated on an existing deep analysis report (future workflow). Upgrade after you have a report.',
         799.00,
         NULL,
-        '{"deep_analysis_report": false, "execute_report_actions": true}'::jsonb,
+        '{"deep_analysis_report": false, "execute_report_actions": true, "coming_soon": true}'::jsonb,
         2,
         TRUE
     )

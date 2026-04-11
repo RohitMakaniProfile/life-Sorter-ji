@@ -12,7 +12,10 @@ task_stream_streams_t = Table("task_stream_streams")
 
 
 def cleanup_stale_running_sql() -> str:
-    """Return SQL string for cleaning up stale running streams (used by task_stream module)."""
+    """Return SQL string for cleaning up stale running streams (used by task_stream module).
+
+    Note: Kept as raw SQL because it uses interval arithmetic with a parameter ($1::int * INTERVAL).
+    """
     return (
         "UPDATE task_stream_streams "
         "SET status = 'error', "

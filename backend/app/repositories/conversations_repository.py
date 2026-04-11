@@ -5,19 +5,16 @@ from typing import Any
 
 from pypika import Order, Table, functions as fn
 from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
+from pypika.terms import Parameter, LiteralValue
 
 from app.sql_builder import build_query
 
 conversations_t = Table("conversations")
 
-# Kept as raw SQL: complex IS NULL / NULLIF cast used for NULL-safe UUID comparison
-SQL_PROMOTE_SESSION = """
-    UPDATE conversations
-    SET user_id = $2, updated_at = NOW()
-    WHERE session_id = $1
-      AND (user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL)
-"""
+
+def _cast_jsonb(param: Parameter) -> LiteralValue:
+    """Cast a parameter to jsonb type using raw SQL."""
+    return LiteralValue(f"{param}::jsonb")
 
 
 async def find_by_id(conn, conversation_id: str) -> Any:
@@ -128,10 +125,15 @@ async def get_stage_outputs(conn, conversation_id: str) -> Any:
 
 async def update_stage_outputs(conn, conversation_id: str, outputs_json: str,
                                 output_file: str | None, now: datetime) -> None:
-    await conn.execute(
-        "UPDATE conversations SET last_stage_outputs = $2::jsonb, last_output_file = $3, updated_at = $4 WHERE id = $1",
-        conversation_id, outputs_json, output_file, now,
+    q = build_query(
+        PostgreSQLQuery.update(conversations_t)
+        .set(conversations_t.last_stage_outputs, _cast_jsonb(Parameter("%s")))
+        .set(conversations_t.last_output_file, Parameter("%s"))
+        .set(conversations_t.updated_at, Parameter("%s"))
+        .where(conversations_t.id == Parameter("%s")),
+        [outputs_json, output_file, now, conversation_id],
     )
+    await conn.execute(q.sql, *q.params)
 
 
 async def delete_by_id(conn, conversation_id: str) -> bool:
@@ -155,7 +157,17 @@ async def delete_by_user_id(conn, user_id: str) -> None:
 
 async def promote_session_to_user(conn, session_id: str, user_id: str) -> str:
     """Update session-scoped conversations to belong to the authenticated user."""
-    return await conn.execute(SQL_PROMOTE_SESSION, session_id, user_id)
+    # Complex condition: user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL
+    null_check = LiteralValue("(user_id IS NULL OR NULLIF(BTRIM(user_id::text), '') IS NULL)")
+    q = build_query(
+        PostgreSQLQuery.update(conversations_t)
+        .set(conversations_t.user_id, Parameter("%s"))
+        .set(conversations_t.updated_at, fn.Now())
+        .where(conversations_t.session_id == Parameter("%s"))
+        .where(null_check),
+        [user_id, session_id],
+    )
+    return await conn.execute(q.sql, *q.params)
 
 
 async def exists_by_user(conn, user_id: str) -> bool:
