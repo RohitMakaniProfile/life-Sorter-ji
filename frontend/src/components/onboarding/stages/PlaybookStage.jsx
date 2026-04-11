@@ -110,7 +110,7 @@ export default function PlaybookStage({
 
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
-  }, []);
+  }, [showGapQuestions]);
 
   // Auto-scroll to bottom as tokens arrive, unless the user has locked it
   useEffect(() => {
