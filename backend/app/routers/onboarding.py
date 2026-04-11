@@ -6,15 +6,11 @@ import json
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
-from pypika import Order, Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.config import get_settings
 from app.middleware.auth_context import get_request_user, require_request_user
 from app.middleware.rate_limit import limiter
 from app.models.session import DynamicQuestion
-from app.sql_builder import build_query
 from app.services import onboarding_service
 from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions
 from app.services.onboarding_question_service import generate_next_rca_question_for_onboarding
@@ -22,10 +18,6 @@ from app.services.onboarding_question_service import generate_next_rca_question_
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
-
-onboarding_t = Table("onboarding")
-crawl_runs_t = Table("crawl_runs")
-crawl_cache_t = Table("crawl_cache")
 
 
 class OnboardingRequest(BaseModel):
@@ -176,74 +168,20 @@ async def get_onboarding_state(
     if not oid and not uid:
         raise HTTPException(status_code=400, detail="onboarding_id or user_id is required")
 
+    from app.repositories import onboarding_repository as onboarding_repo
+
     pool = get_pool()
     async with pool.acquire() as conn:
         row = None
 
         # Prefer explicit onboarding_id when provided; it is the only unambiguous row identifier.
         if oid:
-            row_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t)
-                .select(
-                    onboarding_t.id,
-                    onboarding_t.outcome,
-                    onboarding_t.domain,
-                    onboarding_t.task,
-                    onboarding_t.website_url,
-                    onboarding_t.gbp_url,
-                    onboarding_t.business_profile,
-                    onboarding_t.scale_answers,
-                    onboarding_t.rca_qa,
-                    onboarding_t.rca_summary,
-                    onboarding_t.rca_handoff,
-                    onboarding_t.precision_questions,
-                    onboarding_t.precision_answers,
-                    onboarding_t.precision_status,
-                    onboarding_t.playbook_status,
-                    onboarding_t.playbook_error,
-                    onboarding_t.gap_questions,
-                    onboarding_t.gap_answers,
-                    onboarding_t.onboarding_completed_at,
-                )
-                .where(onboarding_t.id == Parameter("%s")),
-                [oid],
-            )
-            row = await conn.fetchrow(row_q.sql, *row_q.params)
+            row = await onboarding_repo.find_full_state(conn, oid)
 
         # Fall back to user_id lookup only when onboarding_id is absent.
         # Only return non-complete rows — if the latest row is complete the user should start fresh.
         if not row and uid:
-            row_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t)
-                .select(
-                    onboarding_t.id,
-                    onboarding_t.outcome,
-                    onboarding_t.domain,
-                    onboarding_t.task,
-                    onboarding_t.website_url,
-                    onboarding_t.gbp_url,
-                    onboarding_t.business_profile,
-                    onboarding_t.scale_answers,
-                    onboarding_t.rca_qa,
-                    onboarding_t.rca_summary,
-                    onboarding_t.rca_handoff,
-                    onboarding_t.precision_questions,
-                    onboarding_t.precision_answers,
-                    onboarding_t.precision_status,
-                    onboarding_t.playbook_status,
-                    onboarding_t.playbook_error,
-                    onboarding_t.gap_questions,
-                    onboarding_t.gap_answers,
-                    onboarding_t.onboarding_completed_at,
-                )
-                .where(onboarding_t.user_id == Parameter("%s"))
-                .where(onboarding_t.onboarding_completed_at.isnull())
-                .where(onboarding_t.playbook_status != Parameter("%s"))
-                .orderby(onboarding_t.created_at, order=Order.desc)
-                .limit(1),
-                [uid, "complete"],
-            )
-            row = await conn.fetchrow(row_q.sql, *row_q.params)
+            row = await onboarding_repo.find_latest_incomplete_by_user(conn, uid)
 
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
@@ -623,19 +561,11 @@ async def _resolve_onboarding_id(
     # Authenticated path: resolve to latest onboarding row by created_at for this user.
     if sub:
         from app.db import get_pool
+        from app.repositories import onboarding_repository as onboarding_repo
 
         pool = get_pool()
         async with pool.acquire() as conn:
-            resolved_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t)
-                .select(onboarding_t.id)
-                .where(onboarding_t.user_id == Parameter("%s"))
-                .orderby(onboarding_t.created_at, order=Order.desc)
-                .limit(1),
-                [sub],
-            )
-            resolved_oid = await conn.fetchval(resolved_q.sql, *resolved_q.params)
-        oid_db = str(resolved_oid or "").strip()
+            oid_db = await onboarding_repo.find_latest_id_by_user(conn, sub)
         if oid_db:
             return oid_db
         raise HTTPException(status_code=400, detail="onboarding row not found for user")
@@ -674,15 +604,11 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         provided_onboarding_id=body.onboarding_id,
     )
 
+    from app.repositories import onboarding_repository as onboarding_repo
+
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(onboarding_t.id, onboarding_t.gap_questions, onboarding_t.gap_answers, onboarding_t.playbook_status)
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_gap_launch_state(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -711,16 +637,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
             )
 
         # Update status to starting
-        playbook_start_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.playbook_status, "starting")
-            .set(onboarding_t.playbook_started_at, fn.Coalesce(onboarding_t.playbook_started_at, fn.CurTimestamp()))
-            .set(onboarding_t.playbook_error, "")
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        await conn.execute(playbook_start_q.sql, *playbook_start_q.params)
+        await onboarding_repo.set_playbook_starting(conn, onboarding_id)
 
     # Create conversation for the onboarding before playbook generation
     # This ensures the playbook can be accessed later via conversations even if user leaves
@@ -743,14 +660,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
         # Update onboarding row with the conversation_id
         if conversation_id:
             async with pool.acquire() as conn:
-                update_conv_q = build_query(
-                    PostgreSQLQuery.update(onboarding_t)
-                    .set(onboarding_t.conversation_id, Parameter("%s"))
-                    .set(onboarding_t.updated_at, fn.CurTimestamp())
-                    .where(onboarding_t.id == Parameter("%s")),
-                    [conversation_id, onboarding_id],
-                )
-                await conn.execute(update_conv_q.sql, *update_conv_q.params)
+                await onboarding_repo.set_conversation_id(conn, onboarding_id, conversation_id)
     except Exception as conv_err:
         # Don't fail playbook generation if conversation creation fails
         logger.warning(
@@ -802,26 +712,14 @@ async def onboarding_playbook_gap_answers(request: Request, body: SubmitOnboardi
         provided_onboarding_id=body.onboarding_id,
     )
 
+    from app.repositories import onboarding_repository as onboarding_repo
     answers = str(body.answers or "").strip()
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t).select(onboarding_t.id).where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_by_id(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
-
-        update_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.gap_answers, Parameter("%s"))
-            .set(onboarding_t.playbook_status, "ready")
-            .set(onboarding_t.updated_at, fn.CurTimestamp())
-            .where(onboarding_t.id == Parameter("%s")),
-            [answers, row.get("id")],
-        )
-        await conn.execute(update_q.sql, *update_q.params)
+        await onboarding_repo.set_gap_answers_ready(conn, onboarding_id, answers)
 
     return SubmitOnboardingGapAnswersResponse(onboarding_id=onboarding_id, stage="ready", message="Gap answers saved.")
 
@@ -835,17 +733,11 @@ async def onboarding_playbook_mcq_answer(request: Request, body: SubmitOnboardin
         raise HTTPException(status_code=400, detail="question_index must be >= 0")
 
     from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(onboarding_t.id, onboarding_t.gap_questions, onboarding_t.gap_answers)
-            .where(onboarding_t.id == Parameter("%s"))
-            .limit(1),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_mcq_gap_state(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -855,14 +747,7 @@ async def onboarding_playbook_mcq_answer(request: Request, body: SubmitOnboardin
         all_answered = len(gap_questions) > 0 and len(answer_map) >= len(gap_questions)
         status = "ready" if all_answered else "awaiting_gap_answers"
 
-        await conn.execute(
-            "UPDATE onboarding "
-            "SET gap_answers = $1, playbook_status = $2, updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = $3",
-            _serialize_gap_answers_text(answer_map),
-            status,
-            onboarding_id,
-        )
+        await onboarding_repo.update_gap_answers(conn, onboarding_id, _serialize_gap_answers_text(answer_map), status)
 
     return SubmitOnboardingMcqAnswerResponse(
         onboarding_id=onboarding_id,
@@ -881,24 +766,11 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
     )
 
     from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.outcome,
-                onboarding_t.domain,
-                onboarding_t.task,
-                onboarding_t.scale_answers,
-                onboarding_t.rca_qa,
-                onboarding_t.web_summary,
-                onboarding_t.business_profile,
-            )
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_precision_context(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -933,18 +805,7 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             business_profile_text=str(row.get("business_profile") or ""),
         )
         if not generated:
-            await conn.execute(
-                "UPDATE onboarding "
-                "SET precision_questions = $1::jsonb, "
-                "    precision_answers = $2::jsonb, "
-                "    precision_status = 'complete', "
-                "    precision_completed_at = CURRENT_TIMESTAMP, "
-                "    updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = $3",
-                json.dumps([]),
-                json.dumps([]),
-                onboarding_id,
-            )
+            await onboarding_repo.mark_precision_empty(conn, onboarding_id)
             return StartOnboardingPrecisionResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         cleaned = [
@@ -957,18 +818,7 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             }
             for q in generated[:3]
         ]
-        await conn.execute(
-            "UPDATE onboarding "
-            "SET precision_questions = $1::jsonb, "
-            "    precision_answers = $2::jsonb, "
-            "    precision_status = 'awaiting_answers', "
-            "    precision_completed_at = NULL, "
-            "    updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = $3",
-            json.dumps(cleaned),
-            json.dumps([]),
-            onboarding_id,
-        )
+        await onboarding_repo.save_precision_questions(conn, onboarding_id, json.dumps(cleaned))
         return StartOnboardingPrecisionResponse(
             onboarding_id=onboarding_id,
             questions=[PrecisionQuestionItem(**q) for q in cleaned],
@@ -987,21 +837,11 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
         raise HTTPException(status_code=400, detail="question_index must be >= 0")
 
     from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.id,
-                onboarding_t.precision_questions,
-                onboarding_t.precision_answers,
-                onboarding_t.questions_answers,
-            )
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_precision_state(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -1032,35 +872,14 @@ async def onboarding_precision_answer(request: Request, body: SubmitOnboardingPr
         next_idx = body.question_index + 1
         all_answered = next_idx >= len(precision_questions)
         if all_answered:
-            await conn.execute(
-                "UPDATE onboarding "
-                "SET precision_answers = $1::jsonb, "
-                "    precision_status = 'complete', "
-                "    precision_completed_at = CURRENT_TIMESTAMP, "
-                "    questions_answers = $2::jsonb, "
-                "    updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = $3",
-                json.dumps(precision_answers),
-                json.dumps(qa_log),
-                onboarding_id,
-            )
+            await onboarding_repo.mark_precision_complete(conn, onboarding_id, json.dumps(precision_answers), json.dumps(qa_log))
             return SubmitOnboardingPrecisionAnswerResponse(
                 onboarding_id=onboarding_id,
                 all_answered=True,
                 precision_status="complete",
             )
 
-        await conn.execute(
-            "UPDATE onboarding "
-            "SET precision_answers = $1::jsonb, "
-            "    precision_status = 'awaiting_answers', "
-            "    questions_answers = $2::jsonb, "
-            "    updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = $3",
-            json.dumps(precision_answers),
-            json.dumps(qa_log),
-            onboarding_id,
-        )
+        await onboarding_repo.update_precision_progress(conn, onboarding_id, json.dumps(precision_answers), json.dumps(qa_log))
         next_q = precision_questions[next_idx]
         return SubmitOnboardingPrecisionAnswerResponse(
             onboarding_id=onboarding_id,
@@ -1093,27 +912,11 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
     )
 
     from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.outcome,
-                onboarding_t.domain,
-                onboarding_t.task,
-                onboarding_t.scale_answers,
-                onboarding_t.rca_qa,
-                onboarding_t.rca_summary,
-                onboarding_t.rca_handoff,
-                onboarding_t.web_summary,
-                onboarding_t.precision_questions,
-                onboarding_t.precision_answers,
-            )
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_gap_questions_context(conn, onboarding_id)
         if not row:
             raise HTTPException(status_code=404, detail="Onboarding row not found")
 
@@ -1171,28 +974,12 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
         if generated is None:
             # LLM call failed — treat as no questions needed, allow playbook to proceed
             logger.warning("Gap questions generation failed — treating as no questions needed")
-            await conn.execute(
-                "UPDATE onboarding "
-                "SET gap_questions = $1::jsonb, "
-                "    playbook_status = 'ready', "
-                "    updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = $2",
-                json.dumps([]),
-                onboarding_id,
-            )
+            await onboarding_repo.set_gap_questions_ready(conn, onboarding_id)
             return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         if not generated or len(generated) == 0:
             # No questions needed — context is sufficient
-            await conn.execute(
-                "UPDATE onboarding "
-                "SET gap_questions = $1::jsonb, "
-                "    playbook_status = 'ready', "
-                "    updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = $2",
-                json.dumps([]),
-                onboarding_id,
-            )
+            await onboarding_repo.set_gap_questions_ready(conn, onboarding_id)
             return StartGapQuestionsResponse(onboarding_id=onboarding_id, questions=[], available=False)
 
         # Clean up and store questions
@@ -1207,15 +994,7 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
             for i, q in enumerate(generated[:3])
         ]
 
-        await conn.execute(
-            "UPDATE onboarding "
-            "SET gap_questions = $1::jsonb, "
-            "    playbook_status = 'awaiting_gap_answers', "
-            "    updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = $2",
-            json.dumps(cleaned),
-            onboarding_id,
-        )
+        await onboarding_repo.set_gap_questions_awaiting(conn, onboarding_id, json.dumps(cleaned))
 
         return StartGapQuestionsResponse(
             onboarding_id=onboarding_id,

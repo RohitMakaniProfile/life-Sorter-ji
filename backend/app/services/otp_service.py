@@ -16,18 +16,12 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
-from pypika import Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.config import get_settings
 from app.db import get_pool
-from app.sql_builder import build_query
 from app.task_stream.redis_client import get_redis
 
 _OTP_PREFIX = "ikshan:otp"
-otp_sessions_t = Table("otp_sessions")
-otp_provider_logs_t = Table("otp_provider_logs")
 
 logger = structlog.get_logger()
 
@@ -42,6 +36,7 @@ async def _store_otp_postgres(
     expiry_seconds: int,
     provider_session_id: str = "",
 ) -> None:
+    from app.repositories import otp_sessions_repository as otp_repo
     phone_key = _normalize_phone(phone_number)
     payload = {
         "phone_number": phone_key,
@@ -53,34 +48,15 @@ async def _store_otp_postgres(
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, int(expiry_seconds)))
     pool = get_pool()
     async with pool.acquire() as conn:
-        store_otp_q = build_query(
-            PostgreSQLQuery.into(otp_sessions_t)
-            .columns(
-                otp_sessions_t.phone_number,
-                otp_sessions_t.payload,
-                otp_sessions_t.expires_at,
-            )
-            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"))
-            .on_conflict(otp_sessions_t.phone_number)
-            .do_update(otp_sessions_t.payload)
-            .do_update(otp_sessions_t.expires_at),
-            [phone_key, json.dumps(payload), expires_at],
-        )
-        await conn.execute(store_otp_q.sql, *store_otp_q.params)
+        await otp_repo.upsert_otp(conn, phone_key, json.dumps(payload), expires_at)
 
 
 async def _load_otp_postgres(phone_number: str) -> dict | None:
+    from app.repositories import otp_sessions_repository as otp_repo
     phone_key = _normalize_phone(phone_number)
     pool = get_pool()
     async with pool.acquire() as conn:
-        load_otp_q = build_query(
-            PostgreSQLQuery.from_(otp_sessions_t)
-            .select(otp_sessions_t.payload)
-            .where(otp_sessions_t.phone_number == Parameter("%s"))
-            .where(otp_sessions_t.expires_at > fn.Now()),
-            [phone_key],
-        )
-        row = await conn.fetchrow(load_otp_q.sql, *load_otp_q.params)
+        row = await otp_repo.find_active_by_phone(conn, phone_key)
     if not row or row.get("payload") is None:
         return None
     raw = row["payload"]
@@ -97,16 +73,11 @@ async def _load_otp_postgres(phone_number: str) -> dict | None:
 
 
 async def _delete_otp_postgres(phone_number: str) -> None:
+    from app.repositories import otp_sessions_repository as otp_repo
     phone_key = _normalize_phone(phone_number)
     pool = get_pool()
     async with pool.acquire() as conn:
-        delete_otp_q = build_query(
-            PostgreSQLQuery.from_(otp_sessions_t)
-            .delete()
-            .where(otp_sessions_t.phone_number == Parameter("%s")),
-            [phone_key],
-        )
-        await conn.execute(delete_otp_q.sql, *delete_otp_q.params)
+        await otp_repo.delete_by_phone(conn, phone_key)
 
 
 def _mask_phone(phone: str) -> str:
@@ -133,43 +104,20 @@ async def log_provider_call(
     success: bool = False,
     error: str = "",
 ) -> None:
+    from app.repositories import otp_sessions_repository as otp_repo
     try:
         pool = get_pool()
         async with pool.acquire() as conn:
-            insert_log_q = build_query(
-                PostgreSQLQuery.into(otp_provider_logs_t)
-                .columns(
-                    otp_provider_logs_t.action,
-                    otp_provider_logs_t.provider,
-                    otp_provider_logs_t.phone_masked,
-                    otp_provider_logs_t.request_url,
-                    otp_provider_logs_t.response_payload,
-                    otp_provider_logs_t.provider_session_id,
-                    otp_provider_logs_t.success,
-                    otp_provider_logs_t.error,
-                )
-                .insert(
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                    Parameter("%s"),
-                ),
-                [
-                    action,
-                    "2factor",
-                    _mask_phone(phone_number),
-                    request_url,
-                    json.dumps(response_payload or {}),
-                    provider_session_id or "",
-                    bool(success),
-                    error or "",
-                ],
+            await otp_repo.insert_provider_log(
+                conn,
+                action=action,
+                phone_masked=_mask_phone(phone_number),
+                request_url=request_url,
+                response_payload_json=json.dumps(response_payload or {}),
+                provider_session_id=provider_session_id or "",
+                success=bool(success),
+                error=error or "",
             )
-            await conn.execute(insert_log_q.sql, *insert_log_q.params)
     except Exception as exc:
         logger.warning("otp provider log insert failed", error=str(exc))
 

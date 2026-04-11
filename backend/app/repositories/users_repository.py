@@ -17,6 +17,7 @@ _SELECT_COLS = (
     users_t.name,
     users_t.auth_provider,
     users_t.onboarding_session_id,
+    users_t.last_login_at,
 )
 
 _SELECT_ADMIN_COLS = (
@@ -254,3 +255,14 @@ async def find_with_onboarding_session(conn, user_id: Any) -> Any:
         [user_id],
     )
     return await conn.fetchrow(q.sql, *q.params)
+
+
+async def find_phone_by_id(conn, user_id: Any) -> str | None:
+    """Return phone_number for a user (used for SMS sending)."""
+    q = build_query(
+        PostgreSQLQuery.from_(users_t).select(users_t.phone_number)
+        .where(users_t.id == Parameter("%s")).limit(1),
+        [user_id],
+    )
+    v = await conn.fetchval(q.sql, *q.params)
+    return str(v).strip() if v else None

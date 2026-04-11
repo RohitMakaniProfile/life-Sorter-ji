@@ -5,15 +5,9 @@ from typing import Any
 
 import asyncpg
 import httpx
-from pypika import Table
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.db import get_pool
-from app.sql_builder import build_query
 from app.services.system_config_service import get_config_value, parse_bool
-
-users_t = Table("users")
 
 
 def _frontend_url() -> str:
@@ -21,38 +15,28 @@ def _frontend_url() -> str:
 
 
 async def _already_sent(conversation_id: str) -> bool:
+    from app.repositories import report_sms_repository as sms_repo
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
-            row = await conn.fetchval(
-                "SELECT 1 FROM report_link_sms_logs WHERE conversation_id = $1 AND status = 'sent' LIMIT 1",
-                conversation_id,
-            )
-            return bool(row)
+            return await sms_repo.check_sent(conn, conversation_id)
     except asyncpg.UndefinedTableError:
         return False
 
 
 async def _mark_log(conversation_id: str, user_id: str, status: str, provider_id: str = "", error: str = "") -> None:
+    from app.repositories import report_sms_repository as sms_repo
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO report_link_sms_logs (conversation_id, user_id, status, provider_message_id, error) "
-                "VALUES ($1, $2, $3, $4, $5) "
-                "ON CONFLICT (conversation_id) DO UPDATE SET "
-                "status = EXCLUDED.status, provider_message_id = EXCLUDED.provider_message_id, error = EXCLUDED.error, updated_at = NOW()",
-                conversation_id,
-                user_id,
-                status,
-                provider_id,
-                error,
-            )
+            await sms_repo.upsert_log(conn, conversation_id, user_id, status, provider_id, error)
     except asyncpg.UndefinedTableError:
         return
 
 
 async def send_report_link_sms_if_enabled(conversation_id: str, user_id: str) -> dict[str, Any]:
+    from app.repositories import users_repository as users_repo
+
     enabled = parse_bool(await get_config_value("sms.report_link_enabled", "false"), default=False)
     if not enabled:
         return {"sent": False, "reason": "disabled"}
@@ -62,14 +46,7 @@ async def send_report_link_sms_if_enabled(conversation_id: str, user_id: str) ->
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        q = build_query(
-            PostgreSQLQuery.from_(users_t)
-            .select(users_t.phone_number)
-            .where(users_t.id == Parameter("%s"))
-            .limit(1),
-            [user_id],
-        )
-        phone = str(await conn.fetchval(q.sql, *q.params) or "").strip()
+        phone = await users_repo.find_phone_by_id(conn, user_id) or ""
     if not phone:
         await _mark_log(conversation_id, user_id, "skipped", error="missing_phone")
         return {"sent": False, "reason": "missing_phone"}

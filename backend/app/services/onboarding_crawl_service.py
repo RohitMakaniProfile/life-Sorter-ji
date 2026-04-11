@@ -15,18 +15,12 @@ import time
 from typing import Any, Awaitable, Callable
 
 import structlog
-from pypika import Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.db import get_pool
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
 from app.skills.service import run_skill
-from app.sql_builder import build_query
 
 logger = structlog.get_logger()
-skill_calls_t = Table("skill_calls")
-onboarding_t = Table("onboarding")
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -41,24 +35,17 @@ async def create_onboarding_skill_call(
     input: dict[str, Any],
 ) -> int:
     """INSERT a running skill_call row scoped to an onboarding session. Returns the row id."""
+    from app.repositories import skill_calls_repository as skill_repo
     pool = get_pool()
+    run_id = f"{skill_id}-onboarding-{int(time.time() * 1000)}"
     async with pool.acquire() as conn:
-        insert_skill_call_sql = """
-        INSERT INTO skill_calls
-            (onboarding_session_id, skill_id, run_id, input, state)
-        VALUES ($1, $2, $3, $4::jsonb, $5)
-        RETURNING id
-        """
-        # Keep minimal raw SQL: INSERT ... RETURNING with jsonb cast is Postgres-specific.
-        row_id = await conn.fetchval(
-            insert_skill_call_sql,
-            onboarding_session_id,
-            skill_id,
-            f"{skill_id}-onboarding-{int(time.time() * 1000)}",
-            json.dumps(input),
-            "running",
+        return await skill_repo.insert_onboarding_skill_call(
+            conn,
+            onboarding_session_id=onboarding_session_id,
+            skill_id=skill_id,
+            run_id=run_id,
+            input_json=json.dumps(input),
         )
-    return int(row_id)
 
 
 async def finish_onboarding_skill_call(
@@ -69,21 +56,19 @@ async def finish_onboarding_skill_call(
     started_at_ms: float,
 ) -> None:
     """Mark a skill_call row as done (or error) and store output."""
+    from app.repositories import skill_calls_repository as skill_repo
     state = "error" if error else "done"
     duration_ms = int((time.time() - started_at_ms) * 1000)
     pool = get_pool()
     async with pool.acquire() as conn:
-        finish_skill_q = build_query(
-            PostgreSQLQuery.update(skill_calls_t)
-            .set(skill_calls_t.state, Parameter("%s"))
-            .set(skill_calls_t.output, Parameter("%s"))
-            .set(skill_calls_t.error, Parameter("%s"))
-            .set(skill_calls_t.ended_at, fn.Now())
-            .set(skill_calls_t.duration_ms, Parameter("%s"))
-            .where(skill_calls_t.id == Parameter("%s")),
-            [state, json.dumps(output if output is not None else []), error, duration_ms, skill_call_id],
+        await skill_repo.finish_onboarding_skill_call(
+            conn,
+            skill_call_id=skill_call_id,
+            state=state,
+            output_json=json.dumps(output if output is not None else []),
+            error=error,
+            duration_ms=duration_ms,
         )
-        await conn.execute(finish_skill_q.sql, *finish_skill_q.params)
 
 
 # ---------------------------------------------------------------------------
@@ -346,22 +331,10 @@ async def generate_rca_questions(
 
 async def fetch_onboarding_context(onboarding_id: str) -> dict[str, Any]:
     """Return onboarding context fields from the onboarding row."""
+    from app.repositories import onboarding_repository as onboarding_repo
     pool = get_pool()
     async with pool.acquire() as conn:
-        fetch_context_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.outcome,
-                onboarding_t.domain,
-                onboarding_t.task,
-                onboarding_t.scale_answers,
-                onboarding_t.web_summary,
-                onboarding_t.business_profile,
-            )
-            .where(onboarding_t.id == Parameter("%s")),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(fetch_context_q.sql, *fetch_context_q.params)
+        row = await onboarding_repo.find_crawl_context(conn, onboarding_id)
     if not row:
         return {}
     scale_answers_raw = row["scale_answers"]
@@ -389,14 +362,7 @@ async def update_onboarding_crawl_outputs(
     web_summary: str,
     business_profile: str,
 ) -> None:
+    from app.repositories import onboarding_repository as onboarding_repo
     pool = get_pool()
     async with pool.acquire() as conn:
-        update_outputs_q = build_query(
-            PostgreSQLQuery.update(onboarding_t)
-            .set(onboarding_t.web_summary, Parameter("%s"))
-            .set(onboarding_t.business_profile, Parameter("%s"))
-            .set(onboarding_t.updated_at, fn.Now())
-            .where(onboarding_t.id == Parameter("%s")),
-            [web_summary, business_profile, onboarding_id],
-        )
-        await conn.execute(update_outputs_q.sql, *update_outputs_q.params)
+        await onboarding_repo.update_crawl_outputs(conn, onboarding_id, web_summary, business_profile)

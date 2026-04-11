@@ -4,18 +4,13 @@ import json
 from typing import Any
 
 from fastapi import HTTPException, Request
-from pypika import Table
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.db import get_pool
-from app.sql_builder import build_query
 from app.services.jwt_service import decode_and_verify_access_token
 from app.task_stream.redis_client import get_redis
 
 _AUTH_CACHE_PREFIX = "ikshan:auth:user"
 _AUTH_CACHE_TTL_SECONDS = 300
-users_t = Table("users")
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -26,25 +21,10 @@ def _extract_bearer_token(authorization: str | None) -> str:
 
 
 async def _load_user_from_db(user_id: str) -> dict[str, Any] | None:
+    from app.repositories import users_repository as users_repo
     pool = get_pool()
     async with pool.acquire() as conn:
-        lookup_user_q = build_query(
-            PostgreSQLQuery.from_(users_t)
-            .select(
-                users_t.id,
-                users_t.email,
-                users_t.phone_number,
-                users_t.name,
-                users_t.auth_provider,
-                users_t.onboarding_session_id,
-                users_t.last_login_at,
-            )
-            # asyncpg can coerce UUID column comparisons from string params.
-            .where(users_t.id == Parameter("%s"))
-            .limit(1),
-            [user_id],
-        )
-        row = await conn.fetchrow(lookup_user_q.sql, *lookup_user_q.params)
+        row = await users_repo.find_by_id(conn, user_id)
     if not row:
         return None
     return {
@@ -166,4 +146,3 @@ def require_super_admin(request: Request) -> dict[str, Any]:
     if not _coerce_bool_flag(claims.get("super")):
         raise HTTPException(status_code=403, detail="Super-admin access required")
     return claims
-

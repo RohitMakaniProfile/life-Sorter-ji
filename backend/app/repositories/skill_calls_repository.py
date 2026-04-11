@@ -236,6 +236,46 @@ async def find_by_user_paginated(conn, user_id: str, limit: int, offset: int) ->
     return rows, total
 
 
+async def insert_onboarding_skill_call(
+    conn, onboarding_session_id: str, skill_id: str, run_id: str, input_json: str,
+) -> int:
+    """INSERT a running skill_call scoped to an onboarding session. Returns row id."""
+    q = build_query(
+        PostgreSQLQuery.into(skill_calls_t)
+        .columns(
+            skill_calls_t.onboarding_session_id, skill_calls_t.skill_id,
+            skill_calls_t.run_id, skill_calls_t.input, skill_calls_t.state,
+        )
+        .insert(
+            Parameter("%s"), Parameter("%s"), Parameter("%s"),
+            _cast_jsonb(Parameter("%s")), "running",
+        )
+        .returning(skill_calls_t.id),
+        [onboarding_session_id, skill_id, run_id, input_json],
+    )
+    row = await conn.fetchrow(q.sql, *q.params)
+    return int(row["id"])
+
+
+async def finish_onboarding_skill_call(
+    conn, skill_call_id: int, state: str, output_json: str,
+    error: str | None, duration_ms: int,
+) -> None:
+    """Mark an onboarding skill_call as done/error and store output."""
+    q = build_query(
+        PostgreSQLQuery.update(skill_calls_t)
+        .set(skill_calls_t.state, Parameter("%s"))
+        .set(skill_calls_t.output, _cast_jsonb(Parameter("%s")))
+        .set(skill_calls_t.error, Parameter("%s"))
+        .set(skill_calls_t.ended_at, fn.Now())
+        .set(skill_calls_t.duration_ms, Parameter("%s"))
+        .set(skill_calls_t.updated_at, fn.Now())
+        .where(skill_calls_t.id == _cast_bigint(Parameter("%s"))),
+        [state, output_json, error, duration_ms, skill_call_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
+
 async def find_detail_by_id(conn, skill_call_id: int) -> Any:
     """Admin: full detail for one skill call."""
     q = build_query(

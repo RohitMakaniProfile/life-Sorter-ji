@@ -4,7 +4,7 @@ from typing import Any
 
 from pypika import Order, Table
 from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
+from pypika.terms import Parameter, LiteralValue
 
 from app.sql_builder import build_query
 
@@ -97,5 +97,63 @@ async def delete_by_user_id(conn, user_id: str) -> None:
         PostgreSQLQuery.from_(playbook_runs_t).delete()
         .where(playbook_runs_t.user_id == Parameter("%s")),
         [user_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
+
+def _cast_jsonb(param: Parameter) -> LiteralValue:
+    return LiteralValue(f"{param}::jsonb")
+
+
+async def insert_running(
+    conn, session_id: str, user_id: Any,
+    onboarding_snapshot_json: str, crawl_snapshot_json: str,
+) -> Any:
+    """INSERT a new playbook_run in 'running' state. Returns the row."""
+    q = build_query(
+        PostgreSQLQuery.into(playbook_runs_t)
+        .columns(
+            playbook_runs_t.session_id, playbook_runs_t.user_id,
+            playbook_runs_t.status, playbook_runs_t.onboarding_snapshot,
+            playbook_runs_t.crawl_snapshot,
+        )
+        .insert(
+            Parameter("%s"), Parameter("%s"), "running",
+            _cast_jsonb(Parameter("%s")), _cast_jsonb(Parameter("%s")),
+        )
+        .returning(playbook_runs_t.id),
+        [session_id, user_id, onboarding_snapshot_json, crawl_snapshot_json],
+    )
+    return await conn.fetchrow(q.sql, *q.params)
+
+
+async def mark_complete(
+    conn, run_id: Any, context_brief: str, icp_card: str,
+    playbook: str, website_audit: str, latencies_json: str,
+) -> None:
+    """Mark a playbook_run as complete with results."""
+    q = build_query(
+        PostgreSQLQuery.update(playbook_runs_t)
+        .set(playbook_runs_t.status, "complete")
+        .set(playbook_runs_t.error, "")
+        .set(playbook_runs_t.context_brief, Parameter("%s"))
+        .set(playbook_runs_t.icp_card, Parameter("%s"))
+        .set(playbook_runs_t.playbook, Parameter("%s"))
+        .set(playbook_runs_t.website_audit, Parameter("%s"))
+        .set(playbook_runs_t.latencies, _cast_jsonb(Parameter("%s")))
+        .where(playbook_runs_t.id == Parameter("%s")),
+        [context_brief, icp_card, playbook, website_audit, latencies_json, run_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
+
+async def mark_error(conn, run_id: Any, error_message: str) -> None:
+    """Mark a playbook_run as errored."""
+    q = build_query(
+        PostgreSQLQuery.update(playbook_runs_t)
+        .set(playbook_runs_t.status, "error")
+        .set(playbook_runs_t.error, Parameter("%s"))
+        .where(playbook_runs_t.id == Parameter("%s")),
+        [error_message, run_id],
     )
     await conn.execute(q.sql, *q.params)

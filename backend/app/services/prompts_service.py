@@ -1,5 +1,5 @@
 """
-Prompts repository service.
+Prompts service.
 
 Provides functions to read and manage system prompts stored in the database.
 Includes Redis caching with 1-hour TTL for performance.
@@ -7,16 +7,12 @@ Includes Redis caching with 1-hour TTL for performance.
 from __future__ import annotations
 
 from typing import Any
-from pypika import Order, Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
+
 from app.db import get_pool
-from app.sql_builder import build_query
 from app.task_stream.redis_client import get_redis
 
 CACHE_TTL_SECONDS = 3600  # 1 hour
 CACHE_KEY_PREFIX = "prompt:"
-prompts_t = Table("prompts")
 
 
 async def get_prompt(slug: str, default: str = "") -> str:
@@ -24,6 +20,8 @@ async def get_prompt(slug: str, default: str = "") -> str:
     Get prompt content by slug.
     First checks Redis cache, falls back to DB if not cached.
     """
+    from app.repositories import prompts_repository as prompts_repo
+
     slug = (slug or "").strip()
     if not slug:
         return default
@@ -38,18 +36,10 @@ async def get_prompt(slug: str, default: str = "") -> str:
     # Fetch from DB
     pool = get_pool()
     async with pool.acquire() as conn:
-        get_prompt_q = build_query(
-            PostgreSQLQuery.from_(prompts_t)
-            .select(prompts_t.content)
-            .where(prompts_t.slug == Parameter("%s")),
-            [slug],
-        )
-        row = await conn.fetchrow(get_prompt_q.sql, *get_prompt_q.params)
+        content = await prompts_repo.get_content(conn, slug)
 
-    if row is None:
+    if content is None:
         return default
-
-    content = str(row.get("content") or "")
 
     # Cache the result
     if redis:
@@ -62,27 +52,15 @@ async def get_prompt_full(slug: str) -> dict[str, Any] | None:
     """
     Get full prompt record by slug (for admin UI).
     """
+    from app.repositories import prompts_repository as prompts_repo
+
     slug = (slug or "").strip()
     if not slug:
         return None
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        get_prompt_full_q = build_query(
-            PostgreSQLQuery.from_(prompts_t)
-            .select(
-                prompts_t.slug,
-                prompts_t.name,
-                prompts_t.content,
-                prompts_t.description,
-                prompts_t.category,
-                prompts_t.created_at,
-                prompts_t.updated_at,
-            )
-            .where(prompts_t.slug == Parameter("%s")),
-            [slug],
-        )
-        row = await conn.fetchrow(get_prompt_full_q.sql, *get_prompt_full_q.params)
+        row = await prompts_repo.get_full(conn, slug)
 
     if row is None:
         return None
@@ -102,41 +80,14 @@ async def list_prompts(category: str | None = None) -> list[dict[str, Any]]:
     """
     List all prompts, optionally filtered by category.
     """
+    from app.repositories import prompts_repository as prompts_repo
+
     pool = get_pool()
     async with pool.acquire() as conn:
         if category:
-            list_by_category_q = build_query(
-                PostgreSQLQuery.from_(prompts_t)
-                .select(
-                    prompts_t.slug,
-                    prompts_t.name,
-                    prompts_t.content,
-                    prompts_t.description,
-                    prompts_t.category,
-                    prompts_t.created_at,
-                    prompts_t.updated_at,
-                )
-                .where(prompts_t.category == Parameter("%s"))
-                .orderby(prompts_t.name),
-                [category],
-            )
-            rows = await conn.fetch(list_by_category_q.sql, *list_by_category_q.params)
+            rows = await prompts_repo.list_by_category(conn, category)
         else:
-            list_prompts_q = build_query(
-                PostgreSQLQuery.from_(prompts_t)
-                .select(
-                    prompts_t.slug,
-                    prompts_t.name,
-                    prompts_t.content,
-                    prompts_t.description,
-                    prompts_t.category,
-                    prompts_t.created_at,
-                    prompts_t.updated_at,
-                )
-                .orderby(prompts_t.category, order=Order.asc)
-                .orderby(prompts_t.name, order=Order.asc)
-            )
-            rows = await conn.fetch(list_prompts_q.sql, *list_prompts_q.params)
+            rows = await prompts_repo.list_all(conn)
 
     return [
         {
@@ -163,6 +114,8 @@ async def upsert_prompt(
     Create or update a prompt.
     Invalidates cache on update.
     """
+    from app.repositories import prompts_repository as prompts_repo
+
     slug = (slug or "").strip()
     name = (name or "").strip()
     content = content or ""
@@ -176,42 +129,7 @@ async def upsert_prompt(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        upsert_prompt_q = build_query(
-            PostgreSQLQuery.into(prompts_t)
-            .columns(
-                prompts_t.slug,
-                prompts_t.name,
-                prompts_t.content,
-                prompts_t.description,
-                prompts_t.category,
-                prompts_t.updated_at,
-            )
-            .insert(
-                Parameter("%s"),
-                Parameter("%s"),
-                Parameter("%s"),
-                Parameter("%s"),
-                Parameter("%s"),
-                fn.Now(),
-            )
-            .on_conflict(prompts_t.slug)
-            .do_update(prompts_t.name)
-            .do_update(prompts_t.content)
-            .do_update(prompts_t.description)
-            .do_update(prompts_t.category)
-            .do_update(prompts_t.updated_at)
-            .returning(
-                prompts_t.slug,
-                prompts_t.name,
-                prompts_t.content,
-                prompts_t.description,
-                prompts_t.category,
-                prompts_t.created_at,
-                prompts_t.updated_at,
-            ),
-            [slug, name, content, description, category],
-        )
-        row = await conn.fetchrow(upsert_prompt_q.sql, *upsert_prompt_q.params)
+        row = await prompts_repo.upsert(conn, slug, name, content, description, category)
 
     # Invalidate cache
     redis = await get_redis()
@@ -234,21 +152,15 @@ async def delete_prompt(slug: str) -> bool:
     Delete a prompt by slug.
     Returns True if deleted, False if not found.
     """
+    from app.repositories import prompts_repository as prompts_repo
+
     slug = (slug or "").strip()
     if not slug:
         return False
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        delete_prompt_q = build_query(
-            PostgreSQLQuery.from_(prompts_t)
-            .delete()
-            .where(prompts_t.slug == Parameter("%s")),
-            [slug],
-        )
-        result = await conn.execute(delete_prompt_q.sql, *delete_prompt_q.params)
-
-    deleted = result == "DELETE 1"
+        deleted = await prompts_repo.delete(conn, slug)
 
     # Invalidate cache
     if deleted:
@@ -280,4 +192,3 @@ async def invalidate_prompt_cache(slug: str | None = None) -> None:
                 await redis.delete(*keys)
             if cursor == 0:
                 break
-

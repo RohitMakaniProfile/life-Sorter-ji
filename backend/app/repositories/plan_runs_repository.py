@@ -105,6 +105,18 @@ async def update_fields(conn, plan_id: str, fields: dict[str, Any]) -> None:
     await conn.execute(q.sql, *q.params)
 
 
+async def mark_error(conn, plan_id: str, error_message: str) -> None:
+    q = build_query(
+        PostgreSQLQuery.update(plan_runs_t)
+        .set(plan_runs_t.status, "error")
+        .set(plan_runs_t.error_message, Parameter("%s"))
+        .set(plan_runs_t.updated_at, fn.Now())
+        .where(plan_runs_t.id == Parameter("%s")),
+        [error_message, plan_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
+
 async def mark_as_interrupted(conn, plan_id: str, error_message: str) -> None:
     q = build_query(
         PostgreSQLQuery.update(plan_runs_t)

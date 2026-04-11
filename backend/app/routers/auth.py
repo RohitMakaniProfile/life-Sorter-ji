@@ -453,20 +453,10 @@ async def google_exchange_endpoint(req: GoogleExchangeRequest):
     # Link the onboarding row to the user if we have both user_id and session_id
     if user_id and onboarding_id:
         try:
+            from app.repositories import onboarding_repository as onboarding_repo
             pool = get_pool()
             async with pool.acquire() as conn:
-                link_onboarding_q = build_query(
-                    PostgreSQLQuery.update(Table("onboarding"))
-                    .set(Table("onboarding").user_id, Parameter("%s"))
-                    .set(Table("onboarding").updated_at, fn.Now())
-                    .where(Table("onboarding").id == Parameter("%s"))
-                    .where(
-                        Table("onboarding").user_id.isnull()
-                        | (Table("onboarding").user_id == Parameter("%s"))
-                    ),
-                    [user_id, onboarding_id, user_id],
-                )
-                await conn.execute(link_onboarding_q.sql, *link_onboarding_q.params)
+                await onboarding_repo.link_user(conn, user_id, onboarding_id)
         except Exception as exc:
             logger.warning("Failed to link onboarding to user", error=str(exc), user_id=user_id, onboarding_id=onboarding_id)
 
