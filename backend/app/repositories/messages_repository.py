@@ -105,6 +105,17 @@ async def get_last_message(conn, conversation_id: str) -> Any:
     return await conn.fetchrow(q.sql, *q.params)
 
 
+async def get_last_assistant_message(conn, conversation_id: str) -> Any:
+    q = build_query(
+        PostgreSQLQuery.from_(messages_t).select("*")
+        .where(messages_t.conversation_id == Parameter("%s"))
+        .where(messages_t.role == Parameter("%s"))
+        .orderby(messages_t.message_index, order=Order.desc).limit(1),
+        [conversation_id, "assistant"],
+    )
+    return await conn.fetchrow(q.sql, *q.params)
+
+
 async def update_content(conn, conversation_id: str, message_index: int,
                           content: str, output_file: str | None, message_json: str) -> None:
     q = build_query(

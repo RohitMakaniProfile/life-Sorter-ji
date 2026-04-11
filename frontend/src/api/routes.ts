@@ -85,8 +85,7 @@ export const API_ROUTES = {
   aiChat: {
     stream: '/api/v1/ai-chat/stream',
     message: '/api/v1/ai-chat/message',
-    messageBackground: '/api/v1/ai-chat/message/background',
-    messages: '/api/v1/ai-chat/messages',
+messages: '/api/v1/ai-chat/messages',
     conversations: '/api/v1/ai-chat/conversations',
     playbookHistory: '/api/v1/ai-chat/playbook-history',
     playbookRun: (runId: string) =>
@@ -96,9 +95,9 @@ export const API_ROUTES = {
     skills: '/api/v1/ai-chat/skills',
     skillCalls: '/api/v1/ai-chat/skill-calls',
     tokenUsage: '/api/v1/ai-chat/token-usage',
+    initialMessage: '/api/v1/ai-chat/initial-message',
     planStatus: '/api/v1/ai-chat/plan-status',
-    planExecute: '/api/v1/ai-chat/plan-execute',
-    agentAccess: '/api/v1/ai-chat/agent-access',
+agentAccess: '/api/v1/ai-chat/agent-access',
   },
   agents: {
     base: '/api/agents',

@@ -266,46 +266,12 @@ export async function sendMessage(opts: {
   );
 }
 
-export async function sendMessageBackground(opts: {
-  message: string;
-  conversationId?: string;
-  agentId?: AgentId;
-  planId?: string;
-}): Promise<{
-  conversationId: string;
-  status?: string;
-  optionSelected?: string;
-  backgroundExecution?: boolean;
-  planId?: string;
-  assistantMessageId?: string;
-  agentId?: AgentId;
-  /** Task stream metadata when background task is started */
-  taskStream?: {
-    streamId: string;
-    taskType: string;
-  };
-}> {
-  return apiJsonPost<{
-    conversationId: string;
-    status?: string;
-    optionSelected?: string;
-    backgroundExecution?: boolean;
-    planId?: string;
-    assistantMessageId?: string;
-    agentId?: AgentId;
-    taskStream?: {
-      streamId: string;
-      taskType: string;
-    };
-  }>(
-    API_ROUTES.aiChat.messageBackground,
-    withAuthActor({
-      message: opts.message,
-      conversationId: opts.conversationId,
-      agentId: opts.agentId,
-      planId: opts.planId,
-    }),
+
+export async function getInitialMessage(agentId: AgentId): Promise<ChatMessage | null> {
+  const result = await apiJson<{ agentId: AgentId; message: ChatMessage | null }>(
+    `${API_ROUTES.aiChat.initialMessage}?agentId=${encodeURIComponent(agentId)}`,
   );
+  return result.message;
 }
 
 export async function getMessages(conversationId?: string): Promise<{
