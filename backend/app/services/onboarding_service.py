@@ -2,72 +2,36 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
-import json
 import structlog
-from pypika import Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.db import get_pool
-from app.repositories.onboarding_table import insert_onboarding_default_values_returning
-from app.sql_builder import build_query
+from app.repositories import onboarding_repository as onboarding_repo
 from app.utils.url_sanitize import sanitize_http_url
 
 logger = structlog.get_logger()
-onboarding_t = Table("onboarding")
-ALLOWED_PATCH_FIELDS = frozenset(
-    {
-        "user_id",
-        "outcome",
-        "domain",
-        "task",
-        "website_url",
-        "gbp_url",
-        "scale_answers",
-    }
-)
 
-# Backend-managed fields (should not be patched via onboarding upsert).
-BACKEND_MANAGED_FIELDS = frozenset(
-    {"questions_answers", "crawl_cache_key", "crawl_run_id", "onboarding_completed_at", "business_profile"}
-)
+ALLOWED_PATCH_FIELDS = frozenset({
+    "user_id", "outcome", "domain", "task", "website_url", "gbp_url", "scale_answers",
+})
 
-RETURNING_COLUMNS = (
-    "id",
-    "user_id",
-    "outcome",
-    "domain",
-    "task",
-    "website_url",
-    "gbp_url",
-    "scale_answers",
-    "business_profile",
-    "questions_answers",
-    "crawl_cache_key",
-    "onboarding_completed_at",
-    "created_at",
-    "updated_at",
-)
+BACKEND_MANAGED_FIELDS = frozenset({
+    "questions_answers", "crawl_cache_key", "crawl_run_id",
+    "onboarding_completed_at", "business_profile",
+})
 
 
-def _returning_terms() -> list[Any]:
-    return [getattr(onboarding_t, col) for col in RETURNING_COLUMNS]
-
-
-def _sanitize_onboarding_url_fields(d: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_url_fields(d: dict[str, Any]) -> dict[str, Any]:
     out = dict(d)
     for key in ("website_url", "gbp_url"):
-        if key not in out:
-            continue
-        val = out[key]
-        if isinstance(val, str):
-            out[key] = sanitize_http_url(val)
+        if key in out and isinstance(out[key], str):
+            out[key] = sanitize_http_url(out[key])
     return out
 
 
-def _coerce_onboarding_jsonb_fields(d: dict[str, Any]) -> dict[str, Any]:
+def _coerce_jsonb_fields(d: dict[str, Any]) -> dict[str, Any]:
     out = dict(d)
     if "scale_answers" in out:
         v = out.get("scale_answers")
@@ -80,7 +44,7 @@ def _allowed_updates(updates: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not updates:
         return {}
     raw = {k: v for k, v in updates.items() if k in ALLOWED_PATCH_FIELDS}
-    return _coerce_onboarding_jsonb_fields(_sanitize_onboarding_url_fields(raw))
+    return _coerce_jsonb_fields(_sanitize_url_fields(raw))
 
 
 def _serialize_row(row: Any) -> dict[str, Any]:
@@ -97,65 +61,35 @@ def _serialize_row(row: Any) -> dict[str, Any]:
 
 
 async def create_session_with_onboarding(initial: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Create a new onboarding row."""
     allowed = _allowed_updates(initial)
-
     pool = get_pool()
     async with pool.acquire() as conn:
         if not allowed:
-            row = await conn.fetchrow(insert_onboarding_default_values_returning())
+            row = await onboarding_repo.insert_default(conn)
         else:
-            cols = list(allowed.keys())
-            vals: list[Any] = list(allowed.values())
-            insert_terms = [getattr(onboarding_t, col) for col in cols]
-            insert_placeholders = [Parameter("%s") for _ in vals]
-            create_with_fields_q = build_query(
-                PostgreSQLQuery.into(onboarding_t)
-                .columns(*insert_terms)
-                .insert(*insert_placeholders)
-                .returning(*_returning_terms()),
-                vals,
-            )
-            row = await conn.fetchrow(create_with_fields_q.sql, *create_with_fields_q.params)
+            row = await onboarding_repo.insert_with_fields(conn, list(allowed.keys()), list(allowed.values()))
 
     out = _serialize_row(row)
-    logger.info(
-        "onboarding row created",
-        onboarding_id=out.get("id"),
-        initial_fields=list(allowed.keys()) if allowed else [],
-    )
+    logger.info("onboarding row created", onboarding_id=out.get("id"),
+                initial_fields=list(allowed.keys()) if allowed else [])
     return out
 
 
 async def upsert_onboarding_patch(
-    onboarding_id: str,
-    updates: dict[str, Any],
-    user_id: Optional[str] = None,
+    onboarding_id: str, updates: dict[str, Any], user_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """
-    Patch an existing onboarding row.
-
-    If the row is already complete, create a fresh onboarding row instead.
-    """
     oid = (onboarding_id or "").strip()
     if not oid:
         raise ValueError("onboarding_id is required for patch")
 
     allowed = _allowed_updates(updates)
     uid = (user_id or "").strip() if user_id else None
-
     if uid and "user_id" not in allowed:
         allowed["user_id"] = uid
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        existing_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(onboarding_t.onboarding_completed_at, onboarding_t.website_url)
-            .where(onboarding_t.id == Parameter("%s")),
-            [oid],
-        )
-        existing = await conn.fetchrow(existing_q.sql, *existing_q.params)
+        existing = await onboarding_repo.find_by_id(conn, oid)
         if not existing:
             raise ValueError("onboarding row not found")
 
@@ -173,44 +107,12 @@ async def upsert_onboarding_patch(
             return await create_session_with_onboarding(initial_fields)
 
         if not allowed:
-            current_row_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t)
-                .select(*_returning_terms())
-                .where(onboarding_t.id == Parameter("%s")),
-                [oid],
-            )
-            row = await conn.fetchrow(current_row_q.sql, *current_row_q.params)
+            row = await onboarding_repo.find_full_by_id(conn, oid)
         else:
-            cols = list(allowed.keys())
-            vals = list(allowed.values())
-            update_qb = PostgreSQLQuery.update(onboarding_t)
-            for col_name in cols:
-                update_qb = update_qb.set(getattr(onboarding_t, col_name), Parameter("%s"))
-            update_q = build_query(
-                update_qb.set(onboarding_t.updated_at, fn.Now())
-                .where(onboarding_t.id == Parameter("%s"))
-                .returning(*_returning_terms()),
-                [*vals, oid],
-            )
-            row = await conn.fetchrow(update_q.sql, *update_q.params)
+            row = await onboarding_repo.update_fields(conn, oid, allowed)
 
         if website_url_changed:
-            # Keep this as explicit SQL because jsonb cast on bound parameters is
-            # runtime-sensitive across environments with PyPika expressions.
-            reset_summary_sql = (
-                "UPDATE onboarding "
-                "SET web_summary = '', "
-                "    business_profile = '', "
-                "    rca_qa = $1::jsonb, "
-                "    rca_summary = '', "
-                "    rca_handoff = '', "
-                "    updated_at = NOW() "
-                "WHERE id = $2 "
-                "RETURNING id, user_id, outcome, domain, task, "
-                "          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key, "
-                "          onboarding_completed_at, created_at, updated_at"
-            )
-            row = await conn.fetchrow(reset_summary_sql, json.dumps([]), oid)
+            row = await onboarding_repo.reset_web_summary(conn, oid)
 
     out = _serialize_row(row)
     logger.debug("onboarding patched", onboarding_id=oid, fields=list(allowed.keys()))
@@ -218,66 +120,18 @@ async def upsert_onboarding_patch(
 
 
 async def reset_onboarding(onboarding_id: str) -> dict[str, Any]:
-    """Reset an onboarding row — clear all journey data, keeping only id and user_id.
-
-    Raises ValueError if the row does not exist or has a successfully completed playbook
-    (playbook_status = 'complete' or onboarding_completed_at is set), in which case
-    the row should be preserved.
-    """
     oid = (onboarding_id or "").strip()
     if not oid:
         raise ValueError("onboarding_id is required for reset")
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        guard_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(onboarding_t.onboarding_completed_at, onboarding_t.playbook_status)
-            .where(onboarding_t.id == Parameter("%s")),
-            [oid],
-        )
-        existing = await conn.fetchrow(guard_q.sql, *guard_q.params)
+        existing = await onboarding_repo.find_by_id(conn, oid)
         if not existing:
             raise ValueError("onboarding row not found")
-
         if existing.get("onboarding_completed_at") or str(existing.get("playbook_status") or "") == "complete":
             raise PermissionError("cannot reset a completed onboarding row")
-
-        reset_sql = (
-            "UPDATE onboarding "
-            "SET outcome = NULL, "
-            "    domain = NULL, "
-            "    task = NULL, "
-            "    website_url = NULL, "
-            "    gbp_url = NULL, "
-            "    questions_answers = '[]'::jsonb, "
-            "    rca_qa = '[]'::jsonb, "
-            "    scale_answers = '{}'::jsonb, "
-            "    business_profile = '', "
-            "    gap_questions = '[]'::jsonb, "
-            "    gap_answers = '', "
-            "    rca_summary = '', "
-            "    rca_handoff = '', "
-            "    precision_questions = '[]'::jsonb, "
-            "    precision_answers = '[]'::jsonb, "
-            "    precision_status = 'not_started', "
-            "    precision_completed_at = NULL, "
-            "    playbook_status = 'not_started', "
-            "    playbook_started_at = NULL, "
-            "    playbook_completed_at = NULL, "
-            "    playbook_error = '', "
-            "    crawl_run_id = NULL, "
-            "    crawl_cache_key = NULL, "
-            "    playbook_run_id = NULL, "
-            "    web_summary = '', "
-            "    onboarding_completed_at = NULL, "
-            "    updated_at = NOW() "
-            "WHERE id = $1 "
-            "RETURNING id, user_id, outcome, domain, task, "
-            "          website_url, gbp_url, scale_answers, business_profile, questions_answers, crawl_cache_key, "
-            "          onboarding_completed_at, created_at, updated_at"
-        )
-        row = await conn.fetchrow(reset_sql, oid)
+        row = await onboarding_repo.reset_full(conn, oid)
         if not row:
             raise ValueError("onboarding row not found")
 

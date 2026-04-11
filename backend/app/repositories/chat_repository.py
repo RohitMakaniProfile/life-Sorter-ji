@@ -4,10 +4,6 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-from pypika import Order, Table
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
-
 from app.db import get_pool
 from app.doable_claw_agent.stores import (
     delete_conversation,
@@ -17,7 +13,9 @@ from app.doable_claw_agent.stores import (
     list_conversations,
     now_iso,
 )
-from app.sql_builder import build_query
+from app.repositories import onboarding_repository as onboarding_repo
+from app.repositories import playbook_runs_repository as playbook_repo
+from app.repositories import task_stream_repository as task_stream_repo
 from app.skills.service import list_skills
 from app.services.journey_service import (
     JOURNEY_STEP_OUTCOME,
@@ -34,10 +32,6 @@ from app.services.journey_service import (
     get_task_options,
     get_scale_question_by_id,
 )
-
-playbook_runs_t = Table("playbook_runs")
-onboarding_t = Table("onboarding")
-task_stream_streams_t = Table("task_stream_streams")
 
 
 def _extract_company_name(website_url: str) -> str:
@@ -121,26 +115,7 @@ async def _attach_onboarding_transcript(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(onboarding_t)
-            .select(
-                onboarding_t.outcome,
-                onboarding_t.domain,
-                onboarding_t.task,
-                onboarding_t.website_url,
-                onboarding_t.gbp_url,
-                onboarding_t.scale_answers,
-                onboarding_t.rca_qa,
-                onboarding_t.precision_questions,
-                onboarding_t.precision_answers,
-                onboarding_t.gap_questions,
-                onboarding_t.gap_answers,
-            )
-            .where(onboarding_t.id == Parameter("%s"))
-            .limit(1),
-            [sid],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await onboarding_repo.find_transcript_fields(conn, sid)
 
     if not row:
         return messages
@@ -465,42 +440,11 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
     # Look up completed playbook from playbook_runs
     # Strategy 1: session_id = onboarding_id (most playbooks use this)
     pool = get_pool()
-    row = None
     async with pool.acquire() as conn:
-        fetch_playbook_q = build_query(
-            PostgreSQLQuery.from_(playbook_runs_t)
-            .select(
-                playbook_runs_t.playbook,
-                playbook_runs_t.website_audit,
-                playbook_runs_t.context_brief,
-                playbook_runs_t.icp_card,
-                playbook_runs_t.status,
-            )
-            .where(playbook_runs_t.session_id == Parameter("%s"))
-            .orderby(playbook_runs_t.updated_at, order=Order.desc)
-            .limit(1),
-            [onboarding_id],
-        )
-        row = await conn.fetchrow(fetch_playbook_q.sql, *fetch_playbook_q.params)
-        
+        row = await playbook_repo.find_latest_complete_by_session(conn, onboarding_id)
         # Strategy 2: If not found via session_id, try via onboarding.playbook_run_id FK
         if not row or row["status"] != "complete":
-            fetch_via_fk_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t)
-                .join(playbook_runs_t)
-                .on(onboarding_t.playbook_run_id == playbook_runs_t.id)
-                .select(
-                    playbook_runs_t.playbook,
-                    playbook_runs_t.website_audit,
-                    playbook_runs_t.context_brief,
-                    playbook_runs_t.icp_card,
-                    playbook_runs_t.status,
-                )
-                .where(onboarding_t.id == Parameter("%s"))
-                .limit(1),
-                [onboarding_id],
-            )
-            row = await conn.fetchrow(fetch_via_fk_q.sql, *fetch_via_fk_q.params)
+            row = await playbook_repo.find_latest_via_onboarding_fk(conn, onboarding_id)
 
     # If playbook is complete, inject it as a message
     if row and row["status"] == "complete":
@@ -546,19 +490,9 @@ async def _attach_playbook_content(messages: list[dict[str, Any]]) -> list[dict[
     # Playbook not complete — check task stream status for retry/resume info
     result = list(messages)
     async with pool.acquire() as conn:
-        stream_q = build_query(
-            PostgreSQLQuery.from_(task_stream_streams_t)
-            .select(
-                task_stream_streams_t.stream_id,
-                task_stream_streams_t.status,
-            )
-            .where(task_stream_streams_t.session_id == Parameter("%s"))
-            .where(task_stream_streams_t.task_type == "playbook/onboarding-generate")
-            .orderby(task_stream_streams_t.created_at, order=Order.desc)
-            .limit(1),
-            [onboarding_id],
+        stream_row = await task_stream_repo.find_latest_by_session_and_type(
+            conn, onboarding_id, "playbook/onboarding-generate"
         )
-        stream_row = await conn.fetchrow(stream_q.sql, *stream_q.params)
 
     # Update the placeholder message with stream status
     placeholder = result[playbook_msg_idx]
@@ -654,39 +588,9 @@ async def get_playbook_history(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        base_q = (
-            PostgreSQLQuery.from_(playbook_runs_t)
-            .where(playbook_runs_t.status == "complete")
-            .where(playbook_runs_t.playbook != "")
-        )
-
-        params: list[Any] = []
-        base_q = base_q.where(playbook_runs_t.user_id == Parameter("%s"))
-        params.append(uid)
-
-        count_q = build_query(
-            base_q.select(playbook_runs_t.session_id).distinct(),
-            params,
-        )
-        all_session_rows = await conn.fetch(count_q.sql, *count_q.params)
+        all_session_rows = await playbook_repo.find_distinct_sessions_by_user(conn, uid)
         total = len(all_session_rows)
-
-        q = (
-            base_q.select(
-                playbook_runs_t.id,
-                playbook_runs_t.session_id,
-                playbook_runs_t.user_id,
-                playbook_runs_t.status,
-                playbook_runs_t.playbook,
-                playbook_runs_t.onboarding_snapshot,
-                playbook_runs_t.created_at,
-                playbook_runs_t.updated_at,
-            )
-            .orderby(playbook_runs_t.updated_at, order=Order.desc)
-            .limit(max(200, page_size + page_offset + 50))
-        )
-        built = build_query(q, params)
-        rows = await conn.fetch(built.sql, *built.params)
+        rows = await playbook_repo.find_paginated_by_user(conn, uid, max(200, page_size + page_offset + 50))
 
     # One row per onboarding journey (`session_id` == onboarding.id): latest complete playbook only.
     seen_sessions: set[str] = set()
@@ -750,25 +654,7 @@ async def get_playbook_run_for_user(run_id: str, user_id: str) -> dict[str, Any]
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        row_q = build_query(
-            PostgreSQLQuery.from_(playbook_runs_t)
-            .select(
-                playbook_runs_t.id,
-                playbook_runs_t.session_id,
-                playbook_runs_t.status,
-                playbook_runs_t.playbook,
-                playbook_runs_t.website_audit,
-                playbook_runs_t.context_brief,
-                playbook_runs_t.icp_card,
-                playbook_runs_t.onboarding_snapshot,
-            )
-            .where(playbook_runs_t.id == Parameter("%s"))
-            .where(playbook_runs_t.user_id == Parameter("%s"))
-            .where(playbook_runs_t.status == "complete")
-            .limit(1),
-            [rid, uid],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        row = await playbook_repo.find_by_id_and_user(conn, rid, uid)
 
     if not row:
         return None

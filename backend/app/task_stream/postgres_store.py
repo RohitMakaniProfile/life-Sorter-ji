@@ -13,7 +13,7 @@ from pypika.terms import Parameter
 
 from app.config import REDIS_TASKSTREAM_MAX_BACKLOG, REDIS_TASKSTREAM_TTL_SECONDS
 from app.db import get_pool
-from app.repositories.task_stream_table import cleanup_stale_running_streams_sql
+from app.repositories.task_stream_repository import cleanup_stale_running_sql as cleanup_stale_running_streams_sql
 from app.sql_builder import build_query
 from app.task_stream.events import TaskStreamEvent
 

@@ -9,31 +9,22 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from pypika import Order, Table, functions as fn
-from pypika.dialects import PostgreSQLQuery
-from pypika.terms import Parameter
 
 from app.config import get_settings
 from app.db import get_pool
 from app.middleware.auth_context import get_request_auth_claims, require_super_admin
 from app.task_stream.redis_client import get_redis
-from app.doable_claw_agent.stores import auto_timeout_stale_skill_calls
-from app.sql_builder import build_query
-
-
-router = APIRouter(prefix="/admin/management", tags=["Admin-Management"])
-users_t = Table("users")
-otp_logs_t = Table("otp_provider_logs")
-plan_runs_t = Table("plan_runs")
-task_streams_t = Table("task_stream_streams")
-skill_calls_t = Table("skill_calls")
-conversations_t = Table("conversations")
-onboarding_t = Table("onboarding")
-crawl_runs_t = Table("crawl_runs")
-playbook_runs_t = Table("playbook_runs")
-session_links_t = Table("session_user_links")
-system_config_t = Table("system_config")
-token_usage_t = Table("token_usage")
+from app.repositories import users_repository as users_repo
+from app.repositories import otp_logs_repository as otp_logs_repo
+from app.repositories import plan_runs_repository as plan_runs_repo
+from app.repositories import task_stream_repository as task_stream_repo
+from app.repositories import skill_calls_repository as skill_repo
+from app.repositories import conversations_repository as convs_repo
+from app.repositories import onboarding_repository as onboarding_repo
+from app.repositories import playbook_runs_repository as playbook_repo
+from app.repositories import session_links_repository as session_links_repo
+from app.repositories import system_config_repository as config_repo
+from app.repositories import token_usage_repository as token_usage_repo
 
 
 class AdminApiEntry(BaseModel):
@@ -58,6 +49,9 @@ class UpsertSystemConfigRequest(BaseModel):
     description: str = Field("", description="Human-friendly description (optional)")
 
 
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
 def _service_status(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
     return {"name": name, "ok": ok, "detail": detail}
 
@@ -77,8 +71,7 @@ async def observability_snapshot(request: Request):
     db_ok = True
     try:
         async with pool.acquire() as conn:
-            ping_q = build_query(PostgreSQLQuery.select(1))
-            await conn.fetchval(ping_q.sql, *ping_q.params)
+            await conn.fetchval("SELECT 1")
     except Exception as exc:
         db_ok = False
         services.append(_service_status("postgres", False, f"Database ping failed: {exc}"))
@@ -152,65 +145,37 @@ async def observability_snapshot(request: Request):
     # Recent failures + counters from DB tables
     async with pool.acquire() as conn:
         try:
-            otp_failed_q = build_query(
-                PostgreSQLQuery.from_(otp_logs_t)
-                .select(
-                    otp_logs_t.action,
-                    otp_logs_t.provider,
-                    otp_logs_t.phone_masked,
-                    otp_logs_t.error,
-                    otp_logs_t.created_at,
-                )
-                .where(otp_logs_t.success == False)  # noqa: E712
-                .orderby(otp_logs_t.created_at, order=Order.desc)
-                .limit(20)
-            )
-            otp_failed = await conn.fetch(otp_failed_q.sql, *otp_failed_q.params)
+            otp_failed = await otp_logs_repo.find_recent_failures(conn)
             for r in otp_failed:
-                recent_errors.append(
-                    {
-                        "source": "otp_provider_logs",
-                        "at": r.get("created_at").isoformat() if r.get("created_at") else "",
-                        "message": str(r.get("error") or "OTP provider request failed"),
-                        "meta": {
-                            "action": str(r.get("action") or ""),
-                            "provider": str(r.get("provider") or ""),
-                            "phoneMasked": str(r.get("phone_masked") or ""),
-                        },
-                    }
-                )
+                recent_errors.append({
+                    "source": "otp_provider_logs",
+                    "at": r.get("created_at").isoformat() if r.get("created_at") else "",
+                    "message": str(r.get("error") or "OTP provider request failed"),
+                    "meta": {
+                        "action": str(r.get("action") or ""),
+                        "provider": str(r.get("provider") or ""),
+                        "phoneMasked": str(r.get("phone_masked") or ""),
+                    },
+                })
             counters["otp_failures_last_20"] = len(otp_failed)
         except Exception:
             counters["otp_failures_last_20"] = 0
 
         try:
-            failed_plans_q = build_query(
-                PostgreSQLQuery.from_(plan_runs_t)
-                .select(plan_runs_t.id, plan_runs_t.status, plan_runs_t.updated_at)
-                .where(plan_runs_t.status == "error")
-                .orderby(plan_runs_t.updated_at, order=Order.desc)
-                .limit(20)
-            )
-            failed_plans = await conn.fetch(failed_plans_q.sql, *failed_plans_q.params)
+            failed_plans = await plan_runs_repo.find_recent_errors(conn)
             for r in failed_plans:
-                recent_errors.append(
-                    {
-                        "source": "plan_runs",
-                        "at": r.get("updated_at").isoformat() if r.get("updated_at") else "",
-                        "message": "Plan execution failed",
-                        "meta": {"planId": str(r.get("id") or ""), "status": str(r.get("status") or "")},
-                    }
-                )
+                recent_errors.append({
+                    "source": "plan_runs",
+                    "at": r.get("updated_at").isoformat() if r.get("updated_at") else "",
+                    "message": "Plan execution failed",
+                    "meta": {"planId": str(r.get("id") or ""), "status": str(r.get("status") or "")},
+                })
             counters["plan_errors_last_20"] = len(failed_plans)
         except Exception:
             counters["plan_errors_last_20"] = 0
 
         try:
-            running_streams_q = build_query(
-                PostgreSQLQuery.from_(task_streams_t).select(fn.Count(1)).where(task_streams_t.status == "running")
-            )
-            running_streams = await conn.fetchval(running_streams_q.sql, *running_streams_q.params)
-            counters["task_stream_running"] = int(running_streams or 0)
+            counters["task_stream_running"] = await task_stream_repo.count_running(conn)
         except Exception:
             counters["task_stream_running"] = 0
 
@@ -231,81 +196,24 @@ async def list_users(request: Request, q: str = "", limit: int = 50, offset: int
     require_super_admin(request)
     limit = min(max(1, limit), 200)
     offset = max(0, offset)
+    search = (q or "").strip() or None
     pool = get_pool()
-    search = (q or "").strip()
     async with pool.acquire() as conn:
-        if search:
-            pattern = f"%{search}%"
-            rows_q = build_query(
-                PostgreSQLQuery.from_(users_t)
-                .select(
-                    users_t.id,
-                    users_t.email,
-                    users_t.phone_number,
-                    users_t.name,
-                    users_t.auth_provider,
-                    users_t.created_at,
-                    users_t.last_login_at,
-                )
-                .where(
-                    users_t.email.ilike(Parameter("%s"))
-                    | users_t.phone_number.ilike(Parameter("%s"))
-                    | users_t.name.ilike(Parameter("%s"))
-                )
-                .orderby(users_t.created_at, order=Order.desc)
-                .limit(Parameter("%s"))
-                .offset(Parameter("%s")),
-                [pattern, pattern, pattern, limit, offset],
-            )
-            rows = await conn.fetch(rows_q.sql, *rows_q.params)
-            total_q = build_query(
-                PostgreSQLQuery.from_(users_t)
-                .select(fn.Count(1))
-                .where(
-                    users_t.email.ilike(Parameter("%s"))
-                    | users_t.phone_number.ilike(Parameter("%s"))
-                    | users_t.name.ilike(Parameter("%s"))
-                ),
-                [pattern, pattern, pattern],
-            )
-            total = await conn.fetchval(total_q.sql, *total_q.params)
-        else:
-            rows_q = build_query(
-                PostgreSQLQuery.from_(users_t)
-                .select(
-                    users_t.id,
-                    users_t.email,
-                    users_t.phone_number,
-                    users_t.name,
-                    users_t.auth_provider,
-                    users_t.created_at,
-                    users_t.last_login_at,
-                )
-                .orderby(users_t.created_at, order=Order.desc)
-                .limit(Parameter("%s"))
-                .offset(Parameter("%s")),
-                [limit, offset],
-            )
-            rows = await conn.fetch(rows_q.sql, *rows_q.params)
-            total_q = build_query(PostgreSQLQuery.from_(users_t).select(fn.Count(1)))
-            total = await conn.fetchval(total_q.sql, *total_q.params)
-
+        rows, total = await users_repo.list_admin(conn, search, limit, offset)
     users = []
     for r in rows:
         created_at = r.get("created_at")
         last_login_at = r.get("last_login_at")
-        users.append(
-            {
-                "id": str(r.get("id") or ""),
-                "email": r.get("email") or "",
-                "phone_number": r.get("phone_number") or "",
-                "name": r.get("name") or "",
-                "auth_provider": r.get("auth_provider") or "",
-                "created_at": created_at.isoformat() if created_at else "",
-                "last_login_at": last_login_at.isoformat() if last_login_at else "",
-            }
-        )
-    return {"users": users, "total": int(total or 0), "limit": limit, "offset": offset}
+        users.append({
+            "id": str(r.get("id") or ""),
+            "email": r.get("email") or "",
+            "phone_number": r.get("phone_number") or "",
+            "name": r.get("name") or "",
+            "auth_provider": r.get("auth_provider") or "",
+            "created_at": created_at.isoformat() if created_at else "",
+            "last_login_at": last_login_at.isoformat() if last_login_at else "",
+        })
+    return {"users": users, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/users/{user_id}/skill-calls", response_model=dict[str, Any])
@@ -318,40 +226,8 @@ async def list_user_skill_calls(request: Request, user_id: str, limit: int = 5, 
         raise HTTPException(status_code=400, detail="user_id is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        await auto_timeout_stale_skill_calls(conn, user_id=uid)
-        sc = skill_calls_t.as_("sc")
-        c = conversations_t.as_("c")
-        rows_q = build_query(
-            PostgreSQLQuery.from_(sc)
-            .join(c)
-            .on(c.id == sc.conversation_id)
-            .select(
-                sc.id,
-                sc.conversation_id,
-                sc.message_id,
-                sc.skill_id,
-                sc.input,
-                sc.state,
-                sc.started_at,
-                sc.ended_at,
-                sc.duration_ms,
-            )
-            .where(c.user_id == Parameter("%s"))
-            .orderby(sc.started_at, order=Order.desc)
-            .limit(Parameter("%s"))
-            .offset(Parameter("%s")),
-            [uid, limit, offset],
-        )
-        rows = await conn.fetch(rows_q.sql, *rows_q.params)
-        total_q = build_query(
-            PostgreSQLQuery.from_(sc)
-            .join(c)
-            .on(c.id == sc.conversation_id)
-            .select(fn.Count(1))
-            .where(c.user_id == Parameter("%s")),
-            [uid],
-        )
-        total = await conn.fetchval(total_q.sql, *total_q.params)
+        await skill_repo.auto_timeout_stale(conn, user_id=uid)
+        rows, total = await skill_repo.find_by_user_paginated(conn, uid, limit, offset)
     calls = []
     for r in rows:
         started_at = r.get("started_at")
@@ -367,7 +243,7 @@ async def list_user_skill_calls(request: Request, user_id: str, limit: int = 5, 
             "ended_at": ended_at.isoformat() if ended_at else "",
             "duration_ms": r.get("duration_ms"),
         })
-    return {"calls": calls, "total": int(total or 0), "limit": limit, "offset": offset}
+    return {"calls": calls, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/skill-calls/{skill_call_id}", response_model=dict[str, Any])
@@ -378,30 +254,8 @@ async def get_skill_call_detail(request: Request, skill_call_id: str):
         raise HTTPException(status_code=400, detail="skill_call_id is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        await auto_timeout_stale_skill_calls(conn, skill_call_id=int(scid))
-        detail_q = build_query(
-            PostgreSQLQuery.from_(skill_calls_t)
-            .select(
-                skill_calls_t.id,
-                skill_calls_t.conversation_id,
-                skill_calls_t.message_id,
-                skill_calls_t.skill_id,
-                skill_calls_t.run_id,
-                skill_calls_t.input,
-                skill_calls_t.streamed_text,
-                skill_calls_t.state,
-                skill_calls_t.output,
-                skill_calls_t.error,
-                skill_calls_t.started_at,
-                skill_calls_t.ended_at,
-                skill_calls_t.duration_ms,
-                skill_calls_t.created_at,
-            )
-            .where(skill_calls_t.id == Parameter("%s"))
-            .limit(1),
-            [int(scid)],
-        )
-        row = await conn.fetchrow(detail_q.sql, *detail_q.params)
+        await skill_repo.auto_timeout_stale(conn, skill_call_id=int(scid))
+        row = await skill_repo.find_detail_by_id(conn, int(scid))
     if not row:
         raise HTTPException(status_code=404, detail="Skill call not found")
     started_at = row.get("started_at")
@@ -458,15 +312,7 @@ async def delete_user(request: Request, user_id: str):
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        # Fetch user to confirm existence and grab onboarding_session_id
-        user_q = build_query(
-            PostgreSQLQuery.from_(users_t)
-            .select(users_t.id, users_t.email, users_t.phone_number, users_t.onboarding_session_id)
-            .where(users_t.id == Parameter("%s"))
-            .limit(1),
-            [uid],
-        )
-        user_row = await conn.fetchrow(user_q.sql, *user_q.params)
+        user_row = await users_repo.find_with_onboarding_session(conn, uid)
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -474,68 +320,36 @@ async def delete_user(request: Request, user_id: str):
 
         async with conn.transaction():
             # 1. Conversations → cascades messages, skill_calls, plan_runs
-            del_conversations_q = build_query(
-                PostgreSQLQuery.from_(conversations_t).delete().where(conversations_t.user_id == Parameter("%s")),
-                [uid],
-            )
-            await conn.execute(del_conversations_q.sql, *del_conversations_q.params)
+            await convs_repo.delete_by_user_id(conn, uid)
 
-            # 2. Onboarding rows linked by user_id (TEXT)
-            del_onboarding_user_q = build_query(
-                PostgreSQLQuery.from_(onboarding_t).delete().where(onboarding_t.user_id == Parameter("%s")),
-                [uid],
-            )
-            await conn.execute(del_onboarding_user_q.sql, *del_onboarding_user_q.params)
+            # 2. Onboarding rows linked by user_id
+            await onboarding_repo.delete_by_user_id(conn, uid)
 
-            # 3. Onboarding row linked by session_id (if present and different)
+            # 3. Onboarding row linked by session_id (if present)
             if onboarding_session_id:
-                del_onboarding_session_q = build_query(
-                    PostgreSQLQuery.from_(onboarding_t).delete().where(onboarding_t.session_id == Parameter("%s")),
-                    [onboarding_session_id],
-                )
-                await conn.execute(del_onboarding_session_q.sql, *del_onboarding_session_q.params)
+                await onboarding_repo.delete_by_session_id(conn, onboarding_session_id)
 
-            # 4. Crawl runs
+            # 4. Crawl runs (no dedicated repository yet)
             try:
-                del_crawl_q = build_query(
-                    PostgreSQLQuery.from_(crawl_runs_t).delete().where(crawl_runs_t.user_id == Parameter("%s")),
-                    [uid],
-                )
-                await conn.execute(del_crawl_q.sql, *del_crawl_q.params)
+                await conn.execute("DELETE FROM crawl_runs WHERE user_id = $1", uid)
             except Exception:
-                pass  # table may not use UUID cast
+                pass  # table may not exist or use different user_id type
 
             # 5. Playbook runs
             try:
-                del_playbook_q = build_query(
-                    PostgreSQLQuery.from_(playbook_runs_t).delete().where(playbook_runs_t.user_id == Parameter("%s")),
-                    [uid],
-                )
-                await conn.execute(del_playbook_q.sql, *del_playbook_q.params)
+                await playbook_repo.delete_by_user_id(conn, uid)
             except Exception:
                 pass
 
-            # 6. Task stream streams (user_id is TEXT in this table)
-            del_streams_q = build_query(
-                PostgreSQLQuery.from_(task_streams_t).delete().where(task_streams_t.user_id == Parameter("%s")),
-                [uid],
-            )
-            await conn.execute(del_streams_q.sql, *del_streams_q.params)
+            # 6. Task stream streams
+            await task_stream_repo.delete_by_user(conn, uid)
 
             # 7. Session-user links
-            del_links_q = build_query(
-                PostgreSQLQuery.from_(session_links_t).delete().where(session_links_t.user_id == Parameter("%s")),
-                [uid],
-            )
-            await conn.execute(del_links_q.sql, *del_links_q.params)
+            await session_links_repo.delete_by_user(conn, uid)
 
             # 8. Delete user — cascades: payment_checkout_context, user_plan_grants,
             #    admin_subscription_grants, admin_subscription_grant_logs
-            del_user_q = build_query(
-                PostgreSQLQuery.from_(users_t).delete().where(users_t.id == Parameter("%s")),
-                [uid],
-            )
-            await conn.execute(del_user_q.sql, *del_user_q.params)
+            await users_repo.delete_by_id(conn, uid)
 
     return {
         "success": True,
@@ -550,30 +364,17 @@ async def list_system_config(request: Request):
     require_super_admin(request)
     pool = get_pool()
     async with pool.acquire() as conn:
-        cfg_q = build_query(
-            PostgreSQLQuery.from_(system_config_t)
-            .select(
-                system_config_t.key,
-                system_config_t.value,
-                system_config_t.type,
-                system_config_t.description,
-                system_config_t.updated_at,
-            )
-            .orderby(system_config_t.key, order=Order.asc)
-        )
-        rows = await conn.fetch(cfg_q.sql, *cfg_q.params)
+        rows = await config_repo.find_all_ordered(conn)
     entries = []
     for r in rows:
         updated_at = r.get("updated_at")
-        entries.append(
-            {
-                "key": str(r.get("key") or ""),
-                "value": str(r.get("value") or ""),
-                "type": str(r.get("type") or "string"),
-                "description": str(r.get("description") or ""),
-                "updatedAt": updated_at.isoformat() if updated_at else "",
-            }
-        )
+        entries.append({
+            "key": str(r.get("key") or ""),
+            "value": str(r.get("value") or ""),
+            "type": str(r.get("type") or "string"),
+            "description": str(r.get("description") or ""),
+            "updatedAt": updated_at.isoformat() if updated_at else "",
+        })
     return {"entries": entries}
 
 
@@ -585,20 +386,7 @@ async def get_system_config_entry(request: Request, key: str):
         raise HTTPException(status_code=400, detail="key is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        cfg_item_q = build_query(
-            PostgreSQLQuery.from_(system_config_t)
-            .select(
-                system_config_t.key,
-                system_config_t.value,
-                system_config_t.type,
-                system_config_t.description,
-                system_config_t.updated_at,
-            )
-            .where(system_config_t.key == Parameter("%s"))
-            .limit(1),
-            [k],
-        )
-        row = await conn.fetchrow(cfg_item_q.sql, *cfg_item_q.params)
+        row = await config_repo.find_entry_by_key(conn, k)
     if not row:
         raise HTTPException(status_code=404, detail="Config key not found")
     updated_at = row.get("updated_at")
@@ -619,67 +407,33 @@ async def upsert_system_config_entry_route(request: Request, key: str, body: Ups
     k = str(key or "").strip()
     if not k:
         raise HTTPException(status_code=400, detail="key is required")
-    
-    # Import validation helper
+
     from app.services.system_config_service import validate_value_for_type, VALID_TYPES
-    
+
+    config_type = body.type
+    if config_type and config_type not in VALID_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type: {config_type}. Must be one of: {', '.join(VALID_TYPES)}")
+
     pool = get_pool()
     async with pool.acquire() as conn:
-        # Get existing type if not provided
-        config_type = body.type
-        if config_type and config_type not in VALID_TYPES:
-            raise HTTPException(status_code=400, detail=f"Invalid type: {config_type}. Must be one of: {', '.join(VALID_TYPES)}")
-        
         if config_type is None:
-            existing_q = build_query(
-                PostgreSQLQuery.from_(system_config_t)
-                .select(system_config_t.type)
-                .where(system_config_t.key == Parameter("%s"))
-                .limit(1),
-                [k],
-            )
-            existing = await conn.fetchval(existing_q.sql, *existing_q.params)
-            config_type = str(existing or "string")
-        
-        # Validate value against type
+            existing_type = await config_repo.get_existing_type(conn, k)
+            config_type = existing_type or "string"
+
         is_valid, err = validate_value_for_type(body.value, config_type)
         if not is_valid:
             raise HTTPException(status_code=400, detail=err)
-        
-        upsert_q = build_query(
-            PostgreSQLQuery.into(system_config_t)
-            .columns(system_config_t.key, system_config_t.value, system_config_t.type, system_config_t.description)
-            .insert(Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"))
-            .on_conflict(system_config_t.key)
-            .do_update(system_config_t.value)
-            .do_update(system_config_t.type)
-            .do_update(system_config_t.description),
-            [k, body.value, config_type, body.description],
-        )
-        await conn.execute(upsert_q.sql, *upsert_q.params)
 
-        row_q = build_query(
-            PostgreSQLQuery.from_(system_config_t)
-            .select(
-                system_config_t.key,
-                system_config_t.value,
-                system_config_t.type,
-                system_config_t.description,
-                system_config_t.updated_at,
-            )
-            .where(system_config_t.key == Parameter("%s"))
-            .limit(1),
-            [k],
-        )
-        row = await conn.fetchrow(row_q.sql, *row_q.params)
+        await config_repo.upsert_with_type(conn, k, body.value, config_type, body.description)
+        row = await config_repo.find_entry_by_key(conn, k)
 
     updated_at = row.get("updated_at") if row else None
     return {
         "entry": {
-            "key": str(row.get("key") or ""),
-            "value": str(row.get("value") or ""),
-            "type": str(row.get("type") or "string"),
-            "description": str(row.get("description") or ""),
+            "key": str(row.get("key") or "") if row else k,
+            "value": str(row.get("value") or "") if row else body.value,
+            "type": str(row.get("type") or "string") if row else config_type,
+            "description": str(row.get("description") or "") if row else body.description,
             "updatedAt": updated_at.isoformat() if updated_at else "",
         }
     }
@@ -690,26 +444,7 @@ async def token_usage_summary(request: Request):
     require_super_admin(request)
     pool = get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT "
-            # Linked (authenticated users) totals used by per-user list.
-            "COALESCE(SUM(t.cost_inr), 0) AS spend_inr, "
-            "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
-            "COUNT(*) AS calls_count, "
-            "COUNT(*) FILTER (WHERE t.cost_inr IS NULL) AS unknown_priced_calls, "
-            "COUNT(DISTINCT t.user_id) AS users_count, "
-            # Global totals for full admin visibility (includes unlinked rows).
-            "(SELECT COALESCE(SUM(cost_inr), 0) FROM token_usage) AS overall_spend_inr, "
-            "(SELECT COALESCE(SUM(input_tokens), 0) FROM token_usage) AS overall_input_tokens, "
-            "(SELECT COALESCE(SUM(output_tokens), 0) FROM token_usage) AS overall_output_tokens, "
-            "(SELECT COUNT(*) FROM token_usage) AS overall_calls_count, "
-            "(SELECT COALESCE(SUM(cost_inr), 0) FROM token_usage WHERE user_id IS NULL) AS unlinked_spend_inr, "
-            "(SELECT COUNT(*) FROM token_usage WHERE user_id IS NULL) AS unlinked_calls_count "
-            "FROM token_usage t "
-            "JOIN users u ON u.id::text = t.user_id "
-            "WHERE t.user_id IS NOT NULL"
-        )
+        row = await token_usage_repo.fetch_summary(conn)
     return {
         "spendInr": float(row.get("spend_inr") or 0),
         "inputTokens": int(row.get("input_tokens") or 0),
@@ -731,26 +466,10 @@ async def token_usage_users(request: Request, q: str = "", limit: int = 30, offs
     require_super_admin(request)
     limit = min(max(1, limit), 200)
     offset = max(0, offset)
-    pool = get_pool()
     needle = f"%{(q or '').strip()}%"
+    pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT u.id::text AS user_id, u.email, u.phone_number, "
-            "COALESCE(SUM(t.cost_inr), 0) AS spend_inr, "
-            "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
-            "COUNT(*) AS calls_count "
-            "FROM token_usage t "
-            "JOIN users u ON u.id::text = t.user_id "
-            "WHERE t.user_id IS NOT NULL "
-            "AND ($1 = '%%' OR u.email ILIKE $1 OR u.phone_number ILIKE $1) "
-            "GROUP BY u.id, u.email, u.phone_number "
-            "ORDER BY spend_inr DESC, calls_count DESC "
-            "LIMIT $2 OFFSET $3",
-            needle,
-            limit,
-            offset,
-        )
+        rows = await token_usage_repo.fetch_users(conn, needle, limit, offset)
     users = [
         {
             "userId": str(r.get("user_id") or ""),
@@ -776,20 +495,7 @@ async def token_usage_user_conversations(request: Request, user_id: str, limit: 
         raise HTTPException(status_code=400, detail="user_id is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT conversation_id, "
-            "COALESCE(SUM(cost_inr), 0) AS spend_inr, "
-            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-            "COUNT(*) AS calls_count, "
-            "MAX(created_at) AS last_used_at "
-            "FROM token_usage "
-            "WHERE user_id = $1 AND conversation_id IS NOT NULL "
-            "GROUP BY conversation_id "
-            "ORDER BY last_used_at DESC "
-            "LIMIT $2 OFFSET $3",
-            uid, limit, offset,
-        )
+        rows = await token_usage_repo.fetch_user_conversations(conn, uid, limit, offset)
     return {
         "conversations": [
             {
@@ -817,12 +523,7 @@ async def token_usage_conversation_calls(request: Request, conversation_id: str,
         raise HTTPException(status_code=400, detail="conversation_id is required")
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT message_id, stage, provider, model_name, input_tokens, output_tokens, cost_inr, created_at "
-            "FROM token_usage WHERE conversation_id = $1 "
-            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-            cid, limit, offset,
-        )
+        rows = await token_usage_repo.fetch_conversation_calls(conn, cid, limit, offset)
     return {
         "calls": [
             {

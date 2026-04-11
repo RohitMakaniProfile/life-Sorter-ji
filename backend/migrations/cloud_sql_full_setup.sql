@@ -497,8 +497,8 @@ CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
 CREATE INDEX IF NOT EXISTS idx_conversations_session_id
     ON conversations (session_id);
 
-CREATE INDEX IF NOT EXISTS idx_conversations_onboarding_session_id
-    ON conversations (onboarding_session_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_onboarding_id
+    ON conversations (onboarding_id);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id
     ON conversations (user_id);

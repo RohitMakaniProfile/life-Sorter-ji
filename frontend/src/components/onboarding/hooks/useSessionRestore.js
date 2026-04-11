@@ -1,0 +1,269 @@
+import { useEffect, useRef } from 'react';
+import { outcomeOptions } from '../onboardingJourneyData';
+import { apiPost } from '../../../api/http';
+import { API_ROUTES } from '../../../api/routes';
+import { mapToolsToEarlyTools } from '../toolService';
+import STATIC_SCALE_QUESTIONS from '../data/scale_questions.json';
+
+/**
+ * Hook to handle session restoration from backend on mount.
+ * Restores UI to the appropriate stage based on saved onboarding state.
+ */
+export function useSessionRestore({
+  onboardingIdRef,
+  getSessionState,
+
+  // State setters for restoration
+  setSelectedOutcome,
+  setSelectedDomain,
+  setSelectedTask,
+  setUrlValue,
+  setGbpValue,
+  setScaleAnswers,
+  setScaleQuestions,
+  setShowUrlForm,
+  setShowDeeperDive,
+  setShowDiagnostic,
+  setShowPrecision,
+  setShowPlaybook,
+  setShowGapQuestions,
+  setCurrentQuestion,
+  setQuestionIndex,
+  setPrecisionQuestions,
+  setPrecisionIndex,
+  setGapQuestions,
+  setGapAnswers,
+  setGapCurrentIndex,
+  setEarlyTools,
+
+  // Playbook stream controls
+  clearResumeArtifacts,
+  clearStepReached,
+  prepareStreaming,
+  startForSession,
+  markRetryNeeded,
+}) {
+  const sessionRestoredRef = useRef(false);
+
+  useEffect(() => {
+    // Prevent running multiple times
+    if (sessionRestoredRef.current) return;
+    sessionRestoredRef.current = true;
+
+    const restoreSession = async () => {
+      // If ?reset=1 is in URL, skip restoration and start fresh
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('reset') === '1') {
+        try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
+        return;
+      }
+
+      try {
+        const state = await getSessionState();
+        console.log('[Onboarding Restore] State received:', state);
+        if (!state) {
+          console.log('[Onboarding Restore] No state to restore');
+          return;
+        }
+
+        // If onboarding is complete, show the completed playbook
+        if (state.stage === 'complete') {
+          if (state.outcome) {
+            const outcome = outcomeOptions.find((o) => o.id === state.outcome);
+            if (outcome) setSelectedOutcome(outcome);
+          }
+          if (state.domain) setSelectedDomain(state.domain);
+          if (state.task) setSelectedTask(state.task);
+          setShowPlaybook(true);
+          clearStepReached();
+          prepareStreaming();
+          const sid = state.onboarding_id;
+          if (sid) {
+            onboardingIdRef.current = sid;
+            startForSession(sid, { fresh: false }).catch(() => {});
+          }
+          return;
+        }
+
+        // Restore outcome
+        if (state.outcome) {
+          const outcome = outcomeOptions.find((o) => o.id === state.outcome);
+          if (outcome) setSelectedOutcome(outcome);
+        }
+
+        // Restore domain and task
+        if (state.domain) setSelectedDomain(state.domain);
+        if (state.task) setSelectedTask(state.task);
+
+        // Restore URL values
+        if (state.website_url) setUrlValue(state.website_url);
+        if (state.gbp_url) setGbpValue(state.gbp_url);
+
+        // Restore scale answers
+        if (state.scale_answers && typeof state.scale_answers === 'object') {
+          const indexedAnswers = {};
+          for (let i = 0; i < STATIC_SCALE_QUESTIONS.length; i++) {
+            const q = STATIC_SCALE_QUESTIONS[i];
+            if (state.scale_answers[q.id] !== undefined) {
+              indexedAnswers[i] = state.scale_answers[q.id];
+            }
+          }
+          setScaleAnswers(indexedAnswers);
+        }
+
+        // Restore to the appropriate stage based on backend state
+        switch (state.stage) {
+          case 'url':
+            clearResumeArtifacts();
+            console.log('[Onboarding Restore] Restoring to URL stage', { outcome: state.outcome, domain: state.domain, task: state.task });
+            setShowUrlForm(true);
+            // Load tools for the task (async, don't block UI)
+            if (state.outcome && state.domain && state.task) {
+              apiPost(API_ROUTES.onboarding.toolsByQ1Q2Q3, {
+                outcome: state.outcome,
+                domain: state.domain,
+                task: state.task,
+              })
+                .then((res) => {
+                  if (res?.tools) {
+                    setEarlyTools(mapToolsToEarlyTools(res.tools));
+                  }
+                })
+                .catch(() => {
+                  // ignore tool fetch errors
+                });
+            }
+            break;
+
+          case 'questions':
+            clearResumeArtifacts();
+            if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
+              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              if (state.onboarding_id) {
+                onboardingIdRef.current = state.onboarding_id;
+              }
+              setShowDeeperDive(true);
+            } else {
+              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              setShowDeeperDive(true);
+            }
+            break;
+
+          case 'diagnostic':
+            clearResumeArtifacts();
+            setScaleQuestions(STATIC_SCALE_QUESTIONS);
+            if (state.onboarding_id) {
+              onboardingIdRef.current = state.onboarding_id;
+            }
+            if (state.current_rca_question) {
+              setCurrentQuestion(state.current_rca_question);
+              const answeredCount = state.rca_qa?.filter((qa) => qa.answer)?.length || 0;
+              setQuestionIndex(answeredCount);
+              setShowDiagnostic(true);
+            } else {
+              setShowDeeperDive(true);
+            }
+            break;
+
+          case 'precision':
+            clearResumeArtifacts();
+            if (state.precision_questions?.length) {
+              setPrecisionQuestions(state.precision_questions);
+              const answeredCount = state.precision_answers?.length || 0;
+              setPrecisionIndex(answeredCount);
+              if (answeredCount < state.precision_questions.length) {
+                setCurrentQuestion(state.precision_questions[answeredCount]);
+              }
+              setShowPrecision(true);
+              setShowDiagnostic(true);
+            }
+            break;
+
+          case 'playbook':
+            if (state.playbook_status === 'awaiting_gap_answers' && state.gap_questions?.length) {
+              setGapQuestions(state.gap_questions);
+              const restored = state.gap_answers_parsed && typeof state.gap_answers_parsed === 'object' ? state.gap_answers_parsed : {};
+              const indexed = {};
+              Object.entries(restored).forEach(([k, v]) => {
+                const idx = Number(String(k).replace(/^Q/i, '')) - 1;
+                if (Number.isFinite(idx) && idx >= 0) indexed[idx] = String(v);
+              });
+              setGapAnswers(indexed);
+              let next = 0;
+              while (next < state.gap_questions.length && indexed[next]) next += 1;
+              setGapCurrentIndex(next);
+              setShowGapQuestions(true);
+            }
+            setShowPlaybook(true);
+            if (state.playbook_status === 'error') {
+              markRetryNeeded();
+            } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
+              prepareStreaming();
+              const sid = onboardingIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            } else if (state.playbook_status === 'complete') {
+              clearStepReached();
+              prepareStreaming();
+              const sid = onboardingIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            }
+            break;
+
+          case 'complete':
+            setShowPlaybook(true);
+            clearStepReached();
+            prepareStreaming();
+            {
+              const sid = onboardingIdRef.current;
+              if (sid) {
+                startForSession(sid, { fresh: false }).catch(() => {});
+              }
+            }
+            break;
+
+          default:
+            clearResumeArtifacts();
+            break;
+        }
+      } catch (err) {
+        console.warn('Session restoration failed:', err);
+      }
+    };
+
+    restoreSession();
+  }, [
+    clearResumeArtifacts,
+    clearStepReached,
+    getSessionState,
+    markRetryNeeded,
+    onboardingIdRef,
+    prepareStreaming,
+    startForSession,
+    setSelectedOutcome,
+    setSelectedDomain,
+    setSelectedTask,
+    setUrlValue,
+    setGbpValue,
+    setScaleAnswers,
+    setScaleQuestions,
+    setShowUrlForm,
+    setShowDeeperDive,
+    setShowDiagnostic,
+    setShowPrecision,
+    setShowPlaybook,
+    setShowGapQuestions,
+    setCurrentQuestion,
+    setQuestionIndex,
+    setPrecisionQuestions,
+    setPrecisionIndex,
+    setGapQuestions,
+    setGapAnswers,
+    setGapCurrentIndex,
+    setEarlyTools,
+  ]);
+}
+
