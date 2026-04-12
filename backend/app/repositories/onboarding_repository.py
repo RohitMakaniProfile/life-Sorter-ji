@@ -14,7 +14,8 @@ onboarding_t = Table("onboarding")
 _RETURNING_COLS = (
     "id", "user_id", "outcome", "domain", "task",
     "website_url", "gbp_url", "scale_answers", "business_profile",
-    "questions_answers", "crawl_cache_key", "onboarding_completed_at",
+    "web_summary", "rca_qa", "questions_answers",
+    "crawl_cache_key", "onboarding_completed_at",
     "created_at", "updated_at",
 )
 

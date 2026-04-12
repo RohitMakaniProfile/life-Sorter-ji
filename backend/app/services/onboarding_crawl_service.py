@@ -11,13 +11,16 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Awaitable, Callable
 
 import structlog
+from pydantic import Field, ValidationError
 
 from app.db import get_pool
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
+from app.services.llm_schema import LLMSchema
 from app.skills.service import run_skill
 from app.repositories import onboarding_repository as onboarding_repo
 from app.services.token_usage_service import (
@@ -29,6 +32,22 @@ from app.services.token_usage_service import (
 logger = structlog.get_logger()
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas for structured LLM output validation (like Zod in Node.js)
+# ---------------------------------------------------------------------------
+
+
+class RCAQuestion(LLMSchema):
+    """A single RCA diagnostic question with options."""
+    question: str = Field(..., description="A concrete diagnostic RCA question")
+    options: list[str] = Field(..., description="3-5 short multiple-choice options")
+
+
+class RCAQuestionsResponse(LLMSchema):
+    """Top-level schema for the RCA questions LLM response."""
+    questions: list[RCAQuestion] = Field(..., description="Exactly 3 diagnostic RCA questions")
 
 # ---------------------------------------------------------------------------
 # skill_calls helpers
@@ -233,15 +252,15 @@ Use all available context:
 - business profile
 
 Requirements:
-- Return ONLY valid JSON, no explanations or text before/after
-- Format: {"questions":[{"question":"...","options":["...","...","..."]}]}
-- Generate exactly 3 questions
 - Each question must be concrete and diagnostic, not generic
 - Each question must include 3-5 short multiple-choice options
 - Use the business profile when available to tailor the questions
 - Avoid repeating what is already obvious from the website
 
-IMPORTANT: Output ONLY the JSON object. Do NOT use <thinking> tags. Do not include any reasoning, explanations, or markdown formatting. Your entire response must be valid JSON starting with { and ending with }.
+You MUST respond with ONLY a JSON object matching this exact schema:
+{"questions":[{"question":"<string>","options":["<string>","<string>","<string>"]}]}
+
+Do NOT include any reasoning, thinking, analysis, explanations, markdown, or text outside the JSON. Your entire response must be the raw JSON object and nothing else.
 """
 
 
@@ -325,6 +344,8 @@ async def generate_rca_questions(
 ) -> list[dict[str, Any]]:
     """Generate RCA questions using onboarding context, including business_profile.
 
+    Uses OpenRouter Structured Outputs (json_schema) to enforce exact JSON schema
+    at the API level, plus Pydantic validation as a safety net.
     Logs token usage to token_usage table linked to onboarding_id.
     """
     raw = ""
@@ -343,6 +364,9 @@ async def generate_rca_questions(
             "business_profile": str(business_profile or "").strip(),
             "max_questions": int(max_questions or 3),
         }
+
+        # OpenRouter Structured Outputs via LLMSchema builder.
+        # Equivalent of Zod (Node.js) / PyPika (SQL) but for LLM output schemas.
         result = await _ai.complete(
             model=model_name,
             messages=[
@@ -350,7 +374,8 @@ async def generate_rca_questions(
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
             ],
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=1024,
+            response_format=RCAQuestionsResponse.to_response_format("rca_questions"),
         )
         raw = str(result.get("message") or "").strip()
         usage = result.get("usage") or {}
@@ -360,8 +385,7 @@ async def generate_rca_questions(
 
         if finish_reason == "length":
             logger.warning(
-                "generate_rca_questions: model output truncated at max_tokens — "
-                "increase max_tokens or the model ran out of budget before finishing JSON",
+                "generate_rca_questions: model output truncated at max_tokens",
                 onboarding_id=onboarding_id,
                 output_tokens=output_tokens,
                 raw_preview=raw[:300],
@@ -371,34 +395,62 @@ async def generate_rca_questions(
             "generate_rca_questions raw_output",
             onboarding_id=onboarding_id,
             finish_reason=finish_reason,
-            raw_output=raw[:4000],
+            raw_output=raw[:2000],
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
 
-        parsed = json.loads(_extract_json_value(raw)) if raw else {}
-        if isinstance(parsed, dict):
-            items = parsed.get("questions")
-        elif isinstance(parsed, list):
-            items = parsed
-        else:
-            items = None
-        if not isinstance(items, list):
-            raise ValueError("RCA prompt response did not contain a questions list")
-        out: list[dict[str, Any]] = []
-        for item in items[: max(1, int(max_questions or 3))]:
-            if not isinstance(item, dict):
-                continue
-            question = str(item.get("question") or "").strip()
-            options = item.get("options") or []
-            if not question:
-                continue
-            out.append(
-                {
-                    "question": question,
-                    "options": [str(opt).strip() for opt in options if str(opt).strip()][:5],
-                }
-            )
+        # Parse JSON — structured outputs gives clean JSON, with fallback strategies
+        parsed: dict[str, Any] | list[Any] = {}
+
+        # Strategy 1: parse + validate via LLMSchema (handles clean & noisy output)
+        try:
+            validated = RCAQuestionsResponse.parse_response(raw)
+            out: list[dict[str, Any]] = [
+                {"question": q.question, "options": q.options}
+                for q in validated.questions[: max(1, int(max_questions or 3))]
+            ]
+        except (ValidationError, ValueError, json.JSONDecodeError):
+            # Strategy 2: targeted regex extraction for {"questions": [...]}
+            try:
+                match = re.search(r'\{\s*"questions"\s*:\s*\[', raw)
+                if match:
+                    parsed = json.loads(_extract_json_value(raw[match.start():]))
+                else:
+                    parsed = json.loads(_extract_json_value(raw))
+            except Exception:
+                pass
+
+            # Strategy 3: normalize edge cases
+            if isinstance(parsed, dict) and "question" in parsed and "questions" not in parsed:
+                parsed = {"questions": [parsed]}
+            elif isinstance(parsed, list):
+                parsed = {"questions": parsed}
+
+            # Manual extraction fallback
+            if isinstance(parsed, dict):
+                items = parsed.get("questions")
+            elif isinstance(parsed, list):
+                items = parsed
+            else:
+                items = None
+            if not isinstance(items, list):
+                raise ValueError("RCA response did not contain a questions list")
+            out = []
+            for item in items[: max(1, int(max_questions or 3))]:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question") or "").strip()
+                options = item.get("options") or []
+                if not question:
+                    continue
+                out.append(
+                    {
+                        "question": question,
+                        "options": [str(opt).strip() for opt in options if str(opt).strip()][:5],
+                    }
+                )
+
         if not out:
             raise ValueError("RCA prompt response produced zero usable questions")
 

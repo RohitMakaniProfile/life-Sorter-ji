@@ -140,7 +140,7 @@ export default function PlaybookStage({
             Question {Math.min(gapCurrentIndex + 1, gapQuestions.length)} of {gapQuestions.length}
           </div>
           {activeGap && (
-            <div className="rounded-xl border border-white/12 bg-white/[0.03] px-5 py-4">
+            <div className="rounded-xl border border-white/12 bg-[#1a1a1a] px-5 py-4">
               <p className="m-0 mb-3 text-sm font-semibold text-white/90">
                 {typeof activeGap === 'string' ? activeGap : activeGap.question}
               </p>

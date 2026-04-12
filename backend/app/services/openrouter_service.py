@@ -59,13 +59,16 @@ async def chat_completion(
     messages: list[dict[str, Any]],
     temperature: float = 0.7,
     max_tokens: int = 1024,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(OPENROUTER_CHAT_URL, json=payload, headers=_headers())
         resp.raise_for_status()

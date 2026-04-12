@@ -165,12 +165,14 @@ async def complete(
     messages: list[dict[str, Any]],
     temperature: float = 0.7,
     max_tokens: int = 1024,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return await openrouter_service.chat_completion(
         model=model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        response_format=response_format,
     )
 
 
@@ -261,12 +263,14 @@ class AIHelper:
         messages: list[dict[str, Any]],
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await complete(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_format=response_format,
         )
 
     async def complete_stream(
