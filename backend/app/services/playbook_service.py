@@ -18,6 +18,7 @@ import structlog
 
 from app.config import get_settings
 from app.services.ai_helper import ai_helper as _ai
+from app.services.token_usage_service import log_onboarding_token_usage, STAGE_PLAYBOOK_STREAM
 
 logger = structlog.get_logger()
 
@@ -174,6 +175,7 @@ async def run_single_prompt_stream(
     gap_answers: str = "",
     rca_handoff: str = "",
     on_token=None,
+    onboarding_id: str = "",
 ) -> dict[str, Any]:
     """
     Single-prompt playbook generation.
@@ -216,10 +218,11 @@ async def run_single_prompt_stream(
         )
 
     settings = get_settings()
+    model = settings.OPENROUTER_CLAUDE_MODEL
     t0 = time.perf_counter()
 
     result = await _ai.complete_stream(
-        model=settings.OPENROUTER_CLAUDE_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -233,13 +236,30 @@ async def run_single_prompt_stream(
     full_text = result.get("message", "")
     sections = _split_sections(full_text)
 
+    usage = result.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+
     logger.info(
         "Single-prompt playbook stream completed",
         latency_ms=latency_ms,
         has_context_brief=bool(sections["context_brief"]),
         has_website_audit=bool(sections["website_audit"]),
         has_playbook=bool(sections["playbook"]),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
+
+    # Log token usage if onboarding_id is provided
+    if onboarding_id:
+        await log_onboarding_token_usage(
+            onboarding_id=onboarding_id,
+            stage=STAGE_PLAYBOOK_STREAM,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            success=True,
+        )
 
     return {
         "context_brief": sections["context_brief"],

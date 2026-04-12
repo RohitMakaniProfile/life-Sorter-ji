@@ -26,6 +26,11 @@ import json
 import re
 from app.config import get_settings
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
+from app.services.token_usage_service import (
+    log_onboarding_token_usage,
+    STAGE_PRECISION_QUESTIONS,
+    STAGE_GAP_QUESTIONS,
+)
 
 logger = structlog.get_logger()
 
@@ -1047,6 +1052,7 @@ async def generate_precision_questions(
     scale_answers: dict[str, Any] | None = None,
     web_summary: str = "",
     business_profile_text: str = "",
+    onboarding_id: str = "",
 ) -> list[dict[str, Any]] | None:
     """
     Generate 3 precision questions from onboarding context and RCA history.
@@ -1064,6 +1070,10 @@ async def generate_precision_questions(
     if not rca_history:
         logger.info("No RCA history — skipping precision questions")
         return None
+
+    input_tokens = 0
+    output_tokens = 0
+    content = ""
 
     try:
         from app.services.prompts_service import get_prompt
@@ -1094,10 +1104,24 @@ async def generate_precision_questions(
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = str(result.get("message") or "")
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        
         logger.info("Precision questions raw response", raw_content=content[:4000] if content else "<empty>")
 
         if not content or not content.strip():
             logger.error("Precision questions: empty response")
+            if onboarding_id:
+                await log_onboarding_token_usage(
+                    onboarding_id=onboarding_id,
+                    stage=STAGE_PRECISION_QUESTIONS,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    success=False,
+                    error_msg="Empty response",
+                )
             return None
 
         parsed = json.loads(_extract_json_value(content))
@@ -1109,6 +1133,17 @@ async def generate_precision_questions(
             questions = []
         if not questions or len(questions) < 1:
             logger.error("Precision questions: empty or missing", raw=content[:300])
+            if onboarding_id:
+                await log_onboarding_token_usage(
+                    onboarding_id=onboarding_id,
+                    stage=STAGE_PRECISION_QUESTIONS,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    success=False,
+                    error_msg="No questions in response",
+                    raw_output=content,
+                )
             return None
 
         # Attach metadata for context pool to each question
@@ -1131,6 +1166,18 @@ async def generate_precision_questions(
             count=len(questions),
             types=[q.get("type", "?") for q in questions],
         )
+        
+        # Log successful token usage
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_PRECISION_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=True,
+            )
+        
         return questions[:3]  # Ensure max 3
 
     except httpx.HTTPStatusError as e:
@@ -1139,12 +1186,43 @@ async def generate_precision_questions(
             status_code=e.response.status_code,
             body=e.response.text[:300],
         )
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_PRECISION_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=f"HTTP {e.response.status_code}",
+            )
         return None
     except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
         logger.error("Precision questions parse error", error=str(e))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_PRECISION_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(e),
+                raw_output=content,
+            )
         return None
     except httpx.RequestError as e:
         logger.error("Precision questions request failed", error=str(e))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_PRECISION_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(e),
+            )
         return None
 
 
@@ -1290,6 +1368,7 @@ async def generate_gap_questions(
     rca_handoff: str = "",
     rca_summary: str = "",
     precision_answers: list[dict[str, Any]] | None = None,
+    onboarding_id: str = "",
 ) -> list[dict[str, Any]] | None:
     """
     Generate gap questions (0-3) before playbook generation.
@@ -1303,6 +1382,10 @@ async def generate_gap_questions(
     if not api_key:
         logger.warning("OpenRouter API key not configured — skipping gap questions")
         return None
+
+    input_tokens = 0
+    output_tokens = 0
+    content = ""
 
     try:
         from app.services.prompts_service import get_prompt
@@ -1335,10 +1418,23 @@ async def generate_gap_questions(
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         content = str(result.get("message") or "")
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+
         logger.info("Gap questions raw response", raw_content=content[:4000] if content else "<empty>")
 
         if not content or not content.strip():
             logger.warning("Gap questions: empty response — treating as no questions")
+            if onboarding_id:
+                await log_onboarding_token_usage(
+                    onboarding_id=onboarding_id,
+                    stage=STAGE_GAP_QUESTIONS,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    success=True,  # Empty response is valid (no questions needed)
+                )
             return []
 
         # Try JSON parsing first
@@ -1376,6 +1472,18 @@ async def generate_gap_questions(
             count=len(questions),
             labels=[q.get("label", "?") for q in questions],
         )
+
+        # Log successful token usage
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_GAP_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=True,
+            )
+
         return questions[:3]  # Ensure max 3
 
     except httpx.HTTPStatusError as e:
@@ -1384,11 +1492,42 @@ async def generate_gap_questions(
             status_code=e.response.status_code,
             body=e.response.text[:300],
         )
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_GAP_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=f"HTTP {e.response.status_code}",
+            )
         return None
     except (KeyError, IndexError) as e:
         logger.error("Gap questions parse error", error=str(e))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_GAP_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(e),
+                raw_output=content,
+            )
         return None
     except httpx.RequestError as e:
         logger.error("Gap questions request failed", error=str(e))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_GAP_QUESTIONS,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(e),
+            )
         return None
 

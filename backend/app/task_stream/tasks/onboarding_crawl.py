@@ -91,7 +91,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     # ── Stage 3: Build business_profile and persist crawl outputs ────────────
     await send("stage", stage="business_profile", label="Building business profile")
 
-    business_profile = await generate_business_profile(web_summary=web_summary) if onboarding_id else ""
+    business_profile = await generate_business_profile(web_summary=web_summary, onboarding_id=onboarding_id) if onboarding_id else ""
 
 
     if onboarding_id:

@@ -19,6 +19,12 @@ import structlog
 from app.db import get_pool
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
 from app.skills.service import run_skill
+from app.repositories import onboarding_repository as onboarding_repo
+from app.services.token_usage_service import (
+    log_onboarding_token_usage,
+    STAGE_RCA_QUESTIONS,
+    STAGE_BUSINESS_PROFILE,
+)
 
 logger = structlog.get_logger()
 
@@ -251,15 +257,20 @@ async def _get_rca_questions_prompt() -> str:
     return await get_prompt("rca-questions", default=_RCA_QUESTIONS_PROMPT_DEFAULT)
 
 
-async def generate_business_profile(*, web_summary: str) -> str:
+async def generate_business_profile(*, web_summary: str, onboarding_id: str = "") -> str:
     """Generate a markdown/text business profile from the website summary."""
     summary = str(web_summary or "").strip()
     if not summary:
         return ""
+
+    model_name = "anthropic/claude-sonnet-4-6"
+    input_tokens = 0
+    output_tokens = 0
+
     try:
         system_prompt = await _get_business_profile_prompt()
         result = await _ai.complete(
-            model="anthropic/claude-sonnet-4-6",
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": summary},
@@ -268,15 +279,42 @@ async def generate_business_profile(*, web_summary: str) -> str:
             max_tokens=700,
         )
         profile = str(result.get("message") or "").strip()
-        logger.info("generate_business_profile success", chars=len(profile))
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+
+        logger.info("generate_business_profile success", chars=len(profile), input_tokens=input_tokens, output_tokens=output_tokens)
+
+        # Log token usage
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_BUSINESS_PROFILE,
+                model=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=True,
+            )
+
         return profile
     except Exception as exc:
         logger.warning("generate_business_profile failed", error=str(exc))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_BUSINESS_PROFILE,
+                model=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(exc),
+            )
         return ""
 
 
 async def generate_rca_questions(
     *,
+    onboarding_id: str,
     outcome: str,
     domain: str,
     task: str,
@@ -285,8 +323,15 @@ async def generate_rca_questions(
     business_profile: str = "",
     max_questions: int = 3,
 ) -> list[dict[str, Any]]:
-    """Generate RCA questions using onboarding context, including business_profile."""
+    """Generate RCA questions using onboarding context, including business_profile.
+
+    Logs token usage to token_usage table linked to onboarding_id.
+    """
     raw = ""
+    input_tokens = 0
+    output_tokens = 0
+    model_name = "anthropic/claude-sonnet-4-6"
+
     try:
         system_prompt = await _get_rca_questions_prompt()
         user_payload = {
@@ -299,7 +344,7 @@ async def generate_rca_questions(
             "max_questions": int(max_questions or 3),
         }
         result = await _ai.complete(
-            model="anthropic/claude-sonnet-4-6",
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
@@ -308,7 +353,18 @@ async def generate_rca_questions(
             max_tokens=900,
         )
         raw = str(result.get("message") or "").strip()
-        logger.info("generate_rca_questions raw_output", raw_output=raw[:4000])
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+
+        logger.info(
+            "generate_rca_questions raw_output",
+            onboarding_id=onboarding_id,
+            raw_output=raw[:4000],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
         parsed = json.loads(_extract_json_value(raw)) if raw else {}
         if isinstance(parsed, dict):
             items = parsed.get("questions")
@@ -334,13 +390,37 @@ async def generate_rca_questions(
             )
         if not out:
             raise ValueError("RCA prompt response produced zero usable questions")
+
+        # Log successful token usage
+        await log_onboarding_token_usage(
+            onboarding_id=onboarding_id,
+            stage=STAGE_RCA_QUESTIONS,
+            model=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            success=True,
+        )
         return out
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "generate_rca_questions failed",
+            onboarding_id=onboarding_id,
             error=str(exc),
-            raw_preview=raw[:800] if raw else "(empty)",
+            raw_output=raw if raw else "(empty)",
             raw_length=len(raw) if raw else 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        # Log failed token usage (still consumed tokens)
+        await log_onboarding_token_usage(
+            onboarding_id=onboarding_id,
+            stage=STAGE_RCA_QUESTIONS,
+            model=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            success=False,
+            error_msg=str(exc),
+            raw_output=raw,
         )
         raise RuntimeError(f"RCA question generation failed: {exc}") from exc
 
@@ -351,7 +431,6 @@ async def generate_rca_questions(
 
 async def fetch_onboarding_context(onboarding_id: str) -> dict[str, Any]:
     """Return onboarding context fields from the onboarding row."""
-    from app.repositories import onboarding_repository as onboarding_repo
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await onboarding_repo.find_crawl_context(conn, onboarding_id)

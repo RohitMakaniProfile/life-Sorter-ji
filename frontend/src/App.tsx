@@ -25,6 +25,7 @@ import AdminUsersPage from './pages/AdminUsersPage';
 import AdminSkillCallDetailPage from './pages/AdminSkillCallDetailPage';
 import AdminPromptsPage from './pages/AdminPromptsPage';
 import AdminTokenUsagePage from './pages/AdminTokenUsagePage';
+import AdminOnboardingTokenUsagePage from './pages/AdminOnboardingTokenUsagePage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -88,6 +89,7 @@ function App() {
                 <Route index element={<Navigate to="/admin/observability" replace />} />
                 <Route path="users" element={<AdminUsersPage />} />
                 <Route path="skill-calls/:skillCallId" element={<AdminSkillCallDetailPage />} />
+                <Route path="onboarding/:onboardingId/token-usage" element={<AdminOnboardingTokenUsagePage />} />
                 <Route path="observability" element={<AdminObservabilityPage />} />
                 <Route path="config" element={<AdminSystemConfigPage />} />
                 <Route path="prompts" element={<AdminPromptsPage />} />

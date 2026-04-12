@@ -15,6 +15,10 @@ import type {
   AdminTokenUsageUser,
   AdminTokenUsageConversation,
   AdminTokenUsageCall,
+  AdminUserOnboarding,
+  AdminOnboardingTokenUsageCall,
+  AdminOnboardingTokenUsageSummary,
+  AdminOnboardingInfo,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -188,5 +192,30 @@ export async function deletePrompt(slug: string): Promise<{ deleted: boolean; sl
     throw new Error((detail as any)?.detail || `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+// User Onboardings API
+export async function listUserOnboardings(
+  userId: string,
+  limit?: number,
+  offset?: number,
+): Promise<{ onboardings: AdminUserOnboarding[]; total: number; limit: number; offset: number }> {
+  return apiGet(API_ROUTES.admin.management.userOnboardings(userId, limit, offset));
+}
+
+// Onboarding Token Usage API
+export async function getOnboardingTokenUsage(
+  onboardingId: string,
+  limit?: number,
+  offset?: number,
+): Promise<{
+  onboarding: AdminOnboardingInfo | null;
+  summary: AdminOnboardingTokenUsageSummary;
+  calls: AdminOnboardingTokenUsageCall[];
+  total: number;
+  limit: number;
+  offset: number;
+}> {
+  return apiGet(API_ROUTES.admin.management.onboardingTokenUsage(onboardingId, limit, offset));
 }
 

@@ -338,3 +338,41 @@ export interface AdminTokenUsageCall {
   createdAt: string;
 }
 
+export interface AdminUserOnboarding {
+  id: string;
+  outcome: string;
+  domain: string;
+  task: string;
+  websiteUrl: string;
+  playbookStatus: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminOnboardingTokenUsageCall {
+  messageId: string;
+  stage: string;
+  provider: string;
+  modelName: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  costInr: number;
+  createdAt: string;
+}
+
+export interface AdminOnboardingTokenUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  costInr: number;
+  callsCount: number;
+}
+
+export interface AdminOnboardingInfo {
+  id: string;
+  outcome: string;
+  domain: string;
+  task: string;
+  websiteUrl: string;
+}

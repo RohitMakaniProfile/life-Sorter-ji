@@ -803,6 +803,7 @@ async def onboarding_precision_start(request: Request, body: StartOnboardingPrec
             scale_answers=scale_answers or None,
             web_summary=str(row.get("web_summary") or ""),
             business_profile_text=str(row.get("business_profile") or ""),
+            onboarding_id=onboarding_id,
         )
         if not generated:
             await onboarding_repo.mark_precision_empty(conn, onboarding_id)
@@ -968,6 +969,7 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
             rca_handoff=rca_handoff,
             rca_summary=rca_summary,
             precision_answers=precision_answers if precision_answers else None,
+            onboarding_id=onboarding_id,
         )
 
         # Handle generation failure or empty questions

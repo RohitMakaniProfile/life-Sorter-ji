@@ -101,6 +101,7 @@ async def generate_next_rca_question_for_onboarding(
 
             try:
                 generated = await generate_rca_questions(
+                    onboarding_id=str(onboarding_id),
                     outcome=str(row.get("outcome") or ""),
                     domain=str(row.get("domain") or ""),
                     task=str(row.get("task") or ""),

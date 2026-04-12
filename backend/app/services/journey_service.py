@@ -272,6 +272,7 @@ async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
             scale_answers=scale_answers or None,
             web_summary="",
             business_profile_text="",
+            onboarding_id=sid,
         )
     except Exception:
         questions = []

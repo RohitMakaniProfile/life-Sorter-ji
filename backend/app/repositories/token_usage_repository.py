@@ -132,3 +132,33 @@ async def fetch_conversation_calls(conn, conversation_id: str, limit: int, offse
         "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         conversation_id, limit, offset,
     ))
+
+
+async def fetch_by_session_id(conn, session_id: str, limit: int, offset: int) -> tuple[list[Any], int]:
+    """Admin: individual token usage rows for an onboarding session (session_id)."""
+    total = await conn.fetchval(
+        "SELECT COUNT(*) FROM token_usage WHERE session_id = $1",
+        session_id,
+    ) or 0
+    rows = await conn.fetch(
+        "SELECT message_id, stage, provider, model_name, input_tokens, output_tokens, "
+        "cost_usd, cost_inr, created_at "
+        "FROM token_usage WHERE session_id = $1 "
+        "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        session_id, limit, offset,
+    )
+    return list(rows), int(total)
+
+
+async def fetch_session_summary(conn, session_id: str) -> Any:
+    """Admin: aggregate token usage for an onboarding session."""
+    return await conn.fetchrow(
+        "SELECT "
+        "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+        "COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+        "COALESCE(SUM(cost_inr), 0) AS cost_inr, "
+        "COUNT(*) AS calls_count "
+        "FROM token_usage WHERE session_id = $1",
+        session_id,
+    )

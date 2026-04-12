@@ -1,32 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listAdminUsers, deleteAdminUser, listUserSkillCalls } from '../api';
-import type { AdminUser, AdminSkillCallSummary } from '../api/types';
+import { listAdminUsers, deleteAdminUser, listUserOnboardings } from '../api';
+import type { AdminUser, AdminUserOnboarding } from '../api/types';
 
 const PAGE_SIZE = 50;
-const CALLS_PAGE = 5;
+const ONBOARDINGS_PAGE = 10;
 
-// ── Skill-call state badge ───────────────────────────────────────────────────
+// ── Playbook status badge ───────────────────────────────────────────────────
 
-function StateBadge({ state }: { state: string }) {
+function StatusBadge({ status }: { status: string }) {
   const cls =
-    state === 'done'
+    status === 'complete'
       ? 'bg-emerald-500/20 text-emerald-300'
-      : state === 'error'
+      : status === 'error'
       ? 'bg-red-500/20 text-red-300'
+      : status === 'generating'
+      ? 'bg-blue-500/20 text-blue-300'
       : 'bg-amber-500/20 text-amber-300';
   return (
     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {state.toUpperCase()}
+      {status.toUpperCase() || 'NOT STARTED'}
     </span>
   );
 }
 
-// ── User logs panel ──────────────────────────────────────────────────────────
+// ── User onboardings panel ──────────────────────────────────────────────────
 
-function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+function UserOnboardingsPanel({ user, onClose }: { user: AdminUser; onClose: () => void }) {
   const navigate = useNavigate();
-  const [calls, setCalls] = useState<AdminSkillCallSummary[]>([]);
+  const [onboardings, setOnboardings] = useState<AdminUserOnboarding[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -36,14 +38,14 @@ function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void
     setLoading(true);
     setErr(null);
     try {
-      const res = await listUserSkillCalls(user.id, CALLS_PAGE, off);
+      const res = await listUserOnboardings(user.id, ONBOARDINGS_PAGE, off);
       if (off === 0) {
-        setCalls(res.calls);
+        setOnboardings(res.onboardings);
       } else {
-        setCalls((prev) => [...prev, ...res.calls]);
+        setOnboardings((prev) => [...prev, ...res.onboardings]);
       }
       setTotal(res.total);
-      setOffset(off + res.calls.length);
+      setOffset(off + res.onboardings.length);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -53,11 +55,11 @@ function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void
 
   useEffect(() => {
     setOffset(0);
-    setCalls([]);
+    setOnboardings([]);
     load(0);
   }, [load]);
 
-  const hasMore = calls.length < total;
+  const hasMore = onboardings.length < total;
 
   return (
     <div className="flex flex-col h-full">
@@ -79,7 +81,7 @@ function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void
 
       <div className="px-4 py-2 border-b border-slate-800 flex-shrink-0">
         <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold">
-          Skill Calls {total > 0 ? `(${total})` : ''}
+          Onboarding Sessions {total > 0 ? `(${total})` : ''}
         </p>
       </div>
 
@@ -90,29 +92,32 @@ function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void
           </div>
         )}
 
-        {!loading && calls.length === 0 && !err && (
-          <div className="py-12 text-center text-slate-500 text-sm">No skill calls found.</div>
+        {!loading && onboardings.length === 0 && !err && (
+          <div className="py-12 text-center text-slate-500 text-sm">No onboarding sessions found.</div>
         )}
 
         <div className="divide-y divide-slate-800">
-          {calls.map((c) => (
+          {onboardings.map((o) => (
             <button
-              key={c.id}
+              key={o.id}
               type="button"
-              onClick={() => navigate(`/admin/skill-calls/${c.id}`)}
+              onClick={() => navigate(`/admin/onboarding/${o.id}/token-usage`)}
               className="w-full text-left px-4 py-3 hover:bg-slate-800/60 transition-colors"
             >
               <div className="flex items-start justify-between gap-2 mb-1.5">
                 <span className="text-xs font-semibold text-slate-100 truncate flex-1">
-                  {c.skill_id}
+                  {o.task || o.domain || o.outcome || 'Onboarding'}
                 </span>
-                <StateBadge state={c.state} />
+                <StatusBadge status={o.playbookStatus} />
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
-                <span title="Message ID">msg: {c.message_id.slice(0, 12)}…</span>
-                {c.duration_ms != null && <span>{c.duration_ms} ms</span>}
-                {c.started_at && <span>{new Date(c.started_at).toLocaleString()}</span>}
+                <span title="Onboarding ID">ID: {o.id.slice(0, 12)}…</span>
+                {o.outcome && <span>🎯 {o.outcome}</span>}
+                {o.createdAt && <span>{new Date(o.createdAt).toLocaleDateString()}</span>}
               </div>
+              {o.websiteUrl && (
+                <p className="text-[10px] text-slate-600 truncate mt-1">🌐 {o.websiteUrl}</p>
+              )}
             </button>
           ))}
         </div>
@@ -128,10 +133,10 @@ function UserLogsPanel({ user, onClose }: { user: AdminUser; onClose: () => void
               onClick={() => load(offset)}
               className="w-full py-2 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
             >
-              Load next {CALLS_PAGE}
+              Load more
             </button>
-          ) : calls.length > 0 ? (
-            <p className="text-center text-xs text-slate-600">All {total} calls loaded</p>
+          ) : onboardings.length > 0 ? (
+            <p className="text-center text-xs text-slate-600">All {total} sessions loaded</p>
           ) : null}
         </div>
       </div>
@@ -352,14 +357,14 @@ export default function AdminUsersPage() {
         </div>
       </div>
 
-      {/* Slide-in logs panel */}
+      {/* Slide-in onboardings panel */}
       <div
         className={`flex-shrink-0 border-l border-slate-800 bg-slate-900 transition-all duration-300 overflow-hidden ${
           selectedUser ? 'w-96' : 'w-0'
         }`}
       >
         {selectedUser && (
-          <UserLogsPanel user={selectedUser} onClose={() => setSelectedUser(null)} />
+          <UserOnboardingsPanel user={selectedUser} onClose={() => setSelectedUser(null)} />
         )}
       </div>
 

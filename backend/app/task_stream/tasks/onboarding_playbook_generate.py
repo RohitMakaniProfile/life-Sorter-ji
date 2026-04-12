@@ -171,6 +171,7 @@ async def onboarding_playbook_generate_task(send, payload: dict[str, Any]) -> di
             gap_answers=gap_answers,
             rca_handoff=rca_handoff,
             on_token=_on_token,
+            onboarding_id=onboarding_id,
         )
 
         result_payload = {

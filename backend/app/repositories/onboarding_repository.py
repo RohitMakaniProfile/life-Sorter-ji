@@ -272,6 +272,38 @@ async def find_latest_id_by_user(conn, user_id: str) -> str | None:
     return str(v) if v else None
 
 
+async def find_all_by_user_paginated(conn, user_id: str, limit: int, offset: int) -> tuple[list, int]:
+    """Return list of onboarding rows for a user, paginated, newest first."""
+    count_q = build_query(
+        PostgreSQLQuery.from_(onboarding_t)
+        .select(fn.Count("*"))
+        .where(onboarding_t.user_id == Parameter("%s")),
+        [user_id],
+    )
+    total = await conn.fetchval(count_q.sql, *count_q.params) or 0
+
+    q = build_query(
+        PostgreSQLQuery.from_(onboarding_t)
+        .select(
+            onboarding_t.id,
+            onboarding_t.outcome,
+            onboarding_t.domain,
+            onboarding_t.task,
+            onboarding_t.website_url,
+            onboarding_t.playbook_status,
+            onboarding_t.created_at,
+            onboarding_t.updated_at,
+        )
+        .where(onboarding_t.user_id == Parameter("%s"))
+        .orderby(onboarding_t.created_at, order=Order.desc)
+        .limit(limit)
+        .offset(offset),
+        [user_id],
+    )
+    rows = await conn.fetch(q.sql, *q.params)
+    return list(rows), int(total)
+
+
 # ── Playbook launch helpers ───────────────────────────────────────────────────
 
 async def find_gap_launch_state(conn, onboarding_id: str) -> Any:
@@ -576,3 +608,4 @@ async def update_crawl_outputs(conn, onboarding_id: str, web_summary: str, busin
         [web_summary, business_profile, onboarding_id],
     )
     await conn.execute(q.sql, *q.params)
+

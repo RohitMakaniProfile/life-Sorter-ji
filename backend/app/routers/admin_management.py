@@ -281,6 +281,91 @@ async def get_skill_call_detail(request: Request, skill_call_id: str):
     }
 
 
+@router.get("/users/{user_id}/onboardings", response_model=dict[str, Any])
+async def list_user_onboardings(request: Request, user_id: str, limit: int = 20, offset: int = 0):
+    """List all onboarding sessions for a user."""
+    require_super_admin(request)
+    limit = min(max(1, limit), 100)
+    offset = max(0, offset)
+    uid = (user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows, total = await onboarding_repo.find_all_by_user_paginated(conn, uid, limit, offset)
+    onboardings = []
+    for r in rows:
+        created_at = r.get("created_at")
+        updated_at = r.get("updated_at")
+        onboardings.append({
+            "id": str(r.get("id") or ""),
+            "outcome": str(r.get("outcome") or ""),
+            "domain": str(r.get("domain") or ""),
+            "task": str(r.get("task") or ""),
+            "website_url": str(r.get("website_url") or ""),
+            "playbook_status": str(r.get("playbook_status") or ""),
+            "created_at": created_at.isoformat() if created_at else "",
+            "updated_at": updated_at.isoformat() if updated_at else "",
+        })
+    return {"onboardings": onboardings, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/onboardings/{onboarding_id}/token-usage", response_model=dict[str, Any])
+async def get_onboarding_token_usage(request: Request, onboarding_id: str, limit: int = 100, offset: int = 0):
+    """Get token usage details for an onboarding session."""
+    require_super_admin(request)
+    limit = min(max(1, limit), 500)
+    offset = max(0, offset)
+    oid = (onboarding_id or "").strip()
+    if not oid:
+        raise HTTPException(status_code=400, detail="onboarding_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows, total = await token_usage_repo.fetch_by_session_id(conn, oid, limit, offset)
+        summary = await token_usage_repo.fetch_session_summary(conn, oid)
+        onboarding = await onboarding_repo.find_full_by_id(conn, oid)
+
+    calls = []
+    for r in rows:
+        created_at = r.get("created_at")
+        calls.append({
+            "message_id": str(r.get("message_id") or ""),
+            "stage": str(r.get("stage") or ""),
+            "provider": str(r.get("provider") or ""),
+            "model_name": str(r.get("model_name") or ""),
+            "input_tokens": int(r.get("input_tokens") or 0),
+            "output_tokens": int(r.get("output_tokens") or 0),
+            "cost_usd": float(r.get("cost_usd") or 0),
+            "cost_inr": float(r.get("cost_inr") or 0),
+            "created_at": created_at.isoformat() if created_at else "",
+        })
+
+    onboarding_info = None
+    if onboarding:
+        onboarding_info = {
+            "id": str(onboarding.get("id") or ""),
+            "outcome": str(onboarding.get("outcome") or ""),
+            "domain": str(onboarding.get("domain") or ""),
+            "task": str(onboarding.get("task") or ""),
+            "website_url": str(onboarding.get("website_url") or ""),
+        }
+
+    return {
+        "onboarding": onboarding_info,
+        "summary": {
+            "input_tokens": int(summary.get("input_tokens") or 0) if summary else 0,
+            "output_tokens": int(summary.get("output_tokens") or 0) if summary else 0,
+            "cost_usd": float(summary.get("cost_usd") or 0) if summary else 0,
+            "cost_inr": float(summary.get("cost_inr") or 0) if summary else 0,
+            "calls_count": int(summary.get("calls_count") or 0) if summary else 0,
+        },
+        "calls": calls,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 # Hard-coded identities permitted to delete users. Intentionally not configurable.
 # Phone stored in JWT without '+' (validator strips it), so compare digits only.
 _USER_DELETE_ALLOWED_EMAILS = {"code.harshkanjariya@gmail.com"}
