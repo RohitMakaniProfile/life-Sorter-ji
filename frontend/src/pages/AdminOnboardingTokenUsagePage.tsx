@@ -13,6 +13,7 @@ function formatCurrency(value: number, currency: 'USD' | 'INR'): string {
 }
 
 function StageBadge({ stage }: { stage: string }) {
+  const s = stage || 'unknown';
   const colors: Record<string, string> = {
     rca_questions: 'bg-blue-500/20 text-blue-300',
     precision_questions: 'bg-purple-500/20 text-purple-300',
@@ -20,10 +21,10 @@ function StageBadge({ stage }: { stage: string }) {
     business_profile: 'bg-emerald-500/20 text-emerald-300',
     playbook_stream: 'bg-pink-500/20 text-pink-300',
   };
-  const cls = colors[stage] || 'bg-slate-500/20 text-slate-300';
+  const cls = colors[s] || 'bg-slate-500/20 text-slate-300';
   return (
     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {stage.replace(/_/g, ' ').toUpperCase()}
+      {s.replace(/_/g, ' ').toUpperCase()}
     </span>
   );
 }

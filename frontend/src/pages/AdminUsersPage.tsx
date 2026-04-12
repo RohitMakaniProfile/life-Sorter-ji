@@ -9,17 +9,18 @@ const ONBOARDINGS_PAGE = 10;
 // ── Playbook status badge ───────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
+  const s = status || '';
   const cls =
-    status === 'complete'
+    s === 'complete'
       ? 'bg-emerald-500/20 text-emerald-300'
-      : status === 'error'
+      : s === 'error'
       ? 'bg-red-500/20 text-red-300'
-      : status === 'generating'
+      : s === 'generating'
       ? 'bg-blue-500/20 text-blue-300'
       : 'bg-amber-500/20 text-amber-300';
   return (
     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {status.toUpperCase() || 'NOT STARTED'}
+      {s ? s.toUpperCase() : 'NOT STARTED'}
     </span>
   );
 }
