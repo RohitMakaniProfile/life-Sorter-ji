@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import ChatUI from '../../components/ai/chat/ChatUI';
 import type { RichMessage, CrossAgentAction } from '../../components/ai/chat/ChatUI';
 import AgentSelector from '../../components/ai/AgentSelector';
-import { checkAgentAccess, getMessages, getPlanStatus, sendMessage, sendMessageBackground, sendMessageStream, subscribeToTaskStream, clearStoredTaskStreamId } from '../../api';
+import { checkAgentAccess, getInitialMessage, getMessages, getPlanStatus, sendMessage, sendMessageStream, subscribeToTaskStream, clearStoredTaskStreamId } from '../../api';
 import type { AgentId, PipelineStage, ProgressEvent as ApiProgressEvent } from '../../api';
 import { useUiAgents } from '../../context/UiAgentsContext';
 
@@ -357,16 +357,15 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 conversationId: data.conversationId,
                 agentId: loadedAgentId,
               });
-              // Actually await the sendMessageBackground to ensure it runs
+              // Actually await the sendMessage to ensure it runs
               (async () => {
                 try {
-                  const resumeResult = await sendMessageBackground({
+                  const resumeResult = await sendMessage({
                     message: 'approve',
                     conversationId: data.conversationId,
                     agentId: loadedAgentId,
-                    planId: latestPlan.planId,
                   });
-                  console.log('[bg] resume sendMessageBackground result', resumeResult);
+                  console.log('[bg] resume sendMessage result', resumeResult);
 
                   // If taskStream is returned, subscribe to it
                   if (resumeResult.backgroundExecution && resumeResult.taskStream?.streamId) {
@@ -400,11 +399,10 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
                 } catch (err) {
                   console.error('[bg] resume failed', err);
                   try {
-                    await sendMessageBackground({
+                    await sendMessage({
                       message: 'cancel',
                       conversationId: data.conversationId,
                       agentId: loadedAgentId,
-                      planId: latestPlan.planId,
                     });
                   } catch (cancelErr) {
                     console.error('[bg] cancel after resume failed also failed', cancelErr);
@@ -767,7 +765,14 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     setConversationId(undefined);
     setConversationStageOutputs({});
     navigate(location.pathname, { replace: true, state: {} });
-    if (msg) void runStreamRef.current(msg, undefined, undefined, st?.agentId);
+    if (msg) {
+      void runStreamRef.current(msg, undefined, undefined, st?.agentId);
+    } else if (st?.agentId) {
+      // Agent selected but no auto-send message — show the agent's initial message
+      void getInitialMessage(st.agentId).then((initial) => {
+        if (initial) setMessages([{ ...initial, agentId: st.agentId } as any]);
+      }).catch(() => null);
+    }
   }, [initLoading, location.key, location.pathname, location.state, navigate, setActiveAgentId]);
 
   const handleOptionSelect = async (option: string) => {
@@ -775,26 +780,15 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
     setLoading(true);
     try {
       setMessages((prev) => [...prev, { role: 'user', content: option } as any]);
-      // Approve/Retry: start durable background execution via /message/background.
+      // Approve/Retry: start durable background execution via /message.
       const optionLower = option.trim().toLowerCase();
       if (optionLower === 'approve' || optionLower === 'retry') {
         // Clear any stale stream IDs from localStorage before starting fresh
         clearStoredTaskStreamId('plan/execute', { onboardingId: null, userId: null });
-        
-        let retryPlanId: string | undefined;
-        if (optionLower === 'retry') {
-          const latestPlan = [...messages]
-            .reverse()
-            .find((m) => m.role === 'assistant' && Boolean((m as any).planId)) as
-            | (RichMessage & { planId?: string })
-            | undefined;
-          retryPlanId = latestPlan?.planId;
-        }
-        const ack = await sendMessageBackground({
+        const ack = await sendMessage({
           message: 'approve',
           conversationId,
           agentId: activeAgentId,
-          planId: retryPlanId,
         });
         const cid = ack.conversationId || conversationId;
         const pid = ack.planId;
@@ -1148,65 +1142,6 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
         return;
       }
 
-      if (ack.requiresStream) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: '', agentId: activeAgentId } as any]);
-        const result = await sendMessageStream({
-          message: option,
-          conversationId: ack.conversationId || conversationId,
-          agentId: activeAgentId,
-          callbacks: {
-            onStage: (stage, _label, _idx) => {
-              setMessages((prev) => {
-                const updated = [...prev];
-                const last = updated[updated.length - 1];
-                if (last?.role === 'assistant') {
-                  updated[updated.length - 1] = {
-                    ...last,
-                    pipeline: {
-                      currentStage: stage as any,
-                      agentId: activeAgentId,
-                      stageOutputs: conversationStageOutputs,
-                      progressEvents: last.pipeline?.progressEvents ?? [],
-                      outputFile: undefined,
-                      error: undefined,
-                    },
-                  };
-                }
-                return updated;
-              });
-            },
-            onProgress: (event: ApiProgressEvent) => {
-              setMessages((prev) => {
-                const updated = [...prev];
-                const last = updated[updated.length - 1];
-                if (last?.role === 'assistant' && last.pipeline) {
-                  updated[updated.length - 1] = {
-                    ...last,
-                    pipeline: {
-                      ...last.pipeline,
-                      progressEvents: [...(last.pipeline.progressEvents ?? []), event],
-                    },
-                  };
-                }
-                return updated;
-              });
-            },
-            onToken: (token) => {
-              setMessages((prev) => {
-                const updated = [...prev];
-                const last = updated[updated.length - 1];
-                if (last?.role === 'assistant') {
-                  updated[updated.length - 1] = { ...last, content: ((last.content ?? '') + token).replace(/---SECTION:[a-z_]+---\n?/g, '') };
-                }
-                return updated;
-              });
-            },
-          },
-        });
-        if (result.conversationId) setConversationId(result.conversationId);
-        if (result.model) setModel(result.model);
-        if (result.stageOutputs) setConversationStageOutputs((prev) => ({ ...prev, ...result.stageOutputs }));
-      }
     } finally {
       setLoading(false);
     }
@@ -1249,9 +1184,11 @@ export default function ChatPage({ conversationId: propConvId }: ChatPageProps) 
   if (!propConvId && !agentSelected && messages.length === 0) {
     return (
       <AgentSelector
-        onSelect={(agentId) => {
+        onSelect={async (agentId) => {
           setActiveAgentId(agentId);
           setAgentSelected(true);
+          const initial = await getInitialMessage(agentId).catch(() => null);
+          if (initial) setMessages([{ ...initial, agentId } as any]);
         }}
       />
     );

@@ -276,15 +276,17 @@ async def create_new_conversation(
     }
 
 
-async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None:
+async def get_conversation(conversation_id: str | None, include_messages: bool = True) -> dict[str, Any] | None:
     if not conversation_id:
         return None
     pool = get_pool()
+    messages: list[Any] = []
     async with pool.acquire() as conn:
         conv = await convs_repo.find_by_id(conn, conversation_id)
         if not conv:
             return None
-        messages = await msgs_repo.find_by_conversation(conn, conversation_id)
+        if include_messages:
+            messages = await msgs_repo.find_by_conversation(conn, conversation_id)
 
     stage_outputs = _to_obj(conv["last_stage_outputs"], {})
     stage_outputs = stage_outputs if isinstance(stage_outputs, dict) else {}
@@ -301,6 +303,15 @@ async def get_conversation(conversation_id: str | None) -> dict[str, Any] | None
         "createdAt": conv["created_at"],
         "updatedAt": conv["updated_at"],
     }
+
+
+async def get_last_assistant_message(conversation_id: str) -> dict[str, Any] | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await msgs_repo.get_last_assistant_message(conn, conversation_id)
+    if not row:
+        return None
+    return _message_from_row(row)
 
 
 async def list_conversations(
