@@ -7,6 +7,7 @@ import { downloadReportAsPdf } from '../../../utils/downloadPdf';
 import { downloadMarkdownAsFile } from '../../../utils/downloadMarkdown';
 import { getIsSuperAdmin } from '../../../api/authSession';
 import SidePanel from './SidePanel';
+import CrawlUrlList from './CrawlUrlList';
 import PlaybookViewer from '../../PlaybookViewer';
 import type { PlaybookData } from '../../PlaybookViewer';
 
@@ -373,31 +374,36 @@ function AssistantMessage({
     >
       {/* Typing indicator — only for the last assistant message */}
       {m.role === 'assistant' && !m.content && isLast && (
-        <div className="flex items-center justify-between gap-3 px-5 py-3.5">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1">
-              <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-              <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-              <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" />
+        <div className="px-5 py-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1">
+                <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" />
+              </div>
+              {(() => {
+                const latest = m.pipeline?.progressEvents?.[m.pipeline.progressEvents.length - 1]?.message;
+                if (!latest) return null;
+                return (
+                  <div className="mt-1 text-[11px] text-slate-400 truncate max-w-[420px]">
+                    {latest}
+                  </div>
+                );
+              })()}
             </div>
-            {(() => {
-              const latest = m.pipeline?.progressEvents?.[m.pipeline.progressEvents.length - 1]?.message;
-              if (!latest) return null;
-              return (
-                <div className="mt-1 text-[11px] text-slate-400 truncate max-w-[420px]">
-                  {latest}
-                </div>
-              );
-            })()}
+            <button
+              type="button"
+              onClick={onOpenLiveContext}
+              className="text-[11px] font-semibold text-violet-600 hover:text-violet-700"
+              title="Open context panel (skills + token usage)"
+            >
+              Context
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onOpenLiveContext}
-            className="text-[11px] font-semibold text-violet-600 hover:text-violet-700"
-            title="Open context panel (skills + token usage)"
-          >
-            Context
-          </button>
+          {m.pipeline?.progressEvents && m.pipeline.progressEvents.length > 0 && (
+            <CrawlUrlList progressEvents={m.pipeline.progressEvents} />
+          )}
         </div>
       )}
 

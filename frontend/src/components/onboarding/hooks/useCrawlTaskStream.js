@@ -30,6 +30,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
   const [crawlStage, setCrawlStage] = useState('');
   const [crawlLabel, setCrawlLabel] = useState('');
   const [crawlProgress, setCrawlProgress] = useState(null);
+  const [crawlProgressEvents, setCrawlProgressEvents] = useState([]);
   const [crawlDone, setCrawlDone] = useState(false);
   const [crawlResult, setCrawlResult] = useState(null);
 
@@ -52,6 +53,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
       setCrawlStage('starting');
       setCrawlLabel('Starting crawl');
       setCrawlProgress(null);
+      setCrawlProgressEvents([]);
 
       const myRunId = ++runIdRef.current;
       let finished = false;
@@ -79,6 +81,16 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
                   current_page: e.current_page || '',
                 });
               }
+            } else if (e.type === 'url' && e.url) {
+              setCrawlProgressEvents(prev => [
+                ...prev,
+                {
+                  stage: 'scraping',
+                  type: 'url',
+                  message: `${e.event}: ${e.url}`,
+                  meta: { event: String(e.event || ''), url: String(e.url) },
+                },
+              ]);
             }
           },
           onDone: (e) => {
@@ -187,6 +199,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     crawlStage,
     crawlLabel,
     crawlProgress,
+    crawlProgressEvents,
     crawlDone,
     crawlResult,
     startForSession,

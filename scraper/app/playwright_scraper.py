@@ -374,6 +374,7 @@ async def _crawl_parallel_async(
     *,
     resume: dict | None = None,
     skip_urls: set[str] | None = None,
+    max_parallel_pages: int = 1,
 ) -> dict:
     skip_norm = {norm_crawl_url(u) for u in (skip_urls or set()) if norm_crawl_url(u)}
     hydrated = _hydrate_parallel_resume(resume, skip_norm, base_url)
@@ -417,6 +418,9 @@ async def _crawl_parallel_async(
     discovery_idle_count = 0
     scraper_idle_count = 0
     IDLE_THRESHOLD = 2
+    # Scale scraper idle threshold proportionally so N scrapers don't trigger a
+    # false-stop when only some of them happen to find nothing in the same tick.
+    SCRAPER_IDLE_THRESHOLD = IDLE_THRESHOLD * max(1, max_parallel_pages)
 
     async def _emit_checkpoint() -> None:
         async with lock:
@@ -454,7 +458,7 @@ async def _crawl_parallel_async(
                             url = None
                 if url is None:
                     discovery_idle_count += 1
-                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= IDLE_THRESHOLD:
+                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= SCRAPER_IDLE_THRESHOLD:
                         stop_flag.set()
                         return
                     await asyncio.sleep(0.3)
@@ -504,7 +508,7 @@ async def _crawl_parallel_async(
                         scraped.add(url)
                 if url is None:
                     scraper_idle_count += 1
-                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= IDLE_THRESHOLD:
+                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= SCRAPER_IDLE_THRESHOLD:
                         stop_flag.set()
                         return
                     await asyncio.sleep(0.5)
@@ -539,7 +543,8 @@ async def _crawl_parallel_async(
                         failed_list.append({"url": url, "error": "scrape_failed"})
                 await asyncio.sleep(0.2)
 
-        await asyncio.wait_for(asyncio.gather(discovery_coro(), scraper_coro()), timeout=3600)
+        scraper_coros = [scraper_coro() for _ in range(max(1, max_parallel_pages))]
+        await asyncio.wait_for(asyncio.gather(discovery_coro(), *scraper_coros), timeout=3600)
         await context_disc.close()
         await context_scrape.close()
         await browser.close()
@@ -568,6 +573,7 @@ def crawl_with_playwright(
     parallel: bool = False,
     resume_checkpoint: dict | None = None,
     skip_urls: list[str] | None = None,
+    max_parallel_pages: int = 1,
 ) -> dict:
     t_start = time.time()
 
@@ -602,6 +608,7 @@ def crawl_with_playwright(
             headless,
             resume=resume_checkpoint,
             skip_urls=skip_set,
+            max_parallel_pages=max_parallel_pages,
         )
         try:
             return asyncio.run(coro)
@@ -731,6 +738,7 @@ def main():
     parser.add_argument("--deep", action="store_true")
     parser.add_argument("--parallel", action="store_true", default=True)
     parser.add_argument("--no-parallel", action="store_false", dest="parallel")
+    parser.add_argument("--max-parallel-pages", type=int, default=1, help="Max pages to scrape in parallel (default: 1)")
     parser.add_argument("--no-robots", action="store_true")
     parser.add_argument("--no-headless", action="store_true")
     parser.add_argument(
@@ -767,6 +775,7 @@ def main():
         parallel=getattr(args, "parallel", False),
         resume_checkpoint=resume_ck,
         skip_urls=[str(u) for u in skip_list] if skip_list else None,
+        max_parallel_pages=args.max_parallel_pages,
     )
 
     if args.output:

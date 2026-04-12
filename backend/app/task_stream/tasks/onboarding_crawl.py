@@ -61,7 +61,10 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
 
     try:
         async def _on_progress(event: dict[str, Any]) -> None:
-            await send("stage", **event)
+            if "url_event" in event:
+                await send("url", event=event["url_event"], url=event["url"])
+            else:
+                await send("stage", **event)
 
         page_data, summary_text = await run_playwright_single_page(
             url=website_url,

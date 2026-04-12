@@ -92,11 +92,16 @@ async def run_playwright_single_page(
         if not isinstance(meta, dict):
             return
         if meta.get("stage") == "running":
-            label = str(meta.get("message") or meta.get("label") or "Scraping")
-            url_hint = ""
             m = meta.get("meta")
+            url_hint = ""
             if isinstance(m, dict):
                 url_hint = str(m.get("url") or "")
+                url_event = str(m.get("event") or "")
+                # Forward individual URL events so the frontend can show discovered/done URLs
+                if url_event in ("discovered", "page_data") and url_hint:
+                    await on_progress({"url_event": url_event, "url": url_hint})
+
+            label = str(meta.get("message") or meta.get("label") or "Scraping")
             await on_progress(
                 {
                     "stage": "scraping",
@@ -107,8 +112,8 @@ async def run_playwright_single_page(
 
     result = await run_skill(
         "scrape-playwright",
-        message=f"Scrape this website homepage: {url}",
-        args={"url": url, "maxPages": 1},
+        message=f"Scrape this website: {url}",
+        args={"url": url, "maxPages": 5, "parallel": True, "maxParallelPages": 5},
         on_progress=_skill_progress,
     )
 
@@ -120,9 +125,17 @@ async def run_playwright_single_page(
     if not isinstance(data, dict):
         data = {}
 
-    pages: list[dict[str, Any]] = data.get("pages") or []
-    if pages and isinstance(pages[0], dict):
-        return pages[0], str(result.text or "").strip()
+    pages: list[dict[str, Any]] = [p for p in (data.get("pages") or []) if isinstance(p, dict)]
+    if pages:
+        # Merge elements from all pages into the first page's record so
+        # build_web_summary gets richer content without losing homepage metadata.
+        merged = dict(pages[0])
+        if len(pages) > 1:
+            all_elements: list[dict] = list(pages[0].get("elements") or [])
+            for p in pages[1:]:
+                all_elements.extend(p.get("elements") or [])
+            merged["elements"] = all_elements
+        return merged, str(result.text or "").strip()
 
     # Fallback: build a minimal record from whatever the scraper returned
     page_data = {

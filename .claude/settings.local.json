@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python3 -c \":*)",
       "Bash(PGPASSWORD=ikshanprodadminpass psql:*)",
-      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji -name *config* -path */app/config* -type f)"
+      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji -name *config* -path */app/config* -type f)",
+      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji -name *.tsx -path */onboarding/*)",
+      "Bash(grep -rn \"stream.*crawl\\\\|crawl.*stream\\\\|startTask.*crawl\\\\|task.*crawl\" /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji --include=*.tsx --include=*.ts --include=*.js --include=*.py)"
     ]
   }
 }

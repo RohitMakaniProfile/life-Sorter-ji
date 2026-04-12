@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef } from 'react';
 import { Globe, Brain, FileSearch, Search, MessageCircleQuestion } from 'lucide-react';
+import CrawlUrlList from '../../ai/chat/CrawlUrlList';
 
 /**
  * AnalysisTransitionMessages - Animated message sequence shown after scale questions
@@ -55,6 +56,7 @@ const ANALYSIS_MESSAGES = [
 export default function AnalysisTransitionMessages({
   crawlStreaming,
   crawlProgress,
+  crawlProgressEvents,
   rcaCalling,
   onComplete,
   isComplete = false,
@@ -235,6 +237,13 @@ export default function AnalysisTransitionMessages({
           </span>
         </div>
       </div>
+
+      {/* URL crawl progress list */}
+      {crawlProgressEvents && crawlProgressEvents.length > 0 && (
+        <div className="mt-6 w-full max-w-md">
+          <CrawlUrlList progressEvents={crawlProgressEvents} />
+        </div>
+      )}
 
       {/* Ambient animation */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">

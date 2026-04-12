@@ -912,7 +912,7 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
         )
 
     payload: dict[str, Any] = {"url": url}
-    for k in ("maxPages", "maxDepth", "deep", "parallel"):
+    for k in ("maxPages", "maxDepth", "deep", "parallel", "maxParallelPages"):
         if k in args and args[k] is not None:
             payload[k] = args[k]
 

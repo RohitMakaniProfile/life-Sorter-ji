@@ -79,6 +79,7 @@ export function OnboardingStageRenderer({
     crawlStreaming,
     crawlLabel,
     crawlProgress,
+    crawlProgressEvents,
   } = crawl;
 
   const {
@@ -212,7 +213,7 @@ export function OnboardingStageRenderer({
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
-        <AnalysisTransitionMessages crawlStreaming={crawlStreaming} crawlProgress={crawlProgress} rcaCalling={rcaCalling} isComplete={false} onComplete={() => {}} />
+        <AnalysisTransitionMessages crawlStreaming={crawlStreaming} crawlProgress={crawlProgress} crawlProgressEvents={crawlProgressEvents} rcaCalling={rcaCalling} isComplete={false} onComplete={() => {}} />
       </StageLayout>
     );
   }
