@@ -106,6 +106,7 @@ async def chat_completion_stream(
     }
     full_text = ""
     finish_reason = ""
+    usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", OPENROUTER_CHAT_URL, json=payload, headers=_headers()) as resp:
             resp.raise_for_status()
@@ -133,9 +134,15 @@ async def chat_completion_stream(
                 fr = choice.get("finish_reason") or choice.get("stop_reason")
                 if fr:
                     finish_reason = fr
-    # OpenRouter does not always emit final usage in streamed lines reliably.
+                # Capture usage from the final chunk (OpenRouter sends it here)
+                chunk_usage = evt.get("usage")
+                if isinstance(chunk_usage, dict):
+                    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        v = chunk_usage.get(k)
+                        if isinstance(v, (int, float)) and v > 0:
+                            usage[k] = int(v)
     return {
         "message": full_text.strip(),
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": usage,
         "finish_reason": finish_reason,
     }
