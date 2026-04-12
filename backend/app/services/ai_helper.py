@@ -27,6 +27,16 @@ def _extract_json_value(text: str) -> str:
     if not raw:
         raise ValueError("Empty LLM output; expected JSON")
 
+    # 0. Strip <thinking>...</thinking> blocks (Claude extended thinking mode)
+    # First pass: strip any properly closed <thinking>...</thinking> blocks (non-greedy, handles multiple blocks)
+    raw = re.sub(r"<thinking>[\s\S]*?</thinking>", "", raw, flags=re.IGNORECASE).strip()
+    # Second pass: handle unclosed <thinking> block (output truncated before </thinking> tag)
+    # If any <thinking> tag remains without a matching </thinking>, strip from that point to end-of-string
+    if re.search(r"<thinking>", raw, re.IGNORECASE):
+        raw = re.sub(r"<thinking>[\s\S]*$", "", raw, flags=re.IGNORECASE).strip()
+    if not raw:
+        raise ValueError("LLM output only contained a <thinking> block with no JSON")
+
     # 1. Try to parse the whole string as JSON
     try:
         json.loads(raw)

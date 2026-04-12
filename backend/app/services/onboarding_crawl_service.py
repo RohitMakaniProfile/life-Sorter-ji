@@ -241,7 +241,7 @@ Requirements:
 - Use the business profile when available to tailor the questions
 - Avoid repeating what is already obvious from the website
 
-IMPORTANT: Output ONLY the JSON object. Do not include any text, explanations, or markdown formatting.
+IMPORTANT: Output ONLY the JSON object. Do NOT use <thinking> tags. Do not include any reasoning, explanations, or markdown formatting. Your entire response must be valid JSON starting with { and ending with }.
 """
 
 
@@ -350,7 +350,7 @@ async def generate_rca_questions(
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
             ],
             temperature=0.3,
-            max_tokens=900,
+            max_tokens=4000,
         )
         raw = str(result.get("message") or "").strip()
         usage = result.get("usage") or {}

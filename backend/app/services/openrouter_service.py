@@ -19,6 +19,12 @@ def _extract_text(content: Any) -> str:
         chunks: list[str] = []
         for part in content:
             if isinstance(part, dict):
+                # Skip extended thinking blocks (Claude extended thinking API).
+                # Thinking blocks use {"type": "thinking", "thinking": "..."} — no "text" key.
+                # Explicitly skipping ensures we never accidentally include thinking content
+                # even if a future API version adds a "text" alias on those blocks.
+                if part.get("type") == "thinking":
+                    continue
                 txt = part.get("text")
                 if isinstance(txt, str):
                     chunks.append(txt)

@@ -29,7 +29,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer() if not get_settings().is_production
+        structlog.dev.ConsoleRenderer() if get_settings().is_development
         else structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(0),
