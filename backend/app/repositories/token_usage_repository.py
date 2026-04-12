@@ -29,6 +29,9 @@ async def insert(
     output_tokens: int,
     cost_usd: float | None,
     cost_inr: float | None,
+    success: bool | None = None,
+    error_msg: str | None = None,
+    raw_output: str | None = None,
 ) -> None:
     q = build_query(
         PostgreSQLQuery.into(token_usage_t)
@@ -38,14 +41,17 @@ async def insert(
             token_usage_t.model, token_usage_t.stage, token_usage_t.provider,
             token_usage_t.model_name, token_usage_t.input_tokens,
             token_usage_t.output_tokens, token_usage_t.cost_usd, token_usage_t.cost_inr,
+            token_usage_t.success, token_usage_t.error_msg, token_usage_t.raw_output,
         )
         .insert(
             Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
             Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
             Parameter("%s"), Parameter("%s"), Parameter("%s"), Parameter("%s"),
+            Parameter("%s"), Parameter("%s"), Parameter("%s"),
         ),
         [message_id, session_id, conversation_id, user_id, model_encoded, stage,
-         provider, model_name, input_tokens, output_tokens, cost_usd, cost_inr],
+         provider, model_name, input_tokens, output_tokens, cost_usd, cost_inr,
+         success, error_msg, raw_output],
     )
     await conn.execute(q.sql, *q.params)
 
@@ -142,12 +148,20 @@ async def fetch_by_session_id(conn, session_id: str, limit: int, offset: int) ->
     ) or 0
     rows = await conn.fetch(
         "SELECT message_id, stage, provider, model_name, input_tokens, output_tokens, "
-        "cost_usd, cost_inr, created_at "
+        "cost_usd, cost_inr, success, error_msg, created_at "
         "FROM token_usage WHERE session_id = $1 "
         "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         session_id, limit, offset,
     )
     return list(rows), int(total)
+
+
+async def fetch_raw_output(conn, message_id: str) -> str | None:
+    """Admin: fetch the full raw_output for a specific token usage record (failures only)."""
+    return await conn.fetchval(
+        "SELECT raw_output FROM token_usage WHERE message_id = $1 LIMIT 1",
+        message_id,
+    )
 
 
 async def fetch_session_summary(conn, session_id: str) -> Any:

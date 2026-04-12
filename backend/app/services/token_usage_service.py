@@ -72,6 +72,10 @@ async def log_onboarding_token_usage(
                 output_tokens=output_tokens,
                 cost_usd=cost_usd,
                 cost_inr=cost_inr,
+                success=success,
+                error_msg=error_msg or None,
+                # Store full raw output in DB only on failure (for admin debugging)
+                raw_output=raw_output if not success and raw_output else None,
             )
 
             log_data = {
@@ -88,7 +92,9 @@ async def log_onboarding_token_usage(
             if not success and error_msg:
                 log_data["error"] = error_msg
             if not success and raw_output:
-                log_data["raw_output_preview"] = raw_output[:1000]
+                # Only preview in logs; full output is now stored in DB (token_usage.raw_output)
+                log_data["raw_output_preview"] = raw_output[:500]
+                log_data["raw_output_db_key"] = message_id
 
             logger.info("onboarding_token_usage logged", **log_data)
 

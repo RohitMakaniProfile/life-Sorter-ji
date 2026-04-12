@@ -337,6 +337,9 @@ async def get_onboarding_token_usage(request: Request, onboarding_id: str, limit
             "output_tokens": int(r.get("output_tokens") or 0),
             "cost_usd": float(r.get("cost_usd") or 0),
             "cost_inr": float(r.get("cost_inr") or 0),
+            "success": r.get("success"),  # bool or None for older rows
+            "error_msg": str(r.get("error_msg") or ""),
+            "has_raw_output": bool(r.get("error_msg")),  # hint to frontend
             "created_at": created_at.isoformat() if created_at else "",
         })
 
@@ -364,6 +367,24 @@ async def get_onboarding_token_usage(request: Request, onboarding_id: str, limit
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/token-usage/{message_id}/raw-output", response_model=dict[str, Any])
+async def get_token_usage_raw_output(request: Request, message_id: str):
+    """Fetch the full raw LLM output stored for a failed token usage record."""
+    require_super_admin(request)
+    mid = (message_id or "").strip()
+    if not mid:
+        raise HTTPException(status_code=400, detail="message_id is required")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        raw = await token_usage_repo.fetch_raw_output(conn, mid)
+    if raw is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No raw_output found for this message_id (only stored on failure)",
+        )
+    return {"message_id": mid, "raw_output": raw}
 
 
 # Hard-coded identities permitted to delete users. Intentionally not configurable.

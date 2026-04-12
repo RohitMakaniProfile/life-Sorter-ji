@@ -675,6 +675,12 @@ ALTER TABLE token_usage
     ADD COLUMN IF NOT EXISTS cost_usd NUMERIC(12,6);
 ALTER TABLE token_usage
     ADD COLUMN IF NOT EXISTS cost_inr NUMERIC(12,2);
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS success BOOLEAN;
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS error_msg TEXT;
+ALTER TABLE token_usage
+    ADD COLUMN IF NOT EXISTS raw_output TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
     ON token_usage (message_id);
