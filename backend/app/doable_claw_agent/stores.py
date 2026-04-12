@@ -7,6 +7,7 @@ from uuid import uuid4
 import traceback
 from asyncpg import UniqueViolationError
 
+from app.constants import DEFAULT_AGENT_ID, DEFAULT_AGENTS
 from app.db import get_pool
 from app.repositories import (
     agents_repository as agents_repo,
@@ -19,44 +20,7 @@ from app.repositories import (
     session_links_repository as session_links_repo,
 )
 from app.services import form_flow_service
-
-DEFAULT_AGENT_ID = "research-orchestrator"
-
-USD_TO_INR = 94.0
-MODEL_PRICING_USD_PER_TOKEN: dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
-    "gpt-4o": (5.0 / 1_000_000, 15.0 / 1_000_000),
-    "claude-3-5-sonnet-20241022": (3.0 / 1_000_000, 15.0 / 1_000_000),
-    "claude-3-7-sonnet-20250219": (3.0 / 1_000_000, 15.0 / 1_000_000),
-    "claude-opus-4-6": (15.0 / 1_000_000, 75.0 / 1_000_000),
-    "z-ai/glm-5": (0.30 / 1_000_000, 1.20 / 1_000_000),
-}
-
-DEFAULT_AGENTS = [
-    {
-        "id": "research-orchestrator",
-        "name": "Business Research",
-        "emoji": "🕵️",
-        "description": "Agentic research using website scrapers, social and sentiment skills",
-        "allowed_skill_ids": [
-            "business-scan", "scrape-bs4", "scrape-playwright", "scrape-googlebusiness",
-            "platform-scout", "web-search", "platform-taxonomy", "classify-links",
-            "instagram-sentiment", "youtube-sentiment", "playstore-sentiment",
-            "quora-search", "find-platform-handles",
-        ],
-        "skill_selector_context": "",
-        "final_output_formatting_context": "",
-    },
-    {
-        "id": "business_problem_identifier",
-        "name": "Business Problem Identifier",
-        "emoji": "🎯",
-        "description": "Guided onboarding journey to identify your business problem and generate a personalised playbook",
-        "allowed_skill_ids": [],
-        "skill_selector_context": "",
-        "final_output_formatting_context": "",
-    },
-]
+from app.utils.token_cost import _compute_cost_usd_inr
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,27 +91,6 @@ def _decode_token_usage_model(encoded: str) -> dict[str, str]:
     if len(parts) != 3:
         return {"stage": "unknown", "provider": "unknown", "model": (encoded or "").strip() or "unknown"}
     return {"stage": parts[0].strip() or "unknown", "provider": parts[1].strip() or "unknown", "model": parts[2].strip() or "unknown"}
-
-
-def _pricing_for_model(model_name: str) -> tuple[float, float] | None:
-    name = (model_name or "").strip().lower()
-    if not name:
-        return None
-    if name in MODEL_PRICING_USD_PER_TOKEN:
-        return MODEL_PRICING_USD_PER_TOKEN[name]
-    for key, val in MODEL_PRICING_USD_PER_TOKEN.items():
-        if key in name:
-            return val
-    return None
-
-
-def _compute_cost_usd_inr(model_name: str, input_tokens: int, output_tokens: int) -> tuple[float | None, float | None]:
-    pricing = _pricing_for_model(model_name)
-    if not pricing:
-        return None, None
-    in_rate, out_rate = pricing
-    usd = (max(0, int(input_tokens)) * in_rate) + (max(0, int(output_tokens)) * out_rate)
-    return round(usd, 6), round(usd * USD_TO_INR, 2)
 
 
 def _agent_from_row(r: Any) -> dict[str, Any]:
