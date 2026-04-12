@@ -5,11 +5,10 @@ import type { AdminOnboardingTokenUsageCall, AdminOnboardingTokenUsageSummary, A
 
 const PAGE_SIZE = 100;
 
-function formatCurrency(value: number, currency: 'USD' | 'INR'): string {
-  if (currency === 'USD') {
-    return `$${value.toFixed(4)}`;
-  }
-  return `₹${value.toFixed(2)}`;
+function formatCurrency(value: number | undefined | null, currency: 'USD' | 'INR'): string {
+  const v = Number(value) || 0;
+  if (currency === 'USD') return `$${v.toFixed(4)}`;
+  return `₹${v.toFixed(2)}`;
 }
 
 function StageBadge({ stage }: { stage: string }) {
@@ -85,9 +84,7 @@ export default function AdminOnboardingTokenUsagePage() {
           </button>
           <div className="flex-1 min-w-0">
             <h1 className="text-xl font-bold text-slate-100">Onboarding Token Usage</h1>
-            <p className="text-sm text-slate-500 font-mono truncate mt-0.5">
-              {onboardingId}
-            </p>
+            <p className="text-sm text-slate-500 font-mono truncate mt-0.5">{onboardingId}</p>
           </div>
         </div>
 
@@ -116,8 +113,8 @@ export default function AdminOnboardingTokenUsagePage() {
               </div>
               <div>
                 <p className="text-xs text-slate-500 mb-1">Website</p>
-                <p className="text-sm text-slate-100 font-medium truncate" title={onboarding.websiteUrl}>
-                  {onboarding.websiteUrl || '—'}
+                <p className="text-sm text-slate-100 font-medium truncate" title={onboarding.website_url}>
+                  {onboarding.website_url || '—'}
                 </p>
               </div>
             </div>
@@ -129,23 +126,23 @@ export default function AdminOnboardingTokenUsagePage() {
           <div className="mb-6 grid grid-cols-2 md:grid-cols-5 gap-4">
             <div className="p-4 rounded-xl border border-slate-800 bg-slate-900">
               <p className="text-xs text-slate-500 mb-1">Total LLM Calls</p>
-              <p className="text-2xl font-bold text-slate-100">{summary.callsCount}</p>
+              <p className="text-2xl font-bold text-slate-100">{Number(summary.calls_count) || 0}</p>
             </div>
             <div className="p-4 rounded-xl border border-slate-800 bg-slate-900">
               <p className="text-xs text-slate-500 mb-1">Input Tokens</p>
-              <p className="text-2xl font-bold text-blue-400">{summary.inputTokens.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-blue-400">{(Number(summary.input_tokens) || 0).toLocaleString()}</p>
             </div>
             <div className="p-4 rounded-xl border border-slate-800 bg-slate-900">
               <p className="text-xs text-slate-500 mb-1">Output Tokens</p>
-              <p className="text-2xl font-bold text-emerald-400">{summary.outputTokens.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-emerald-400">{(Number(summary.output_tokens) || 0).toLocaleString()}</p>
             </div>
             <div className="p-4 rounded-xl border border-slate-800 bg-slate-900">
               <p className="text-xs text-slate-500 mb-1">Cost (USD)</p>
-              <p className="text-2xl font-bold text-amber-400">{formatCurrency(summary.costUsd, 'USD')}</p>
+              <p className="text-2xl font-bold text-amber-400">{formatCurrency(summary.cost_usd, 'USD')}</p>
             </div>
             <div className="p-4 rounded-xl border border-slate-800 bg-slate-900">
               <p className="text-xs text-slate-500 mb-1">Cost (INR)</p>
-              <p className="text-2xl font-bold text-pink-400">{formatCurrency(summary.costInr, 'INR')}</p>
+              <p className="text-2xl font-bold text-pink-400">{formatCurrency(summary.cost_inr, 'INR')}</p>
             </div>
           </div>
         )}
@@ -179,34 +176,34 @@ export default function AdminOnboardingTokenUsagePage() {
                   </tr>
                 ) : (
                   calls.map((call, idx) => (
-                    <tr key={`${call.messageId}-${idx}`} className="hover:bg-slate-900/40">
+                    <tr key={`${call.message_id}-${idx}`} className="hover:bg-slate-900/40">
                       <td className="px-4 py-3">
                         <StageBadge stage={call.stage} />
                       </td>
                       <td className="px-4 py-3">
                         <div>
-                          <p className="text-slate-100 font-mono text-xs truncate max-w-[200px]" title={call.modelName}>
-                            {call.modelName || '—'}
+                          <p className="text-slate-100 font-mono text-xs truncate max-w-50" title={call.model_name}>
+                            {call.model_name || '—'}
                           </p>
-                          <p className="text-[10px] text-slate-500">{call.provider}</p>
+                          <p className="text-[10px] text-slate-500">{call.provider || '—'}</p>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right text-blue-400 font-mono">
-                        {call.inputTokens.toLocaleString()}
+                        {(Number(call.input_tokens) || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-right text-emerald-400 font-mono">
-                        {call.outputTokens.toLocaleString()}
+                        {(Number(call.output_tokens) || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="text-amber-400 font-mono text-xs">
-                          {formatCurrency(call.costUsd, 'USD')}
+                          {formatCurrency(call.cost_usd, 'USD')}
                         </div>
                         <div className="text-pink-400/70 font-mono text-[10px]">
-                          {formatCurrency(call.costInr, 'INR')}
+                          {formatCurrency(call.cost_inr, 'INR')}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
-                        {call.createdAt ? new Date(call.createdAt).toLocaleString() : '—'}
+                        {call.created_at ? new Date(call.created_at).toLocaleString() : '—'}
                       </td>
                     </tr>
                   ))
@@ -238,4 +235,3 @@ export default function AdminOnboardingTokenUsagePage() {
     </div>
   );
 }
-

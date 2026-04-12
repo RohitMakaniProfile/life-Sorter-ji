@@ -109,15 +109,15 @@ function UserOnboardingsPanel({ user, onClose }: { user: AdminUser; onClose: () 
                 <span className="text-xs font-semibold text-slate-100 truncate flex-1">
                   {o.task || o.domain || o.outcome || 'Onboarding'}
                 </span>
-                <StatusBadge status={o.playbookStatus} />
+                <StatusBadge status={o.playbook_status} />
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
                 <span title="Onboarding ID">ID: {o.id.slice(0, 12)}…</span>
                 {o.outcome && <span>🎯 {o.outcome}</span>}
-                {o.createdAt && <span>{new Date(o.createdAt).toLocaleDateString()}</span>}
+                {o.created_at && <span>{new Date(o.created_at).toLocaleDateString()}</span>}
               </div>
-              {o.websiteUrl && (
-                <p className="text-[10px] text-slate-600 truncate mt-1">🌐 {o.websiteUrl}</p>
+              {o.website_url && (
+                <p className="text-[10px] text-slate-600 truncate mt-1">🌐 {o.website_url}</p>
               )}
             </button>
           ))}

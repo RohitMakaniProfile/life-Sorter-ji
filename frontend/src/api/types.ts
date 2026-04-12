@@ -343,30 +343,30 @@ export interface AdminUserOnboarding {
   outcome: string;
   domain: string;
   task: string;
-  websiteUrl: string;
-  playbookStatus: string;
-  createdAt: string;
-  updatedAt: string;
+  website_url: string;
+  playbook_status: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AdminOnboardingTokenUsageCall {
-  messageId: string;
+  message_id: string;
   stage: string;
   provider: string;
-  modelName: string;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  costInr: number;
-  createdAt: string;
+  model_name: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_inr: number;
+  created_at: string;
 }
 
 export interface AdminOnboardingTokenUsageSummary {
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  costInr: number;
-  callsCount: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_inr: number;
+  calls_count: number;
 }
 
 export interface AdminOnboardingInfo {
@@ -374,5 +374,5 @@ export interface AdminOnboardingInfo {
   outcome: string;
   domain: string;
   task: string;
-  websiteUrl: string;
+  website_url: string;
 }
