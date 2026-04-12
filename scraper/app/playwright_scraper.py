@@ -180,7 +180,9 @@ def parse_links(html: str, page_url: str, base_domain: str) -> tuple[list, list]
         lp = urllib.parse.urlparse(full)
         if lp.scheme not in ("http", "https"):
             continue
-        if lp.netloc.lower().endswith(base_domain) or lp.netloc.lower() == base_domain:
+        netloc_lower = lp.netloc.lower()
+        # Only accept exact domain match - completely skip subdomains
+        if netloc_lower == base_domain.lower():
             if full not in internal:
                 internal.append(full)
         else:
@@ -250,7 +252,8 @@ def _fetch_sitemap_urls(base_url: str, base_domain: str) -> list[str]:
             if parsed.scheme not in ("http", "https"):
                 continue
             netloc = parsed.netloc.lower()
-            if netloc == base_domain or netloc.endswith("." + base_domain):
+            # Only accept exact domain match - completely skip subdomains
+            if netloc == base_domain.lower():
                 if not should_skip_url(u):
                     urls.append(u)
         if urls:
@@ -260,6 +263,111 @@ def _fetch_sitemap_urls(base_url: str, base_domain: str) -> list[str]:
 
 def _is_blog_url(url: str) -> bool:
     return "blog" in url.lower()
+
+
+# URL priority scoring - higher score = more important
+# These URLs contain key business information
+HIGH_PRIORITY_KEYWORDS = [
+    "about",
+    "pricing", "price", "plans",
+    "contact", "contact-us",
+    "careers", "jobs", "hiring",
+    "team", "company",
+    "features", "product",
+    "services",
+    "faq", "help",
+    "enterprise",
+    "demo",
+    "signup", "sign-up", "register",
+    "privacy", "terms",
+]
+
+# These URLs are typically less important for business understanding
+LOW_PRIORITY_KEYWORDS = [
+    "docs", "documentation", "api-reference",
+    "tutorial", "tutorials", "guide", "guides",
+    "blog", "news", "updates",
+    "changelog", "release-notes",
+    "community", "forum", "support",
+    "legal", "compliance",
+]
+
+# Subdomains to completely skip (not just deprioritize)
+SKIP_SUBDOMAINS = [
+    "docs.",
+    "app.",
+    "api.",
+    "status.",
+    "community.",
+    "forum.",
+    "help.",
+    "blog.",
+    "support.",
+    "cdn.",
+    "static.",
+    "assets.",
+    "media.",
+]
+
+
+def _is_subdomain_url(url: str, base_domain: str) -> bool:
+    """Check if URL is from a subdomain that should be skipped."""
+    parsed = urllib.parse.urlparse(url.lower())
+    netloc = parsed.netloc
+    
+    # If netloc equals base_domain exactly, it's not a subdomain
+    if netloc == base_domain.lower():
+        return False
+    
+    # Check if it's a subdomain of base_domain
+    if netloc.endswith("." + base_domain.lower()):
+        # It's a subdomain - check if it's in the skip list
+        subdomain_prefix = netloc[: -(len(base_domain) + 1)]  # Get the subdomain part
+        for skip_sub in SKIP_SUBDOMAINS:
+            skip_prefix = skip_sub.rstrip(".")
+            if subdomain_prefix == skip_prefix or subdomain_prefix.endswith("." + skip_prefix):
+                return True
+    
+    return False
+
+
+def _get_url_priority(url: str) -> int:
+    """
+    Calculate priority score for a URL.
+    Higher score = higher priority (will be scraped first).
+
+    Score ranges:
+    - 100+: Homepage
+    - 50-99: High priority business pages
+    - 10-49: Normal pages
+    - 0-9: Low priority (docs, tutorials, etc.)
+    """
+    url_lower = url.lower()
+    parsed = urllib.parse.urlparse(url_lower)
+    path = parsed.path.strip("/")
+
+    # Homepage gets highest priority
+    if not path or path == "":
+        return 100
+
+
+    # Check for high priority keywords in path
+    for keyword in HIGH_PRIORITY_KEYWORDS:
+        if keyword in path:
+            # Shorter paths with high priority keywords are even better
+            # e.g., /pricing is better than /docs/pricing/guide
+            depth = path.count("/")
+            return max(50, 80 - depth * 10)
+
+    # Check for low priority keywords
+    for keyword in LOW_PRIORITY_KEYWORDS:
+        if keyword in path:
+            return 5
+
+    # Default priority based on path depth
+    # Shallower paths are usually more important
+    depth = path.count("/")
+    return max(10, 40 - depth * 5)
 
 
 async def _scrape_single_page_async(context, url_norm: str, depth: int, base_domain: str, robots_parser, respect_robots: bool):
@@ -400,13 +508,19 @@ async def _crawl_parallel_async(
         bu = norm_crawl_url(base_url)
         if bu:
             to_visit.append(bu)
-        for u in _fetch_sitemap_urls(base_url, base_domain)[:500]:
+            discovered.add(bu)  # Add base URL to discovered so scrapers can start immediately
+        # Fetch sitemap URLs and add them DIRECTLY to discovered (not just to_visit)
+        # This allows scrapers to start working immediately without waiting for discovery
+        sitemap_urls = _fetch_sitemap_urls(base_url, base_domain)[:500]
+        for u in sitemap_urls:
             un = norm_crawl_url(u)
             if not un:
                 continue
             if un not in discovered and not should_skip_url(un) and not _is_blog_url(un):
                 if not respect_robots or not robots_parser or robots_parser.can_fetch("*", un):
                     to_visit.append(un)
+                    discovered.add(un)  # Add to discovered so scrapers can use it immediately
+        _progress({"event": "sitemap_loaded", "urls_found": len(sitemap_urls), "added_to_discovered": len(discovered)})
 
     # Collect page data for the "pages" array in the final result
     # Only collect for small crawls (<=5 pages) to avoid memory issues
@@ -416,11 +530,13 @@ async def _crawl_parallel_async(
     lock = asyncio.Lock()
     stop_flag = asyncio.Event()
     discovery_idle_count = 0
-    scraper_idle_count = 0
+    # Track consecutive "all scrapers idle" rounds, not per-scraper increments
+    all_scrapers_idle_rounds = 0
     IDLE_THRESHOLD = 2
-    # Scale scraper idle threshold proportionally so N scrapers don't trigger a
-    # false-stop when only some of them happen to find nothing in the same tick.
-    SCRAPER_IDLE_THRESHOLD = IDLE_THRESHOLD * max(1, max_parallel_pages)
+    # How many consecutive rounds where ALL scrapers are idle before stopping
+    ALL_IDLE_ROUNDS_THRESHOLD = 5
+    # Track which scrapers are currently idle (by index)
+    scraper_idle_flags: dict[int, bool] = {}
 
     async def _emit_checkpoint() -> None:
         async with lock:
@@ -440,80 +556,111 @@ async def _crawl_parallel_async(
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
-        context_disc = await browser.new_context(viewport={"width": 1280, "height": 900})
+        # Only need scrape context - discovery no longer loads pages
         context_scrape = await browser.new_context(viewport={"width": 1280, "height": 900})
 
         async def discovery_coro():
+            """
+            Fast discovery: just moves URLs from to_visit to discovered.
+            Scrapers are responsible for loading pages and finding new links.
+            This avoids the slow Playwright page load in the discovery loop.
+            """
             nonlocal discovery_idle_count
             while not stop_flag.is_set():
-                url = None
+                urls_transferred = 0
                 async with lock:
                     if len(discovered) >= max_pages * 2:
                         return
-                    if to_visit:
+                    # Transfer multiple URLs at once for efficiency
+                    while to_visit and urls_transferred < 10:
                         url = to_visit.popleft()
-                        if url not in discovered:
+                        if url and url not in discovered:
                             discovered.add(url)
-                        else:
-                            url = None
-                if url is None:
-                    discovery_idle_count += 1
-                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= SCRAPER_IDLE_THRESHOLD:
-                        stop_flag.set()
-                        return
-                    await asyncio.sleep(0.3)
-                    continue
-                discovery_idle_count = 0
-                if _is_blog_url(url):
-                    continue
-                page = await context_disc.new_page()
-                try:
-                    try:
-                        await page.goto(url, wait_until="networkidle", timeout=12000)
-                    except PWTimeoutAsync:
-                        try:
-                            await page.goto(url, wait_until="load", timeout=10000)
-                        except PWTimeoutAsync:
-                            pass
-                    await asyncio.sleep(1.0)
-                    html = await page.content()
-                    internal, _ = parse_links(html, url, base_domain)
-                    async with lock:
-                        for link in internal:
-                            ln = norm_crawl_url(link)
-                            if not ln:
-                                continue
-                            if ln not in discovered and not should_skip_url(ln) and not _is_blog_url(ln):
-                                if not respect_robots or not robots_parser or robots_parser.can_fetch("*", ln):
-                                    to_visit.append(ln)
-                    _progress({"event": "discovered", "url": url})
-                except Exception:
-                    pass
-                finally:
-                    await page.close()
-                    await asyncio.sleep(0.2)
+                            urls_transferred += 1
+                            _progress({"event": "discovered", "url": url})
 
-        async def scraper_coro():
-            nonlocal scraped_urls, failed_list, scraper_idle_count
+                if urls_transferred == 0:
+                    discovery_idle_count += 1
+                    # Check if all scrapers are idle AND discovery is idle
+                    async with lock:
+                        all_scrapers_idle = all(scraper_idle_flags.get(i, False) for i in range(max_parallel_pages))
+                        current_discovered = len(discovered)
+                        current_scraped = len(scraped_urls)
+                        current_to_visit = len(to_visit)
+
+                    if discovery_idle_count >= IDLE_THRESHOLD and all_scrapers_idle:
+                        _progress({
+                            "event": "idle_check",
+                            "discovery_idle_count": discovery_idle_count,
+                            "all_scrapers_idle": all_scrapers_idle,
+                            "discovered": current_discovered,
+                            "scraped": current_scraped,
+                            "to_visit": current_to_visit,
+                            "threshold": ALL_IDLE_ROUNDS_THRESHOLD
+                        })
+                        # Give more time - wait for ALL_IDLE_ROUNDS_THRESHOLD consecutive checks
+                        if discovery_idle_count >= ALL_IDLE_ROUNDS_THRESHOLD:
+                            _progress({"event": "stopping", "reason": "all_idle_threshold_reached"})
+                            stop_flag.set()
+                            return
+                    await asyncio.sleep(0.3)
+                else:
+                    discovery_idle_count = 0
+                    await asyncio.sleep(0.1)  # Small delay to allow scrapers to pick up work
+
+
+        async def scraper_coro(scraper_index: int):
+            nonlocal scraped_urls, failed_list, all_scrapers_idle_rounds
+            consecutive_idle = 0
             while not stop_flag.is_set():
                 async with lock:
                     if len(scraped_urls) >= max_pages:
                         stop_flag.set()
                         return
+                    # Get URLs that haven't been scraped yet
                     to_scrape = [u for u in discovered if u not in scraped and not _is_blog_url(u)]
                     if not to_scrape:
                         url = None
                     else:
-                        url = to_scrape[0]
+                        # Sort by priority (highest first) and pick the best one
+                        to_scrape_sorted = sorted(to_scrape, key=_get_url_priority, reverse=True)
+                        url = to_scrape_sorted[0]
                         scraped.add(url)
+                        _progress({
+                            "event": "url_selected",
+                            "url": url,
+                            "priority": _get_url_priority(url),
+                            "scraper_index": scraper_index
+                        })
                 if url is None:
-                    scraper_idle_count += 1
-                    if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= SCRAPER_IDLE_THRESHOLD:
-                        stop_flag.set()
-                        return
+                    consecutive_idle += 1
+                    async with lock:
+                        scraper_idle_flags[scraper_index] = True
+                        # Check if ALL scrapers are idle
+                        all_idle = all(scraper_idle_flags.get(i, False) for i in range(max_parallel_pages))
+                        current_scraped_count = len(scraped_urls)
+
+                    # Only consider stopping if we have scraped at least 1 page
+                    # This prevents premature exit while the first page is still loading
+                    if all_idle and discovery_idle_count >= IDLE_THRESHOLD and current_scraped_count > 0:
+                        all_scrapers_idle_rounds += 1
+                        _progress({
+                            "event": "scraper_idle_check",
+                            "scraper_index": scraper_index,
+                            "consecutive_idle": consecutive_idle,
+                            "all_scrapers_idle_rounds": all_scrapers_idle_rounds,
+                            "scraped_count": current_scraped_count
+                        })
+                        if all_scrapers_idle_rounds >= ALL_IDLE_ROUNDS_THRESHOLD:
+                            stop_flag.set()
+                            return
                     await asyncio.sleep(0.5)
                     continue
-                scraper_idle_count = 0
+                # Reset idle state when we find work
+                consecutive_idle = 0
+                async with lock:
+                    scraper_idle_flags[scraper_index] = False
+                    all_scrapers_idle_rounds = 0  # Reset global idle counter
                 if url in skip_norm:
                     async with lock:
                         if url not in scraped_urls:
@@ -529,23 +676,46 @@ async def _crawl_parallel_async(
                             pages_data.append(rec)
                     _progress({"event": "page_data", **rec})
                     await _emit_checkpoint()
-                    for link in rec.get("links_internal", []):
+
+                    # Log how many internal links were found
+                    internal_links = rec.get("links_internal", [])
+                    _progress({
+                        "event": "links_found",
+                        "url": url,
+                        "internal_links_count": len(internal_links),
+                        "sample_links": internal_links[:5] if internal_links else []
+                    })
+
+                    links_added = 0
+                    for link in internal_links:
                         ln = norm_crawl_url(link)
-                        if not ln or _is_blog_url(ln):
+                        if not ln:
+                            continue
+                        if _is_blog_url(ln):
+                            _progress({"event": "link_skipped", "url": ln, "reason": "blog_url"})
                             continue
                         async with lock:
-                            if ln not in discovered and not should_skip_url(ln):
-                                if not respect_robots or not robots_parser or robots_parser.can_fetch("*", ln):
-                                    to_visit.append(ln)
-                                    discovered.add(ln)
+                            if ln in discovered:
+                                continue  # Already discovered
+                            if should_skip_url(ln):
+                                _progress({"event": "link_skipped", "url": ln, "reason": "skip_extension"})
+                                continue
+                            if respect_robots and robots_parser and not robots_parser.can_fetch("*", ln):
+                                _progress({"event": "link_skipped", "url": ln, "reason": "robots_blocked"})
+                                continue
+                            to_visit.append(ln)
+                            discovered.add(ln)
+                            links_added += 1
+                            _progress({"event": "link_added", "url": ln})
+
+                    _progress({"event": "scraper_links_summary", "url": url, "links_added": links_added, "total_discovered": len(discovered), "total_scraped": len(scraped_urls)})
                 else:
                     async with lock:
                         failed_list.append({"url": url, "error": "scrape_failed"})
                 await asyncio.sleep(0.2)
 
-        scraper_coros = [scraper_coro() for _ in range(max(1, max_parallel_pages))]
+        scraper_coros = [scraper_coro(i) for i in range(max(1, max_parallel_pages))]
         await asyncio.wait_for(asyncio.gather(discovery_coro(), *scraper_coros), timeout=3600)
-        await context_disc.close()
         await context_scrape.close()
         await browser.close()
 
@@ -561,6 +731,36 @@ async def _crawl_parallel_async(
             "crawl_duration_s": int(time.time() - t_start),
         },
     }
+
+
+def _create_robots_parser(base_url: str) -> urllib.robotparser.RobotFileParser | None:
+    """
+    Create a robots parser with proper User-Agent.
+    Returns None if robots.txt can't be fetched or parsed.
+    """
+    try:
+        robots_url = urllib.parse.urljoin(base_url, "/robots.txt")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; PlaywrightCrawler/1.0)",
+        }
+        req = urllib.request.Request(robots_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            content = r.read().decode("utf-8", errors="replace")
+
+        # If robots.txt has no Disallow rules, it means everything is allowed
+        # Python's RobotFileParser incorrectly returns False when there are no rules
+        has_disallow = "disallow" in content.lower()
+        if not has_disallow:
+            _progress({"event": "robots_info", "message": "robots.txt has no Disallow rules, allowing all URLs"})
+            return None  # None means no restrictions
+
+        # Parse the robots.txt
+        robots_parser = urllib.robotparser.RobotFileParser()
+        robots_parser.parse(content.splitlines())
+        return robots_parser
+    except Exception as e:
+        _progress({"event": "robots_info", "message": f"Could not fetch robots.txt: {e}, allowing all URLs"})
+        return None  # If we can't fetch robots.txt, allow everything
 
 
 def crawl_with_playwright(
@@ -584,13 +784,7 @@ def crawl_with_playwright(
 
     robots_parser = None
     if respect_robots:
-        try:
-            robots_url = urllib.parse.urljoin(base_url, "/robots.txt")
-            robots_parser = urllib.robotparser.RobotFileParser()
-            robots_parser.set_url(robots_url)
-            robots_parser.read()
-        except Exception:
-            robots_parser = None
+        robots_parser = _create_robots_parser(base_url)
 
     skip_set = {norm_crawl_url(u) for u in (skip_urls or []) if norm_crawl_url(u)}
 

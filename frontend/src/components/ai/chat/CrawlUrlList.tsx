@@ -74,7 +74,7 @@ export default function CrawlUrlList({ progressEvents }: CrawlUrlListProps) {
       <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border-b border-slate-700">
         <div className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-pulse flex-shrink-0" />
         <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-          Crawl progress
+          Analysis progress
         </span>
         <span className="ml-auto text-[10px] text-slate-500 tabular-nums">
           {done}/{entries.length}

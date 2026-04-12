@@ -66,32 +66,118 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
         shouldStop: () => runIdRef.current !== myRunId,
         callbacks: {
           onEvent: (e) => {
+            // 🛑 Ignore stale runs
             if (runIdRef.current !== myRunId) return;
+
+            // 🛑 Validate event
             if (!e || typeof e !== "object") return;
-            if (e.stream_id) monitorTaskStreamStart({ taskType: TASK_TYPE_CRAWL, streamId: String(e.stream_id), onboardingId });
-            monitorTaskStreamEvent({ taskType: TASK_TYPE_CRAWL, streamId: e.stream_id, onboardingId, event: e });
-            if (e.type === 'stage') {
-              if (e.stage) setCrawlStage(String(e.stage));
-              if (e.label) setCrawlLabel(String(e.label));
-              if (e.phase || e.pages_found || e.pages_crawled || e.current_page) {
-                setCrawlProgress({
-                  phase: e.phase || e.stage || '',
-                  pages_found: e.pages_found || 0,
-                  pages_crawled: e.pages_crawled || 0,
-                  current_page: e.current_page || '',
-                });
-              }
-            } else if (e.type === 'url' && e.url) {
-              setCrawlProgressEvents(prev => [
+
+            const streamId = e.stream_id ? String(e.stream_id) : undefined;
+
+            // 📡 Track stream start
+            if (streamId) {
+              monitorTaskStreamStart({
+                taskType: TASK_TYPE_CRAWL,
+                streamId,
+                onboardingId,
+              });
+            }
+
+            // 📊 Log raw event
+            monitorTaskStreamEvent({
+              taskType: TASK_TYPE_CRAWL,
+              streamId,
+              onboardingId,
+              event: e,
+            });
+
+            // 🚫 Ignore ping events (keep-alive)
+            if (e.type === "ping") return;
+
+            // =========================
+            // 🔷 STAGE EVENTS (MAIN FLOW)
+            // =========================
+            if (e.type === "stage") {
+              const stage = e.stage ? String(e.stage) : undefined;
+              const label = e.label ? String(e.label) : undefined;
+
+              // 🧭 Update stage + label
+              if (stage) setCrawlStage(stage);
+              if (label) setCrawlLabel(label);
+
+              // 📈 Progress update (preserve previous values)
+              setCrawlProgress((prev) => ({
+                phase: e.phase || stage || prev?.phase || "",
+                pages_found: e.pages_found ?? prev?.pages_found ?? 0,
+                pages_crawled: e.pages_crawled ?? prev?.pages_crawled ?? 0,
+                current_page: e.current_page ?? prev?.current_page ?? "",
+              }));
+
+              // 📝 Log stage event
+              setCrawlProgressEvents((prev) => [
                 ...prev,
                 {
-                  stage: 'scraping',
-                  type: 'url',
-                  message: `${e.event}: ${e.url}`,
-                  meta: { event: String(e.event || ''), url: String(e.url) },
+                  stage: stage || "unknown",
+                  type: "stage",
+                  message: label || "",
+                  meta: e,
                 },
               ]);
+
+              // 🌐 If current_page exists → treat as URL event
+              if (e.current_page) {
+                setCrawlProgressEvents((prev) => [
+                  ...prev,
+                  {
+                    stage: stage || "scraping",
+                    type: "url",
+                    message: `Processing: ${e.current_page}`,
+                    meta: { url: String(e.current_page) },
+                  },
+                ]);
+              }
+
+              return;
             }
+
+            // =========================
+            // 🔷 URL EVENTS (RARE / OPTIONAL)
+            // =========================
+            if (e.type === "url" && e.url) {
+              setCrawlProgressEvents((prev) => [
+                ...prev,
+                {
+                  stage: "scraping",
+                  type: "url",
+                  message: `${e.event || "Visited"}: ${e.url}`,
+                  meta: {
+                    event: String(e.event || ""),
+                    url: String(e.url),
+                  },
+                },
+              ]);
+
+              // also update current page
+              setCrawlProgress((prev) => ({
+                ...prev,
+                current_page: String(e.url),
+              }));
+
+              return;
+            }
+
+            // =========================
+            // 🔷 FALLBACK (UNKNOWN EVENTS)
+            // =========================
+            setCrawlProgressEvents((prev) => [
+              ...prev,
+              {
+                stage: "unknown",
+                type: e.type || "unknown",
+                message: JSON.stringify(e),
+                meta: e,
+              },
+            ]);
           },
           onDone: (e) => {
             if (runIdRef.current !== myRunId) return;

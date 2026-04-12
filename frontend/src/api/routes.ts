@@ -11,50 +11,50 @@ export const API_ROUTES = {
   },
   admin: {
     management: {
-      observability: '/api/v1/admin/management/observability',
-      config: '/api/v1/admin/management/config',
-      configByKey: (key: string) => `/api/v1/admin/management/config/${encodeURIComponent(key)}`,
-      prompts: '/api/v1/admin/management/prompts',
-      promptBySlug: (slug: string) => `/api/v1/admin/management/prompts/${encodeURIComponent(slug)}`,
-      deleteUser: (userId: string) => `/api/v1/admin/management/users/${encodeURIComponent(userId)}`,
+      observability: '/api/v1/admin/observability',
+      config: '/api/v1/admin/config',
+      configByKey: (key: string) => `/api/v1/admin/config/${encodeURIComponent(key)}`,
+      prompts: '/api/v1/admin/prompts',
+      promptBySlug: (slug: string) => `/api/v1/admin/prompts/${encodeURIComponent(slug)}`,
+      deleteUser: (userId: string) => `/api/v1/admin/users/${encodeURIComponent(userId)}`,
       userSkillCalls: (userId: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (limit != null) params.set('limit', String(limit));
         if (offset != null) params.set('offset', String(offset));
         const qs = params.toString();
-        return `/api/v1/admin/management/users/${encodeURIComponent(userId)}/skill-calls${qs ? `?${qs}` : ''}`;
+        return `/api/v1/admin/users/${encodeURIComponent(userId)}/skill-calls${qs ? `?${qs}` : ''}`;
       },
-      skillCallDetail: (id: string) => `/api/v1/admin/management/skill-calls/${encodeURIComponent(id)}`,
+      skillCallDetail: (id: string) => `/api/v1/admin/skill-calls/${encodeURIComponent(id)}`,
       users: (q?: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (q) params.set('q', q);
         if (limit != null) params.set('limit', String(limit));
         if (offset != null) params.set('offset', String(offset));
         const qs = params.toString();
-        return `/api/v1/admin/management/users${qs ? `?${qs}` : ''}`;
+        return `/api/v1/admin/users${qs ? `?${qs}` : ''}`;
       },
-      tokenUsageSummary: '/api/v1/admin/management/token-usage/summary',
+      tokenUsageSummary: '/api/v1/admin/token-usage/summary',
       tokenUsageUsers: (q?: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (q) params.set('q', q);
         if (limit != null) params.set('limit', String(limit));
         if (offset != null) params.set('offset', String(offset));
         const qs = params.toString();
-        return `/api/v1/admin/management/token-usage/users${qs ? `?${qs}` : ''}`;
+        return `/api/v1/admin/token-usage/users${qs ? `?${qs}` : ''}`;
       },
       tokenUsageUserConversations: (userId: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (limit != null) params.set('limit', String(limit));
         if (offset != null) params.set('offset', String(offset));
         const qs = params.toString();
-        return `/api/v1/admin/management/token-usage/users/${encodeURIComponent(userId)}/conversations${qs ? `?${qs}` : ''}`;
+        return `/api/v1/admin/token-usage/users/${encodeURIComponent(userId)}/conversations${qs ? `?${qs}` : ''}`;
       },
       tokenUsageConversationCalls: (conversationId: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (limit != null) params.set('limit', String(limit));
         if (offset != null) params.set('offset', String(offset));
         const qs = params.toString();
-        return `/api/v1/admin/management/token-usage/conversations/${encodeURIComponent(conversationId)}/calls${qs ? `?${qs}` : ''}`;
+        return `/api/v1/admin/token-usage/conversations/${encodeURIComponent(conversationId)}/calls${qs ? `?${qs}` : ''}`;
       },
     },
     subscriptionGrants: {

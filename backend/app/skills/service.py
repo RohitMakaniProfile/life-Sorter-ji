@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from aiohttp import payload
+
 from app.config import GEMINI_SCOUT_MODELS, OPENAI_MODEL, PYTHON_BIN, SKILLS_ROOT, get_settings
 from app.services.ai_helper import ai_helper as _ai
 from app.doable_claw_agent.stores import find_latest_scrape_cache_by_url, find_scraped_pages_for_base_url
@@ -466,11 +468,7 @@ def _is_homepage_scrape(args: dict[str, Any] | None) -> bool:
     if not isinstance(args, dict):
         return False
     max_pages = int(args.get("maxPages") or 0)
-    max_depth = int(args.get("maxDepth") or 0)
-    deep = bool(args.get("deep")) if "deep" in args else False
-    if max_pages <= 1:
-        return True
-    return max_depth <= 0 and not deep
+    return max_pages <= 1
 
 
 def _platform_scout_heuristic(
@@ -954,6 +952,7 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
     done_result: dict[str, Any] | None = None
     err: str | None = None
 
+    print(payload)
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             "POST",
@@ -1014,6 +1013,8 @@ async def _run_scrape_playwright_remote(*, message: str, args: dict[str, Any], o
                     done_result = meta["result"]
                     continue
 
+                print("metadata of http stream to scraper = = = = ")
+                print(meta)
                 # Forward progress into existing pipeline shape.
                 meta["streamKind"] = _progress_stream_kind(meta)
                 event_name = str(meta.get("event", "info"))
