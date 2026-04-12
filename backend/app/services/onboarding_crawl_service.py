@@ -227,13 +227,15 @@ Use all available context:
 - business profile
 
 Requirements:
-- Return only valid JSON
+- Return ONLY valid JSON, no explanations or text before/after
 - Format: {"questions":[{"question":"...","options":["...","...","..."]}]}
 - Generate exactly 3 questions
 - Each question must be concrete and diagnostic, not generic
 - Each question must include 3-5 short multiple-choice options
 - Use the business profile when available to tailor the questions
 - Avoid repeating what is already obvious from the website
+
+IMPORTANT: Output ONLY the JSON object. Do not include any text, explanations, or markdown formatting.
 """
 
 
@@ -334,7 +336,12 @@ async def generate_rca_questions(
             raise ValueError("RCA prompt response produced zero usable questions")
         return out
     except Exception as exc:
-        logger.warning("generate_rca_questions failed", error=str(exc), raw_preview=raw[:400])
+        logger.warning(
+            "generate_rca_questions failed",
+            error=str(exc),
+            raw_preview=raw[:800] if raw else "(empty)",
+            raw_length=len(raw) if raw else 0,
+        )
         raise RuntimeError(f"RCA question generation failed: {exc}") from exc
 
 

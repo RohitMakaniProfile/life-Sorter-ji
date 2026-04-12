@@ -27,12 +27,14 @@ def _extract_json_value(text: str) -> str:
     if not raw:
         raise ValueError("Empty LLM output; expected JSON")
 
+    # 1. Try to parse the whole string as JSON
     try:
         json.loads(raw)
         return raw
     except Exception:
         pass
 
+    # 2. Try to extract from markdown code fences (```json ... ``` or ``` ... ```)
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, re.IGNORECASE)
     if fence:
         candidate = fence.group(1).strip()
@@ -42,6 +44,64 @@ def _extract_json_value(text: str) -> str:
         except Exception:
             pass
 
+    # 3. Find balanced JSON using bracket matching
+    def find_balanced_json(text: str, start: int) -> str | None:
+        """Find a balanced JSON object/array starting at position `start`."""
+        if start >= len(text):
+            return None
+        open_ch = text[start]
+        if open_ch not in "{[":
+            return None
+        close_ch = "}" if open_ch == "{" else "]"
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
+
+    # Try all JSON-like starting positions, preferring objects over arrays
+    obj_starts = [i for i, ch in enumerate(raw) if ch == "{"]
+    arr_starts = [i for i, ch in enumerate(raw) if ch == "["]
+
+    # First try object starts (more common for structured responses)
+    for start in obj_starts:
+        candidate = find_balanced_json(raw, start)
+        if candidate:
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                continue
+
+    # Then try array starts
+    for start in arr_starts:
+        candidate = find_balanced_json(raw, start)
+        if candidate:
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                continue
+
+    # 4. As a last resort, try simple end-position matching (original fallback)
     starts = [i for i, ch in enumerate(raw) if ch in "[{"]
     if not starts:
         raise ValueError("Could not find JSON-looking content in LLM output")
