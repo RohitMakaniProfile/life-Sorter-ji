@@ -356,10 +356,21 @@ async def generate_rca_questions(
         usage = result.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens") or 0)
         output_tokens = int(usage.get("completion_tokens") or 0)
+        finish_reason = str(result.get("finish_reason") or "")
+
+        if finish_reason == "length":
+            logger.warning(
+                "generate_rca_questions: model output truncated at max_tokens — "
+                "increase max_tokens or the model ran out of budget before finishing JSON",
+                onboarding_id=onboarding_id,
+                output_tokens=output_tokens,
+                raw_preview=raw[:300],
+            )
 
         logger.info(
             "generate_rca_questions raw_output",
             onboarding_id=onboarding_id,
+            finish_reason=finish_reason,
             raw_output=raw[:4000],
             input_tokens=input_tokens,
             output_tokens=output_tokens,
