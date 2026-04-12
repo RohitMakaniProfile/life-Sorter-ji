@@ -3,14 +3,20 @@ import type { TokenUsage, TokenUsageEntry } from '../../../api/types';
 
 /** USD per token (input / output). */
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'gpt-4.1': {
-    input: 5 / 1_000_000,
-    output: 15 / 1_000_000,
-  },
-  'claude-opus-4-6': {
-    input: 15 / 1_000_000,
-    output: 75 / 1_000_000,
-  },
+  // OpenAI
+  'gpt-4.1': { input: 2 / 1_000_000, output: 8 / 1_000_000 },
+  'gpt-4.1-mini': { input: 0.40 / 1_000_000, output: 1.60 / 1_000_000 },
+  'gpt-4o': { input: 5 / 1_000_000, output: 15 / 1_000_000 },
+  'gpt-4o-mini': { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 },
+  // Anthropic / Claude
+  'claude-sonnet-4-6': { input: 3 / 1_000_000, output: 15 / 1_000_000 },
+  'claude-opus-4-6': { input: 15 / 1_000_000, output: 75 / 1_000_000 },
+  // Google Gemini
+  'gemini-2.5-flash-lite': { input: 0.075 / 1_000_000, output: 0.30 / 1_000_000 },
+  'gemini-2.5-flash': { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 },
+  'gemini-2.5-pro': { input: 1.25 / 1_000_000, output: 10.0 / 1_000_000 },
+  // Other
+  'z-ai/glm-5': { input: 0.30 / 1_000_000, output: 1.20 / 1_000_000 },
 };
 
 const USD_TO_INR = 94;
@@ -24,10 +30,6 @@ function getPricingForModel(model: string): { input: number; output: number } | 
     if (lower === key.toLowerCase() || lower.includes(key.toLowerCase())) {
       return MODEL_PRICING[key];
     }
-  }
-  if (lower.includes('gpt-4.1')) return MODEL_PRICING['gpt-4.1'];
-  if (lower.includes('claude-opus-4-6') || lower.includes('opus-4-6')) {
-    return MODEL_PRICING['claude-opus-4-6'];
   }
   return null;
 }
