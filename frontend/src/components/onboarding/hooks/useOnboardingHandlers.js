@@ -226,8 +226,10 @@ export function useOnboardingHandlers({
         if (web && sid) startCrawlForSession(sid, { websiteUrl: web }).catch(() => {});
       }
       await moveToScaleQuestions();
-    } catch {
-      setError('Failed to submit URL.');
+    } catch (err) {
+      const msg = err && typeof err.message === 'string' ? err.message : String(err);
+      console.warn('[handleUrlSubmit]', err);
+      setError(msg ? `Failed to submit URL: ${msg}` : 'Failed to submit URL.');
     } finally {
       setUrlSubmitting(false);
     }

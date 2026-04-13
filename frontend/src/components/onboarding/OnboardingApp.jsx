@@ -43,12 +43,21 @@ export default function OnboardingApp() {
   // Canvas scroll
   const { canvasRef, scrollToEnd } = useOnboardingCanvasScroll();
 
+  // Stable callbacks so usePlaybookTaskStream's startForSession is not recreated every render
+  // (avoids unnecessary effect churn in dev and keeps downstream handler deps stable).
+  const onRequestOtp = useCallback(() => {
+    state.setShowOtpModal(true);
+  }, [state.setShowOtpModal]);
+  const onShowPlaybook = useCallback(() => {
+    state.setShowPlaybook(true);
+  }, [state.setShowPlaybook]);
+
   // Playbook streaming
   const playbook = usePlaybookTaskStream({
     ensureSession,
     otpVerified: state.otpVerified,
-    onRequestOtp: () => state.setShowOtpModal(true),
-    onShowPlaybook: () => state.setShowPlaybook(true),
+    onRequestOtp,
+    onShowPlaybook,
     setError: state.setError,
   });
 
