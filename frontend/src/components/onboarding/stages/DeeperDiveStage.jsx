@@ -55,7 +55,7 @@ export default function DeeperDiveStage({
                               className={clsx(
                                 'cursor-pointer rounded-lg border px-4 py-2.5 text-left text-[13px] leading-snug transition-all',
                                 selected
-                                  ? 'border-[rgba(168,130,255,0.5)] bg-[rgba(168,130,255,0.2)] text-white'
+                                  ? 'border-violet-400 bg-violet-500/35 text-white shadow-[0_0_0_1px_rgba(167,139,250,0.55)]'
                                   : 'border-white/15 bg-white/[0.06] text-white/80 hover:border-white/25 hover:bg-white/[0.1]',
                               )}
                               onClick={() => onSelect(qIdx, opt, q.multi_select)}

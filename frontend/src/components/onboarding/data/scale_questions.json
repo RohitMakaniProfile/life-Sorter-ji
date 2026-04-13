@@ -1,14 +1,14 @@
 [
   {
     "id": "buying_process",
-    "question": "How do customers typically buy from you?",
+    "question": "How do customers buy from you?",
     "options": [
-      "They sign up and pay on their own (self-serve)",
-      "They sign up free, then upgrade later (freemium / trial)",
-      "They request a demo or consultation first",
-      "A sales rep guides them through the purchase",
-      "They buy through a marketplace or platform",
-      "Mix — depends on customer size"
+      "Self-serve (sign up + pay)",
+      "Freemium / trial to paid",
+      "Demo or consultation first",
+      "Sales-assisted purchase",
+      "Marketplace / platform purchase",
+      "Mixed model"
     ],
     "icon": "🛒",
     "multi_select": false
@@ -17,25 +17,25 @@
     "id": "revenue_model",
     "question": "How do you make money?",
     "options": [
-      "One-time product purchases",
-      "Subscription / recurring billing",
-      "Service retainers / project fees",
-      "Marketplace commissions / transaction fees",
-      "Freemium with paid upgrades",
-      "Advertising / sponsorship revenue"
+      "One-time purchases",
+      "Subscription",
+      "Retainer / project fee",
+      "Commission / transaction fee",
+      "Freemium to paid",
+      "Ads / sponsorship"
     ],
     "icon": "💰",
     "multi_select": false
   },
   {
     "id": "sales_cycle",
-    "question": "How quickly do customers usually go from discovering you to paying?",
+    "question": "How fast do customers go from discovery to payment?",
     "options": [
-      "Minutes to hours (impulse / instant)",
-      "A few days (1–7 days)",
-      "A few weeks (1–4 weeks)",
+      "Minutes to hours",
+      "1-7 days",
+      "1-4 weeks",
       "A month or more",
-      "Varies wildly by customer"
+      "Highly variable"
     ],
     "icon": "⏱️",
     "multi_select": false
@@ -44,26 +44,26 @@
     "id": "existing_assets",
     "question": "Which of these do you already have?",
     "options": [
-      "Customer testimonials or reviews",
-      "Case studies with measurable results",
-      "Blog posts or educational articles",
-      "A free tool, calculator, or template",
-      "Active social media presence",
-      "An email list of 1,000+ contacts",
-      "None of the above — starting from scratch"
+      "Customer reviews",
+      "Case studies",
+      "Blog or educational content",
+      "Free tool / template",
+      "Active social media",
+      "Email list (1,000+)",
+      "None (starting from scratch)"
     ],
     "icon": "📦",
     "multi_select": true
   },
   {
     "id": "buyer_behavior",
-    "question": "When customers look for a solution like yours, what do they usually do?",
+    "question": "When customers look for this solution, what do they do?",
     "options": [
       "Search Google",
       "Ask peers",
-      "They don't know this category exists — we have to educate them",
-      "They compare us against 2–3 well-known competitors",
-      "They find us through the platform or marketplace we're listed on"
+      "Need category education first",
+      "Compare 2-3 competitors",
+      "Find us via platform / marketplace"
     ],
     "icon": "🔍",
     "multi_select": false
@@ -72,12 +72,12 @@
     "id": "current_stack",
     "question": "What tools are you currently using for this?",
     "options": [
-      "Canva + Buffer / Later — design & scheduling",
-      "Hootsuite / Sprout Social — social management suite",
-      "Adobe Creative Cloud + native platform tools",
-      "ChatGPT / Jasper — AI content generation",
-      "HubSpot / Semrush — content marketing platform",
-      "Nothing yet — posting manually or not at all"
+      "Canva + Buffer/Later",
+      "Hootsuite / Sprout Social",
+      "Adobe Creative Cloud",
+      "ChatGPT / Jasper",
+      "HubSpot / Semrush",
+      "Nothing yet"
     ],
     "icon": "🛠️",
     "multi_select": true
