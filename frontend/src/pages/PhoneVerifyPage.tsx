@@ -190,23 +190,23 @@ export default function PhoneVerifyPage() {
     <div className="h-screen w-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
       <div className="w-full max-w-md border border-zinc-800 rounded-xl p-6 bg-zinc-900">
         <div className="flex justify-center mb-4">
-          <img src="/Doable%20Claw.svg" alt="Ikshan" className="h-10 w-auto" />
+          <img src="/Doable%20Claw.svg" alt="DoableClaw" className="h-10 w-auto" />
         </div>
         <div className="text-sm uppercase tracking-wide text-zinc-400">
           {isLinkMode ? 'Link Phone Number' : 'Sign In'}
         </div>
         <h1 className="text-xl font-semibold mt-1">
           {step === 'phone'
-            ? (isLinkMode ? 'Add Your Phone Number' : 'Verify Your Number')
-            : 'Enter OTP'}
+            ? (isLinkMode ? 'Add Your Phone Number for DoableClaw' : 'Verify Your Number for DoableClaw')
+            : 'Enter DoableClaw OTP'}
         </h1>
 
         <p className="mt-2 text-sm text-zinc-400">
           {step === 'phone'
             ? isLinkMode
               ? 'Link your phone number to your account. This will allow you to sign in using either Google or your phone.'
-              : 'Enter your mobile number to sign in'
-            : `We sent a 6-digit OTP to +91 ${phone.replace(/\D/g, '').slice(-10)}`}
+              : 'Enter your mobile number to sign in to DoableClaw'
+            : `We sent a 6-digit DoableClaw OTP to +91 ${phone.replace(/\D/g, '').slice(-10)}`}
         </p>
 
         <div className="mt-5">
@@ -276,7 +276,7 @@ export default function PhoneVerifyPage() {
                 ? 'Sending…'
                 : 'Verifying…'
               : step === 'phone'
-                ? 'Send OTP →'
+                ? 'Send DoableClaw OTP →'
                 : (isLinkMode ? 'Verify & Link Phone' : 'Verify & Sign In')}
           </button>
 
@@ -290,7 +290,7 @@ export default function PhoneVerifyPage() {
                 resendTimer > 0 ? 'cursor-default text-zinc-500' : 'text-violet-400 hover:text-violet-300',
               )}
             >
-              {resendTimer > 0 ? `Resend OTP in ${resendTimer}s` : '← Change number / Resend'}
+              {resendTimer > 0 ? `Resend DoableClaw OTP in ${resendTimer}s` : '← Change number / Resend'}
             </button>
           )}
 

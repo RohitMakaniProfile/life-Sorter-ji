@@ -5,6 +5,7 @@ import { coreApi } from '../../../api/services/core';
 import { mapToolsToEarlyTools } from '../toolService';
 import { toRectObj, TASK_KEY_SEP, buildOnboardingPatch } from '../utils/onboardingUtils';
 import STATIC_SCALE_QUESTIONS from '../data/scale_questions.json';
+import { buildScaleQuestions } from '../utils/scaleQuestions';
 
 const rcaNextQuestion = (body) => apiPost(API_ROUTES.onboarding.rcaNextQuestion, body ?? {});
 
@@ -204,10 +205,10 @@ export function useOnboardingHandlers({
 
   // URL handlers
   const moveToScaleQuestions = useCallback(async () => {
-    setScaleQuestions(STATIC_SCALE_QUESTIONS);
+    setScaleQuestions(buildScaleQuestions(earlyTools));
     setShowDeeperDive(true);
     setTimeout(scrollToEnd, 50);
-  }, [setScaleQuestions, setShowDeeperDive, scrollToEnd]);
+  }, [setScaleQuestions, setShowDeeperDive, scrollToEnd, earlyTools]);
 
   const handleUrlSubmit = useCallback(async (e) => {
     e.preventDefault();
