@@ -79,9 +79,7 @@
 
 ===================
 # direct link to any playbook/onboarding so via single link user can view playbook or trigger phase2
-# playbook dark mode
 # doable claw loading icon
-# change last scale question either to static but defined as per selected task or move with rca to llm generated
 # playbook should be half visible then for full playbook there should be otp verification instead of before playbook. show otp in 3rd tab.
 # all claw agents direct to url stage
 
@@ -91,8 +89,9 @@ DONE
 # coming soon for plan 2
 # ikshan to doable claw icon in payment page
 # 2 login pages to single
+# google maps scrapping
+# playbook dark mode
 
 Scrapping
 # ocr for homepage images
-# google maps scrapping
 # playbook has more pages scrapped data

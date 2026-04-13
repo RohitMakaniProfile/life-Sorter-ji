@@ -62,9 +62,10 @@ export default function HistoryPlaybookStage({ runId, onBack, onDeepAnalysis, on
 
       {data && (
         <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
-          <div className="mb-4 rounded-2xl bg-[#f8f7ff] p-4">
+          <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
             <PlaybookViewer
               initialPhase="playbook"
+              themeMode="dark"
               playbookData={data.playbookData}
             />
           </div>

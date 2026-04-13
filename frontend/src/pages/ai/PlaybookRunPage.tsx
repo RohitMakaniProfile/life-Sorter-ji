@@ -76,8 +76,8 @@ export default function PlaybookRunPage() {
             </p>
           )}
         </div>
-        <div className="rounded-2xl bg-[#f8f7ff] p-4">
-          <PlaybookViewer playbookData={data.playbookData} />
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
+          <PlaybookViewer playbookData={data.playbookData} themeMode="dark" />
         </div>
         {data.crossAgentActions && data.crossAgentActions.length > 0 && (
           <div className="flex flex-wrap gap-2">

@@ -298,8 +298,8 @@ function AssistantMessage({
   if (m.role === 'assistant' && m.playbookData) {
     return (
       <div className="w-full max-w-3xl mx-auto my-3">
-        <div className="rounded-2xl bg-[#f8f7ff] p-4">
-          <PlaybookViewer playbookData={m.playbookData} />
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
+          <PlaybookViewer playbookData={m.playbookData} themeMode="dark" />
         </div>
         {/* Cross-agent action buttons (e.g. "Do Deep Analysis") */}
         {m.crossAgentActions && m.crossAgentActions.length > 0 && (
