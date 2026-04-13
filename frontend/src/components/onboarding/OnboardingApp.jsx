@@ -125,6 +125,20 @@ export default function OnboardingApp() {
     return () => clearTimeout(t);
   }, [state.otpVerified, handlers]);
 
+  useEffect(() => {
+    const onProductSelect = (e) => {
+      const detail = e?.detail || {};
+      const outcomeId = String(detail.outcome || '').trim();
+      const domain = String(detail.domain || '').trim();
+      const task = String(detail.task || '').trim();
+      if (!outcomeId || !domain || !task) return;
+      const outcome = outcomeOptions.find((o) => o.id === outcomeId) || { id: outcomeId, text: outcomeId, subtext: '' };
+      handlers.handleTaskClick(task, outcome, domain);
+    };
+    window.addEventListener('onboarding-product-select', onProductSelect);
+    return () => window.removeEventListener('onboarding-product-select', onProductSelect);
+  }, [handlers]);
+
   // Task node transition animations
   useLayoutEffect(() => {
     if (!state.showUrlForm) return;

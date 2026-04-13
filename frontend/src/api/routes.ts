@@ -118,6 +118,11 @@ agentAccess: '/api/v1/ai-chat/agent-access',
     byId: (id: string) => `/api/agents/${encodeURIComponent(id)}`,
   },
 
+  products: {
+    base: '/api/v1/products',
+    byId: (id: string) => `/api/v1/products/${encodeURIComponent(id)}`,
+  },
+
   payments: {
     createOrder: '/api/v1/payments/create-order',
     callback: '/api/v1/payments/callback',

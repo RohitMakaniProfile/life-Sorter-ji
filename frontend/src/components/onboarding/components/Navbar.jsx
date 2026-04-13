@@ -5,6 +5,7 @@ import { getEmailFromJwt, getPhoneNumberFromJwt, getUserIdFromJwt } from '../../
 import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
 import { coreApi } from '../../../api/services/core';
 import ProductsSidebar from './ProductsSidebar';
+import HistorySidebar from './HistorySidebar';
 
 const ACTIVE_AGENT_STORAGE_KEY = 'ikshan-active-agent-id';
 const ONBOARDING_SESSION_STORAGE_KEY = 'doable-claw-onboarding-id';
@@ -39,6 +40,7 @@ export default function Navbar() {
   const navigate = useNavigate();
   const [resetting, setResetting] = useState(false);
   const [productsOpen, setProductsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef(null);
 
@@ -87,6 +89,7 @@ export default function Navbar() {
 
   return (
     <>
+      <HistorySidebar isOpen={historyOpen} onClose={() => setHistoryOpen(false)} />
       <ProductsSidebar isOpen={productsOpen} onClose={() => setProductsOpen(false)} />
       <nav className="relative z-10 border-b border-[rgb(45,45,45)] bg-[rgb(15,15,15)] px-2 py-1.5 md:px-6">
         <div className="flex items-center justify-between gap-2">
@@ -94,7 +97,7 @@ export default function Navbar() {
             <div className="flex w-max items-center gap-2 pr-1">
               <button
                 type="button"
-                onClick={() => setProductsOpen(true)}
+                onClick={() => setHistoryOpen(true)}
                 className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -104,6 +107,19 @@ export default function Navbar() {
                   <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 </svg>
                 History
+              </button>
+              <button
+                type="button"
+                onClick={() => setProductsOpen(true)}
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-2xl border border-[rgb(40,40,40)] bg-[rgb(15,15,15)] px-2 py-1 text-[11px] whitespace-nowrap text-white/70 transition-colors hover:bg-white/[0.08] hover:text-white"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="1" y="1" width="6" height="6" rx="1" />
+                  <rect x="9" y="1" width="6" height="6" rx="1" />
+                  <rect x="1" y="9" width="6" height="6" rx="1" />
+                  <rect x="9" y="9" width="6" height="6" rx="1" />
+                </svg>
+                Products
               </button>
               <button
                 type="button"

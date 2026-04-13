@@ -17,6 +17,7 @@ import type {
   StreamResult,
   TokenUsage,
   UiAgent,
+  Product,
 } from '../types';
 
 /** Onboarding helpers + raw `request` for non-JSON flows (e.g. CSV fetch). */
@@ -349,6 +350,29 @@ export async function updateAgent(id: AgentId, data: Partial<Omit<UiAgent, 'id'>
 
 export async function deleteAgent(id: AgentId): Promise<void> {
   const response = await apiFetch(API_ROUTES.agents.byId(id), { method: 'DELETE' });
+  if (!response.ok) throw new Error(await extractApiError(response));
+}
+
+export async function getProducts(opts?: { activeOnly?: boolean }): Promise<{ products: Product[] }> {
+  const params = new URLSearchParams();
+  if (opts?.activeOnly != null) params.set('active_only', String(opts.activeOnly));
+  const q = params.toString() ? `?${params}` : '';
+  return apiJson<{ products: Product[] }>(`${API_ROUTES.products.base}${q}`);
+}
+
+export async function createProduct(product: Product): Promise<{ product: Product }> {
+  return apiJsonPost<{ product: Product }>(API_ROUTES.products.base, product);
+}
+
+export async function updateProduct(id: string, data: Partial<Omit<Product, 'id'>>): Promise<{ product: Product }> {
+  return apiJson<{ product: Product }>(API_ROUTES.products.byId(id), {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteProduct(id: string): Promise<void> {
+  const response = await apiFetch(API_ROUTES.products.byId(id), { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractApiError(response));
 }
 

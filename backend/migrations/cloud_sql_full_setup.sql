@@ -396,6 +396,64 @@ COMMENT ON TABLE agents IS
     'Research agent definitions: skill allowlist, orchestrator prompt context.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- products
+-- Claw products shown to onboarding users. These are NOT runtime chat agents.
+-- Each product maps directly to onboarding outcome/domain/task selections.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS products (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    emoji           TEXT NOT NULL DEFAULT '🧩',
+    description     TEXT NOT NULL DEFAULT '',
+    color           TEXT NOT NULL DEFAULT '#857BFF',
+    outcome         TEXT NOT NULL,
+    domain          TEXT NOT NULL,
+    task            TEXT NOT NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_products_updated_at ON products;
+CREATE TRIGGER trg_products_updated_at
+    BEFORE UPDATE ON products
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE INDEX IF NOT EXISTS idx_products_active_sort
+    ON products (is_active, sort_order, updated_at DESC);
+
+COMMENT ON TABLE products IS
+    'Onboarding product catalog (Claw products). Maps clicks to outcome/domain/task.';
+
+INSERT INTO products (id, name, emoji, description, color, outcome, domain, task, is_active, sort_order)
+VALUES
+    ('seo-claw', 'SEO Claw', '🔎', 'Rank higher on Google', '#857BFF', 'lead-generation', 'SEO & Organic Visibility', 'Get more leads from Google & website (SEO)', TRUE, 10),
+    ('conversion-claw', 'Conversion Claw', '📈', 'Fix your funnel leaks', '#1D9E75', 'sales-retention', 'Lead Management & Conversion', 'Automate lead qualification & scoring (AI SDR)', TRUE, 20),
+    ('competitor-intel-claw', 'Competitor Intel Claw', '🕵️', 'Spy on what''s working', '#BF69A2', 'business-strategy', 'Market Strategy & Innovation', 'Track competitor pricing & promotional strategies', TRUE, 30),
+    ('copy-claw', 'Copy Claw', '✍️', 'Write in customer language', '#EF9F27', 'lead-generation', 'Content & Social Media', 'Generate social media posts captions & hooks', TRUE, 40),
+    ('pricing-claw', 'Pricing Claw', '💰', 'Optimize your price points', '#378ADD', 'business-strategy', 'Market Strategy & Innovation', 'Track competitor pricing & promotional strategies', TRUE, 50),
+    ('churn-claw', 'Churn Claw', '🛡️', 'Predict & prevent churn', '#857BFF', 'sales-retention', 'Customer Success & Reputation', 'Predict churn risk & alert success teams', TRUE, 60),
+    ('lead-magnet-claw', 'Lead Magnet Claw', '🧲', 'Build irresistible offers', '#1D9E75', 'lead-generation', 'Content & Social Media', 'Spot trending topics & viral content ideas', TRUE, 70),
+    ('brand-health-claw', 'Brand Health Claw', '🧭', 'Track brand sentiment', '#BF69A2', 'sales-retention', 'Customer Success & Reputation', 'Automate review collection & smart responses', TRUE, 80),
+    ('cta-claw', 'CTA Claw', '🎯', 'Restructure page flow', '#EF9F27', 'sales-retention', 'Lead Management & Conversion', 'Run automated nurture & recovery sequences', TRUE, 90),
+    ('google-business-claw', 'Google Business Claw', '📍', 'Dominate local search', '#378ADD', 'lead-generation', 'SEO & Organic Visibility', 'Google Business Profile visibility', TRUE, 100),
+    ('trust-audit-claw', 'Trust Audit Claw', '✅', 'Build buyer confidence', '#857BFF', 'sales-retention', 'Customer Success & Reputation', 'Automate review collection & smart responses', TRUE, 110),
+    ('ai-readiness-claw', 'AI Readiness Claw', '🤖', 'Plan your AI adoption', '#1D9E75', 'save-time', 'Personal & Team Productivity', 'Automate repetitive admin workflows', TRUE, 120)
+ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name,
+    emoji = EXCLUDED.emoji,
+    description = EXCLUDED.description,
+    color = EXCLUDED.color,
+    outcome = EXCLUDED.outcome,
+    domain = EXCLUDED.domain,
+    task = EXCLUDED.task,
+    is_active = EXCLUDED.is_active,
+    sort_order = EXCLUDED.sort_order,
+    updated_at = NOW();
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- agent_config_versions
 -- Versioned snapshots of agent configs/prompts for rollback/audit.
 -- ─────────────────────────────────────────────────────────────────────────────

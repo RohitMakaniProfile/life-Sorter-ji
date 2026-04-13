@@ -26,6 +26,7 @@ import AdminSkillCallDetailPage from './pages/AdminSkillCallDetailPage';
 import AdminPromptsPage from './pages/AdminPromptsPage';
 import AdminTokenUsagePage from './pages/AdminTokenUsagePage';
 import AdminOnboardingTokenUsagePage from './pages/AdminOnboardingTokenUsagePage';
+import AdminProductsPage from './pages/AdminProductsPage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -95,6 +96,7 @@ function App() {
                 <Route path="prompts" element={<AdminPromptsPage />} />
                 <Route path="token-usage" element={<AdminTokenUsagePage />} />
                 <Route path="subscription-grants" element={<AdminSubscriptionGrantsPage />} />
+                <Route path="products" element={<AdminProductsPage />} />
                 <Route path="agents" element={<AgentsPage />} />
                 <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
               </Route>

@@ -180,6 +180,19 @@ export interface UiAgent {
   finalOutputFormattingContext?: string;
 }
 
+export interface Product {
+  id: string;
+  name: string;
+  emoji?: string;
+  description?: string;
+  color?: string;
+  outcome: string;
+  domain: string;
+  task: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
 export type ConfigValueType = 'string' | 'number' | 'boolean' | 'json' | 'markdown';
 
 export interface SystemConfigEntry {

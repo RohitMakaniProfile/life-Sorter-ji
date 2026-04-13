@@ -183,6 +183,7 @@ def create_app() -> FastAPI:
         admin_management,
         admin_subscription_grants,
         agents,
+        products,
         payments,
         plans,
         legacy,
@@ -195,6 +196,7 @@ def create_app() -> FastAPI:
     ChatResponse.model_rebuild()
 
     app.include_router(agents.router, prefix="/api", tags=["Agents"])
+    app.include_router(products.router, prefix="/api/v1", tags=["Products"])
     app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
     app.include_router(onboarding.router, prefix="/api/v1", tags=["Onboarding"])
     app.include_router(ai_chat.router, prefix="/api/v1")

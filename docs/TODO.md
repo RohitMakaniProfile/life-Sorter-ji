@@ -81,9 +81,8 @@
 # direct link to any playbook/onboarding so via single link user can view playbook or trigger phase2
 # doable claw loading icon
 # playbook should be half visible then for full playbook there should be otp verification instead of before playbook. show otp in 3rd tab.
-# all claw agents direct to url stage
 
-DONE 
+DONE
 # parallel scrapping
 # gap question background
 # coming soon for plan 2
@@ -91,6 +90,7 @@ DONE
 # 2 login pages to single
 # google maps scrapping
 # playbook dark mode
+# all claw agents direct to url stage
 
 Scrapping
 # ocr for homepage images

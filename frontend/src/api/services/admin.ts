@@ -19,6 +19,7 @@ import type {
   AdminOnboardingTokenUsageCall,
   AdminOnboardingTokenUsageSummary,
   AdminOnboardingInfo,
+  Product,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -217,5 +218,41 @@ export async function getOnboardingTokenUsage(
   offset: number;
 }> {
   return apiGet(API_ROUTES.admin.management.onboardingTokenUsage(onboardingId, limit, offset));
+}
+
+export async function listAdminProducts(): Promise<{ products: Product[] }> {
+  return apiGet<{ products: Product[] }>(`${API_ROUTES.products.base}?active_only=false`);
+}
+
+export async function createAdminProduct(product: Product): Promise<{ product: Product }> {
+  return apiPost<{ product: Product }>(API_ROUTES.products.base, product);
+}
+
+export async function updateAdminProduct(
+  id: string,
+  patch: Partial<Omit<Product, 'id'>>,
+): Promise<{ product: Product }> {
+  const res = await apiRequest(API_ROUTES.products.byId(id), {
+    method: 'PATCH',
+    headers: new Headers({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as any)?.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteAdminProduct(id: string): Promise<void> {
+  const res = await apiRequest(API_ROUTES.products.byId(id), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error((detail as any)?.detail || `Request failed: ${res.status}`);
+  }
 }
 

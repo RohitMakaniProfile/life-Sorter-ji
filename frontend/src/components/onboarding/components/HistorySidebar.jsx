@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { getProducts } from '../../../api';
+import { useNavigate } from 'react-router-dom';
+import { getPlaybookHistory } from '../../../api';
 
-export default function ProductsSidebar({ isOpen, onClose }) {
+export default function HistorySidebar({ isOpen, onClose }) {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
-  const [products, setProducts] = useState([]);
+  const [playbooks, setPlaybooks] = useState([]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -12,10 +14,10 @@ export default function ProductsSidebar({ isOpen, onClose }) {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await getProducts({ activeOnly: true });
-        if (active) setProducts(Array.isArray(res?.products) ? res.products : []);
+        const res = await getPlaybookHistory();
+        if (active) setPlaybooks(Array.isArray(res?.playbooks) ? res.playbooks : []);
       } catch {
-        if (active) setProducts([]);
+        if (active) setPlaybooks([]);
       } finally {
         if (active) setLoading(false);
       }
@@ -27,23 +29,15 @@ export default function ProductsSidebar({ isOpen, onClose }) {
     };
   }, [isOpen]);
 
-  const handleProductClick = (item) => {
-    window.dispatchEvent(
-      new CustomEvent('onboarding-product-select', {
-        detail: {
-          productId: item?.id,
-          outcome: item?.outcome,
-          domain: item?.domain,
-          task: item?.task,
-        },
-      }),
-    );
+  const handlePlaybookClick = (item) => {
+    if (item?.runId) {
+      window.dispatchEvent(new CustomEvent('playbook-history-select', { detail: { runId: item.runId } }));
+    }
     onClose();
   };
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity duration-300 ${
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -59,12 +53,9 @@ export default function ProductsSidebar({ isOpen, onClose }) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#857BFF] text-white text-sm font-medium">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="1" y="1" width="6" height="6" rx="1" />
-              <rect x="9" y="1" width="6" height="6" rx="1" />
-              <rect x="1" y="9" width="6" height="6" rx="1" />
-              <rect x="9" y="9" width="6" height="6" rx="1" />
+              <path d="M2 4h12M2 8h8M2 12h10" strokeLinecap="round" />
             </svg>
-            Products
+            History
           </div>
           <button
             type="button"
@@ -80,30 +71,49 @@ export default function ProductsSidebar({ isOpen, onClose }) {
 
         <div className="flex-1 overflow-y-auto py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {loading ? (
-            <div className="px-5 py-4 text-sm text-white/50">Loading products...</div>
-          ) : products.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-white/40">No products configured yet.</div>
+            <div className="px-5 py-4 text-sm text-white/50">Loading playbook history...</div>
+          ) : playbooks.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-white/40">No generated playbooks yet.</div>
           ) : (
-            products.map((item) => (
+            playbooks.map((item) => (
               <button
-                key={item.id}
+                key={item.runId}
                 type="button"
-                onClick={() => handleProductClick(item)}
+                onClick={() => handlePlaybookClick(item)}
                 className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-white/[0.04] transition-colors group"
               >
                 <div className="w-8 h-8 rounded-lg bg-[#252525] border border-white/10 flex items-center justify-center text-white/70 group-hover:border-[#857BFF]/30">
-                  {item.emoji || '🧩'}
+                  📘
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold text-white truncate">{item.name || 'Claw Product'}</div>
-                  <div className="text-xs text-white/40 truncate">{item.description || item.task || 'Product mapping'}</div>
-                  <div className="text-[11px] text-white/30 mt-1 truncate">{item.outcome} · {item.domain}</div>
+                  <div className="text-sm font-semibold text-white truncate">{item.companyName || item.title || 'Generated playbook'}</div>
+                  <div className="text-xs text-white/40 truncate">{item.task || item.domain || item.outcome || 'Playbook'}</div>
+                  <div className="text-[11px] text-white/30 mt-1">
+                    {item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : ''}
+                  </div>
                 </div>
               </button>
             ))
           )}
         </div>
+
+        <div className="px-5 py-4 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => {
+              navigate('/conversations');
+              onClose();
+            }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#857BFF] to-[#BF69A2] text-white text-sm font-semibold hover:brightness-110 transition-all"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M2 4h12M2 8h8M2 12h10" strokeLinecap="round" />
+            </svg>
+            Chat history
+          </button>
+        </div>
       </aside>
     </>
   );
 }
+
