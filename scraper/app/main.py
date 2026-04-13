@@ -70,6 +70,10 @@ def _normalize_event_objects(objs: list[dict[str, Any]]) -> list[dict[str, Any]]
 APP_DIR = Path(__file__).resolve().parent
 SCRAPER_SCRIPT = APP_DIR / "playwright_scraper.py"
 
+import sys as _sys
+if str(APP_DIR) not in _sys.path:
+    _sys.path.insert(0, str(APP_DIR))
+
 
 app = FastAPI(title="Ikshan Scraper", version="1.0.0")
 
@@ -79,12 +83,124 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/v1/scrape-gmaps")
+async def scrape_gmaps(req: Request) -> StreamingResponse:
+    """Dedicated Google Maps place scraper.
+
+    Accepts: { "url": "<google-maps-place-url>" }
+    Returns: SSE stream with a single `done` event containing structured business data.
+    """
+    body = await req.json()
+    url = str(body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    from playwright_scraper import scrape_google_maps_place, _is_google_maps_place_url
+
+    if not _is_google_maps_place_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="url must be a Google Maps place URL (google.com/maps/place/...)",
+        )
+
+    async def event_stream() -> AsyncIterator[bytes]:
+        yield _sse({"event": "info", "message": "Starting Google Maps place scrape..."})
+        try:
+            result = await scrape_google_maps_place(url)
+        except Exception as exc:
+            yield _sse({
+                "event": "done",
+                "result": {"error": str(exc), "url": url},
+            })
+            return
+        yield _sse({"event": "done", "result": result})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def _scrape_gmaps_via_stream(url: str) -> StreamingResponse:
+    """Internal helper: run the dedicated Google Maps scraper and wrap result in
+    the same SSE format as /v1/scrape-playwright/stream so the backend consumer
+    (which always hits /v1/scrape-playwright/stream) gets structured GMaps data
+    without needing any changes."""
+
+    from playwright_scraper import scrape_google_maps_place
+
+    async def event_stream() -> AsyncIterator[bytes]:
+        yield _sse({"event": "info", "message": f"Detected Google Maps URL — using dedicated GMaps scraper for {url}"})
+        try:
+            result = await scrape_google_maps_place(url)
+        except Exception as exc:
+            yield _sse({
+                "event": "done",
+                "result": {"error": str(exc), "url": url, "text": f"Google Maps scrape failed: {exc}"},
+            })
+            return
+
+        # Build a page_data event that looks like what the generic scraper emits,
+        # but enriched with google_maps_data.
+        gmaps_data = result.get("google_maps_data") or {}
+        biz_name = gmaps_data.get("name") or ""
+        page_rec: dict[str, Any] = {
+            "event": "page_data",
+            "url": url,
+            "depth": 0,
+            "status_code": result.get("status_code", 0),
+            "title": result.get("title") or biz_name,
+            "meta_description": "",
+            "meta_keywords": "",
+            "elements": [],
+            "links_internal": [],
+            "links_external": [],
+            "schema_types": [],
+            "canonical": "",
+            "robots": "",
+            "content_hash": result.get("content_hash", ""),
+            "scraped_at": result.get("scraped_at", ""),
+            "js_rendered": True,
+            "network_requests": [],
+            "local_storage_keys": [],
+            "cookie_names": [],
+            "google_maps_data": gmaps_data,
+        }
+        yield _sse(page_rec)
+
+        # Wrap in done payload matching backend expectations
+        done_payload: dict[str, Any] = {
+            "base_url": url,
+            "scraped_urls": [url],
+            "failed_urls": [] if not result.get("error") else [{"url": url, "error": result["error"]}],
+            "pages": [page_rec],
+            "stats": {
+                "total_pages": 1,
+                "failed_pages": 1 if result.get("error") else 0,
+                "skipped_pages": 0,
+                "crawl_duration_s": result.get("crawl_duration_s", 0),
+            },
+            "google_maps_data": gmaps_data,
+        }
+        final: dict[str, Any] = {
+            "text": "",
+            "data": done_payload,
+            "error": result.get("error"),
+        }
+        yield _sse({"event": "done", "result": final})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.post("/v1/scrape-playwright/stream")
 async def scrape_playwright_stream(req: Request) -> StreamingResponse:
     body = await req.json()
     url = str(body.get("url") or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
+
+    # ── Auto-detect Google Maps place URLs and use dedicated scraper ──
+    from playwright_scraper import _is_google_maps_place_url
+
+    if _is_google_maps_place_url(url):
+        return await _scrape_gmaps_via_stream(url)
 
     max_pages = body.get("maxPages")
     max_depth = body.get("maxDepth")

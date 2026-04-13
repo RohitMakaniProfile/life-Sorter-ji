@@ -97,6 +97,74 @@ async def finish_onboarding_skill_call(
 
 
 # ---------------------------------------------------------------------------
+# Google Maps URL detection
+# ---------------------------------------------------------------------------
+
+def is_google_maps_url(url: str) -> bool:
+    """Return True if the URL points to Google Maps (place, search, or short link)."""
+    return bool(re.search(
+        r'(google\.[a-z.]+/maps|maps\.google\.|maps\.app\.goo\.gl|goo\.gl/maps)',
+        url,
+        re.IGNORECASE,
+    ))
+
+
+# ---------------------------------------------------------------------------
+# gmaps-serper skill runner
+# ---------------------------------------------------------------------------
+
+async def run_gmaps_serper_skill(
+    *,
+    url: str,
+    on_progress: ProgressCb | None = None,
+) -> tuple[dict[str, Any], str]:
+    """
+    Run the gmaps-serper skill for a Google Maps URL.
+
+    Returns:
+      - page_data: structured dict built from the GMaps place data (mirrors the
+                   shape expected by build_web_summary / downstream stages).
+      - summary_text: human-readable markdown summary produced by the skill.
+    """
+
+    async def _skill_progress(meta: dict[str, Any]) -> None:
+        if not on_progress or not isinstance(meta, dict):
+            return
+        label = str(meta.get("message") or meta.get("label") or "Fetching Google Maps data")
+        await on_progress({"stage": "scraping", "label": label})
+
+    result = await run_skill(
+        "gmaps-serper",
+        message=f"Fetch Google Maps business data for: {url}",
+        args={"query": url},
+        on_progress=_skill_progress,
+    )
+
+    if result.status != "ok":
+        raise RuntimeError(str(result.error or "gmaps-serper failed"))
+
+    data = result.data or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    place: dict[str, Any] = data.get("place") or {}
+
+    # Build a page_data-shaped dict from the GMaps place so the rest of the
+    # pipeline (build_web_summary, generate_business_profile) can handle it.
+    page_data: dict[str, Any] = {
+        "url": url,
+        "title": place.get("name", ""),
+        "meta_description": place.get("about", "") or place.get("category", ""),
+        "elements": [],
+        "tech_stack": {},
+        "google_maps_data": place,
+    }
+
+    summary_text = str(result.text or "").strip()
+    return page_data, summary_text
+
+
+# ---------------------------------------------------------------------------
 # Single-page Playwright scrape
 # ---------------------------------------------------------------------------
 

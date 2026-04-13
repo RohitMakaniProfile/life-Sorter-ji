@@ -1,0 +1,44 @@
+{
+  "id": "gmaps-serper",
+  "name": "Google Maps Business Lookup",
+  "emoji": "📍",
+  "description": "Fetch structured Google Business Profile data for any business: rating, review count, address, phone, website, opening hours, categories, and thumbnail. Accepts a business name with optional location, or a full Google Maps place URL. Uses Serper Maps API — fast and reliable.",
+  "entry": "runner.py",
+  "language": "python",
+  "stages": ["thinking", "running", "done"],
+  "stageLabels": {
+    "thinking": "Thinking",
+    "running": "Fetching business data",
+    "done": "Done",
+    "error": "Error"
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Business name to look up (e.g. 'Neosmile Dental Hospital Ahmedabad') OR a full Google Maps place URL."
+      },
+      "location": {
+        "type": "string",
+        "description": "Optional location hint to narrow results. Can be a city name (e.g. 'Ahmedabad') or lat,lng coordinates (e.g. '23.014,72.527').",
+        "optional": true
+      },
+      "gl": {
+        "type": "string",
+        "description": "Country code for results (default: 'in'). E.g. 'in', 'us', 'uk'.",
+        "optional": true,
+        "default": "in"
+      },
+      "num": {
+        "type": "integer",
+        "description": "Max number of results to fetch from Serper (default: 5). The best match is returned as primary.",
+        "optional": true,
+        "default": 5
+      }
+    },
+    "required": ["query"]
+  },
+  "keywords": ["google maps", "business", "rating", "reviews", "address", "phone", "hours", "gbp", "places"]
+}
+

@@ -10,6 +10,8 @@ from app.services.onboarding_crawl_service import (
     create_onboarding_skill_call,
     finish_onboarding_skill_call,
     generate_business_profile,
+    is_google_maps_url,
+    run_gmaps_serper_skill,
     run_playwright_single_page,
     update_onboarding_crawl_outputs,
 )
@@ -41,8 +43,12 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
 
     await send("stage", stage="starting", label="Starting", url=website_url)
 
-    # ── Stage 1: Playwright single-page scrape ────────────────────────────────
-    await send("stage", stage="scraping", label="Scraping page", url=website_url)
+    # ── Stage 1: Scrape ───────────────────────────────────────────────────────
+    gmaps = is_google_maps_url(website_url)
+    skill_id_used = "gmaps-serper" if gmaps else "scrape-playwright"
+    stage_label = "Fetching Google Maps data" if gmaps else "Scraping page"
+
+    await send("stage", stage="scraping", label=stage_label, url=website_url)
 
     skill_call_id: int | None = None
     scrape_started = time.time()
@@ -50,14 +56,13 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
     if onboarding_id:
         skill_call_id = await create_onboarding_skill_call(
             onboarding_session_id=onboarding_id,
-            skill_id="scrape-playwright",
-            input={"url": website_url, "maxPages": 1},
+            skill_id=skill_id_used,
+            input={"url": website_url} if gmaps else {"url": website_url, "maxPages": 1},
         )
 
     page_data: dict[str, Any] = {}
     summary_text: str = ""
     scrape_error: str | None = None
-
 
     try:
         async def _on_progress(event: dict[str, Any]) -> None:
@@ -66,10 +71,16 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
             else:
                 await send("stage", **event)
 
-        page_data, summary_text = await run_playwright_single_page(
-            url=website_url,
-            on_progress=_on_progress,
-        )
+        if gmaps:
+            page_data, summary_text = await run_gmaps_serper_skill(
+                url=website_url,
+                on_progress=_on_progress,
+            )
+        else:
+            page_data, summary_text = await run_playwright_single_page(
+                url=website_url,
+                on_progress=_on_progress,
+            )
     except Exception as exc:
         scrape_error = str(exc)
         # Build a minimal stub so the rest of the pipeline can still run
