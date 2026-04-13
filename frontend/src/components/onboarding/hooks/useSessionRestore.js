@@ -4,6 +4,7 @@ import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { mapToolsToEarlyTools } from '../toolService';
 import STATIC_SCALE_QUESTIONS from '../data/scale_questions.json';
+import { buildScaleQuestions } from '../utils/scaleQuestions';
 
 /**
  * Hook to handle session restoration from backend on mount.
@@ -99,6 +100,22 @@ export function useSessionRestore({
         if (state.website_url) setUrlValue(state.website_url);
         if (state.gbp_url) setGbpValue(state.gbp_url);
 
+        let restoredEarlyTools = [];
+        if (state.outcome && state.domain && state.task) {
+          try {
+            const toolsRes = await apiPost(API_ROUTES.onboarding.toolsByQ1Q2Q3, {
+              outcome: state.outcome,
+              domain: state.domain,
+              task: state.task,
+            });
+            restoredEarlyTools = mapToolsToEarlyTools(toolsRes?.tools || []);
+            if (restoredEarlyTools.length) setEarlyTools(restoredEarlyTools);
+          } catch {
+            // ignore tool fetch errors during restore
+          }
+        }
+        const scaleQuestions = buildScaleQuestions(restoredEarlyTools);
+
         // Restore scale answers
         if (state.scale_answers && typeof state.scale_answers === 'object') {
           const indexedAnswers = {};
@@ -117,41 +134,25 @@ export function useSessionRestore({
             clearResumeArtifacts();
             console.log('[Onboarding Restore] Restoring to URL stage', { outcome: state.outcome, domain: state.domain, task: state.task });
             setShowUrlForm(true);
-            // Load tools for the task (async, don't block UI)
-            if (state.outcome && state.domain && state.task) {
-              apiPost(API_ROUTES.onboarding.toolsByQ1Q2Q3, {
-                outcome: state.outcome,
-                domain: state.domain,
-                task: state.task,
-              })
-                .then((res) => {
-                  if (res?.tools) {
-                    setEarlyTools(mapToolsToEarlyTools(res.tools));
-                  }
-                })
-                .catch(() => {
-                  // ignore tool fetch errors
-                });
-            }
             break;
 
           case 'questions':
             clearResumeArtifacts();
             if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
-              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              setScaleQuestions(scaleQuestions);
               if (state.onboarding_id) {
                 onboardingIdRef.current = state.onboarding_id;
               }
               setShowDeeperDive(true);
             } else {
-              setScaleQuestions(STATIC_SCALE_QUESTIONS);
+              setScaleQuestions(scaleQuestions);
               setShowDeeperDive(true);
             }
             break;
 
           case 'diagnostic':
             clearResumeArtifacts();
-            setScaleQuestions(STATIC_SCALE_QUESTIONS);
+            setScaleQuestions(scaleQuestions);
             if (state.onboarding_id) {
               onboardingIdRef.current = state.onboarding_id;
             }

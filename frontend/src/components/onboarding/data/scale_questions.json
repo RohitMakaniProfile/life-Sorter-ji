@@ -19,7 +19,6 @@
     "options": [
       "One-time product purchases",
       "Subscription / recurring billing",
-      "Usage-based or pay-as-you-go",
       "Service retainers / project fees",
       "Marketplace commissions / transaction fees",
       "Freemium with paid upgrades",
@@ -48,7 +47,6 @@
       "Customer testimonials or reviews",
       "Case studies with measurable results",
       "Blog posts or educational articles",
-      "Video content (demos, tutorials, or social)",
       "A free tool, calculator, or template",
       "Active social media presence",
       "An email list of 1,000+ contacts",
@@ -61,8 +59,8 @@
     "id": "buyer_behavior",
     "question": "When customers look for a solution like yours, what do they usually do?",
     "options": [
-      "Search Google or AI tools for the category (e.g., \"best project management tool\")",
-      "Ask peers, colleagues, or communities for recommendations",
+      "Search Google",
+      "Ask peers",
       "They don't know this category exists — we have to educate them",
       "They compare us against 2–3 well-known competitors",
       "They find us through the platform or marketplace we're listed on"
@@ -82,7 +80,7 @@
       "Nothing yet — posting manually or not at all"
     ],
     "icon": "🛠️",
-    "multi_select": false
+    "multi_select": true
   }
 ]
 
