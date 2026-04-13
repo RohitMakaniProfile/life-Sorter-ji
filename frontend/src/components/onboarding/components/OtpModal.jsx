@@ -107,17 +107,20 @@ export default function OtpModal({ onboardingId, onVerified }) {
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
       <div className="flex w-full max-w-[420px] flex-col rounded-3xl bg-white px-8 py-9 shadow-[0_24px_60px_rgba(0,0,0,0.18)]">
+        <div className="mb-4 flex justify-center">
+          <img src="/Doable%20Claw.svg" alt="DoableClaw" className="h-9 w-auto" />
+        </div>
         <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-violet-500 text-[26px]">
           🔐
         </div>
 
         <div className="mb-1.5 text-[22px] font-black text-gray-900">
-          {step === 'phone' ? 'Verify Your Number' : 'Enter OTP'}
+          {step === 'phone' ? 'Verify Your Number for DoableClaw' : 'Enter DoableClaw OTP'}
         </div>
         <div className="mb-7 text-[13.5px] leading-relaxed text-gray-500">
           {step === 'phone'
-            ? 'Your personalised playbook is ready. Enter your mobile number to unlock it.'
-            : `We sent a 6-digit OTP to +91 ${phone.replace(/\D/g, '').slice(-10)}`}
+            ? 'Your personalised DoableClaw playbook is ready. Enter your mobile number to unlock it.'
+            : `We sent a 6-digit DoableClaw OTP to +91 ${phone.replace(/\D/g, '').slice(-10)}`}
         </div>
 
         {step === 'phone' ? (
@@ -185,7 +188,7 @@ export default function OtpModal({ onboardingId, onVerified }) {
               ? 'Sending…'
               : 'Verifying…'
             : step === 'phone'
-              ? 'Send OTP →'
+              ? 'Send DoableClaw OTP →'
               : 'Verify & Unlock Playbook 🚀'}
         </button>
 
@@ -199,7 +202,7 @@ export default function OtpModal({ onboardingId, onVerified }) {
               resendTimer > 0 ? 'cursor-default text-gray-400' : 'text-violet-600',
             )}
           >
-            {resendTimer > 0 ? `Resend OTP in ${resendTimer}s` : '← Change number / Resend'}
+            {resendTimer > 0 ? `Resend DoableClaw OTP in ${resendTimer}s` : '← Change number / Resend'}
           </button>
         )}
 
