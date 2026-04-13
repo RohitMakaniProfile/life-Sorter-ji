@@ -346,10 +346,8 @@ export default function PaymentPage() {
           Back
         </button>
         <div className="flex items-center gap-2">
-          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-500 flex items-center justify-center text-xs font-bold shadow-lg shadow-violet-500/20">
-            ✦
-          </div>
-          <span className="text-sm font-semibold tracking-wide text-white/70">Ikshan</span>
+          <img src="/Doable%20Claw.svg" alt="Doable Claw" className="h-7 w-auto" />
+          <span className="text-sm font-bold tracking-[0.15em] text-white/70">DOABLE CLAW</span>
         </div>
       </header>
 

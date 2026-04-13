@@ -47,7 +47,11 @@ export default function OnboardingApp() {
   const playbook = usePlaybookTaskStream({
     ensureSession,
     otpVerified: state.otpVerified,
-    onRequestOtp: () => state.setShowOtpModal(true),
+    onRequestOtp: () => {
+      const oid = onboardingIdRef.current || '';
+      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
+      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
+    },
     onShowPlaybook: () => state.setShowPlaybook(true),
     setError: state.setError,
   });
@@ -107,11 +111,18 @@ export default function OnboardingApp() {
     markRetryNeeded: playbook.markRetryNeeded,
   });
 
-  // OTP verified effect
+  // Auto-launch playbook after returning from phone verify page
   useEffect(() => {
-    if (!state.otpVerified || !state.pendingPlaybookLaunchRef.current) return;
-    state.pendingPlaybookLaunchRef.current = false;
-    handlers.handleStartPlaybook({ forceVerified: true }).catch(() => {});
+    if (!state.otpVerified) return;
+    let pending = false;
+    try { pending = sessionStorage.getItem('pending-playbook-launch') === 'true'; } catch { /* ignore */ }
+    if (!pending) return;
+    try { sessionStorage.removeItem('pending-playbook-launch'); } catch { /* ignore */ }
+    // Wait for session restore to finish populating the onboarding state
+    const t = setTimeout(() => {
+      handlers.handleStartPlaybook({ forceVerified: true }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
   }, [state.otpVerified, handlers]);
 
   // Task node transition animations

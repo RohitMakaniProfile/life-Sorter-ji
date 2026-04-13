@@ -65,7 +65,6 @@ export function useOnboardingHandlers({
     setRcaCalling,
     setShowComplete,
     setError,
-    showOtpModal, setShowOtpModal,
     otpVerified, setOtpVerified,
     setViewingRunId,
     pendingPlaybookLaunchRef,
@@ -254,7 +253,9 @@ export function useOnboardingHandlers({
   const handleStartPlaybook = useCallback(async ({ forceVerified = false } = {}) => {
     if (!forceVerified && !otpVerified) {
       pendingPlaybookLaunchRef.current = true;
-      setShowOtpModal(true);
+      const oid = onboardingIdRef.current || '';
+      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
+      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
       return;
     }
 
@@ -303,12 +304,7 @@ export function useOnboardingHandlers({
       setCheckingGapQuestions(false);
       setError('Failed to check gap questions.');
     }
-  }, [otpVerified, ensureSession, waitForCrawl, prepareStreaming, startForSession, stopStreaming, setCheckingGapQuestions, setGapQuestions, setGapAnswers, setGapCurrentIndex, setShowGapQuestions, setShowPlaybook, setShowTransitionMessages, setError, setShowOtpModal, pendingPlaybookLaunchRef]);
-
-  const handleOtpVerified = useCallback(() => {
-    setOtpVerified(true);
-    setShowOtpModal(false);
-  }, [setOtpVerified, setShowOtpModal]);
+  }, [otpVerified, onboardingIdRef, ensureSession, waitForCrawl, prepareStreaming, startForSession, stopStreaming, setCheckingGapQuestions, setGapQuestions, setGapAnswers, setGapCurrentIndex, setShowGapQuestions, setShowPlaybook, setShowTransitionMessages, setError, pendingPlaybookLaunchRef]);
 
   const handleTransitionComplete = useCallback(() => {
     setShowTransitionMessages(false);
@@ -318,7 +314,9 @@ export function useOnboardingHandlers({
   const handleGapAnswer = useCallback(async (index, answerKey, answerText) => {
     if (!otpVerified) {
       pendingPlaybookLaunchRef.current = true;
-      setShowOtpModal(true);
+      const oid = onboardingIdRef.current || '';
+      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
+      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
       return;
     }
     setGapSavingIndex(index);
@@ -346,7 +344,7 @@ export function useOnboardingHandlers({
     } finally {
       setGapSavingIndex(null);
     }
-  }, [otpVerified, ensureSession, gapQuestions.length, prepareStreaming, startForSession, stopStreaming, setGapSavingIndex, setGapAnswers, setShowGapQuestions, setGapCurrentIndex, setError, setShowOtpModal, pendingPlaybookLaunchRef]);
+  }, [otpVerified, onboardingIdRef, ensureSession, gapQuestions.length, prepareStreaming, startForSession, stopStreaming, setGapSavingIndex, setGapAnswers, setShowGapQuestions, setGapCurrentIndex, setError, pendingPlaybookLaunchRef]);
 
   // Scale submit
   const handleScaleSubmit = useCallback(async () => {
@@ -471,7 +469,6 @@ export function useOnboardingHandlers({
     handleScaleSelect,
     handleScaleSubmit,
     handleStartPlaybook,
-    handleOtpVerified,
     handleTransitionComplete,
     handleGapAnswer,
     handleDiagnosticAnswer,

@@ -6,7 +6,6 @@ import DiagnosticStage from '../stages/DiagnosticStage';
 import PlaybookStage from '../stages/PlaybookStage';
 import HistoryPlaybookStage from '../stages/HistoryPlaybookStage';
 import CompleteStage from '../stages/CompleteStage';
-import OtpModal from '../components/OtpModal';
 import AnalysisTransitionMessages from '../components/AnalysisTransitionMessages';
 import DeveloperTaskStreamsPanel from '../components/DeveloperTaskStreamsPanel';
 import FlowNode from '../components/FlowNode';
@@ -30,7 +29,6 @@ export function OnboardingStageRenderer({
 }) {
   const {
     viewingRunId, setViewingRunId,
-    showOtpModal,
     checkingGapQuestions,
     showPlaybook,
     showTransitionMessages,
@@ -84,7 +82,6 @@ export function OnboardingStageRenderer({
 
   const {
     startNewJourney,
-    handleOtpVerified,
     handleTransitionComplete,
     handleGapAnswer,
     handleStartPlaybook,
@@ -112,10 +109,6 @@ export function OnboardingStageRenderer({
     );
   }
 
-  // OTP modal
-  if (showOtpModal) {
-    return <OtpModal onboardingId={onboardingIdRef.current || ''} onVerified={handleOtpVerified} />;
-  }
 
   // Checking gap questions
   if (checkingGapQuestions) {

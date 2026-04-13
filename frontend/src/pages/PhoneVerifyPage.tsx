@@ -33,6 +33,7 @@ export default function PhoneVerifyPage() {
   const mode = params.get('mode') || 'login'; // 'login' | 'link'
   const isLinkMode = mode === 'link';
   const rawNext = params.get('next') || '';
+  const onboardingId = params.get('oid') || '';
 
   // Default: onboarding homepage (not /chat, which sends empty users to /new).
   let next = '/';
@@ -106,6 +107,7 @@ export default function PhoneVerifyPage() {
     try {
       const data = await apiPost<SendOtpResponse>(API_ROUTES.auth.sendOtp, {
         phone_number: cleaned,
+        ...(onboardingId ? { onboarding_id: onboardingId } : {}),
       });
       if (!data.success) {
         setError(data.message || data.detail || 'Failed to send OTP');
@@ -131,6 +133,7 @@ export default function PhoneVerifyPage() {
       const body: Record<string, string> = {
         phone_number: phone.replace(/\D/g, ''),
         otp_code: otp,
+        ...(onboardingId ? { onboarding_id: onboardingId } : {}),
       };
 
       // If in link mode, pass the current user ID

@@ -3,9 +3,10 @@
 from typing import Any, Optional
 
 import json
+import uuid as _uuid
 import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import get_settings
 from app.middleware.auth_context import get_request_user, require_request_user
@@ -31,6 +32,20 @@ class OnboardingRequest(BaseModel):
     website_url: Optional[str] = None
     gbp_url: Optional[str] = None
     scale_answers: Optional[dict[str, Any]] = None
+
+    @field_validator("onboarding_id", mode="before")
+    @classmethod
+    def _validate_uuid(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            _uuid.UUID(s)
+        except ValueError:
+            raise ValueError(f"onboarding_id must be a valid UUID, got '{s}'")
+        return s
 
     model_config = {"extra": "ignore"}
 
@@ -572,6 +587,10 @@ async def _resolve_onboarding_id(
 
     # Guest path: onboarding_id must be explicitly provided.
     if oid:
+        try:
+            _uuid.UUID(oid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"onboarding_id must be a valid UUID, got '{oid}'")
         return oid
     claims = getattr(request.state, "auth_claims", None) or {}
     sid_claim = str(claims.get("onboarding_id") or claims.get("onboarding_session_id") or claims.get("session_id") or "").strip()

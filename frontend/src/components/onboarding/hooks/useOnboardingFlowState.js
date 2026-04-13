@@ -57,7 +57,6 @@ export function useOnboardingFlowState() {
   // Other
   const [showComplete, setShowComplete] = useState(false);
   const [error, setError] = useState(null);
-  const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpVerified, setOtpVerified] = useState(() => Boolean(getUserIdFromJwt()));
 
   // History view
@@ -176,7 +175,6 @@ export function useOnboardingFlowState() {
     // Other
     showComplete, setShowComplete,
     error, setError,
-    showOtpModal, setShowOtpModal,
     otpVerified, setOtpVerified,
     viewingRunId, setViewingRunId,
 

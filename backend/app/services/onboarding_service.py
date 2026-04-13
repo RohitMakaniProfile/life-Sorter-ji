@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid as _uuid
 from typing import Any, Optional
 
 import structlog
@@ -12,6 +13,15 @@ from app.repositories import onboarding_repository as onboarding_repo
 from app.utils.url_sanitize import sanitize_http_url
 
 logger = structlog.get_logger()
+
+
+def _validate_uuid(value: str, label: str = "onboarding_id") -> str:
+    """Validate that a string is a valid UUID. Raises ValueError if not."""
+    try:
+        _uuid.UUID(value)
+    except ValueError:
+        raise ValueError(f"{label} must be a valid UUID, got '{value}'")
+    return value
 
 ALLOWED_PATCH_FIELDS = frozenset({
     "user_id", "outcome", "domain", "task", "website_url", "gbp_url", "scale_answers",
@@ -81,6 +91,7 @@ async def upsert_onboarding_patch(
     oid = (onboarding_id or "").strip()
     if not oid:
         raise ValueError("onboarding_id is required for patch")
+    _validate_uuid(oid)
 
     allowed = _allowed_updates(updates)
     uid = (user_id or "").strip() if user_id else None
@@ -123,6 +134,7 @@ async def reset_onboarding(onboarding_id: str) -> dict[str, Any]:
     oid = (onboarding_id or "").strip()
     if not oid:
         raise ValueError("onboarding_id is required for reset")
+    _validate_uuid(oid)
 
     pool = get_pool()
     async with pool.acquire() as conn:
