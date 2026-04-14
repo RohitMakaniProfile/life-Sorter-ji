@@ -367,7 +367,13 @@ export function useOnboardingHandlers({
 
       setShowAnalysisTransition(true);
       setShowDeeperDive(false);
-      await waitForCrawlDone(90000);
+      const hasWebsiteUrl = Boolean((urlValue || '').trim());
+      if (hasWebsiteUrl) {
+        const crawlFinished = await waitForCrawlDone(120000);
+        if (!crawlFinished) {
+          throw new Error('Website scraping is still running or failed. Please retry after crawl completes.');
+        }
+      }
 
       setRcaCalling(true);
       const res = await rcaNextQuestion({ onboarding_id: sid });
@@ -395,7 +401,7 @@ export function useOnboardingHandlers({
     } finally {
       setLoading(false);
     }
-  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, handleStartPlaybook, setLoading, setShowAnalysisTransition, setShowDeeperDive, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, setError, scrollToEnd]);
+  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, handleStartPlaybook, setLoading, setShowAnalysisTransition, setShowDeeperDive, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, setError, scrollToEnd, urlValue]);
 
   // Diagnostic handlers
   const handleDiagnosticAnswer = useCallback(async (answer) => {

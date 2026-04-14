@@ -83,6 +83,10 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
             started_at_ms=scrape_started,
         )
 
+    # Do not silently continue with empty crawl output — fail the task so UI can ask for retry.
+    if scrape_error:
+        raise RuntimeError(f"Website scraping failed: {scrape_error}")
+
     # ── Stage 2: Build web_summary ───────────────────────────────────────────
     await send("stage", stage="summarizing", label="Building web summary")
 
