@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 PORT="${PORT:-8081}"
 HOST="${HOST:-0.0.0.0}"
+GOOGLE_VISION_API_KEY="${GOOGLE_VISION_API_KEY:-AIzaSyBwbaOLKjW0KdZhcngqIfbkH8k5KMAa-uE}"
+
+export GOOGLE_VISION_API_KEY
 
 if [[ -f "$ROOT_DIR/.venv/bin/activate" ]]; then
   # shellcheck disable=SC1091

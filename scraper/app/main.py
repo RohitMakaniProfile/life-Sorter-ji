@@ -67,6 +67,28 @@ def _normalize_event_objects(objs: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+def _parse_stderr_fragment(text: str) -> list[dict[str, Any]]:
+    line = text.strip()
+    if not line:
+        return []
+    try:
+        obj = json.loads(line)
+        if isinstance(obj, dict):
+            return _normalize_event_objects([obj])
+    except Exception:
+        pass
+
+    rec_objs, rem = _extract_json_objects(line)
+    rec_objs = _normalize_event_objects(rec_objs)
+    if rec_objs:
+        residue = (rem or "").strip()
+        if residue:
+            rec_objs.append({"event": "info", "message": residue})
+        return rec_objs
+
+    return [{"event": "info", "message": line}]
+
+
 APP_DIR = Path(__file__).resolve().parent
 SCRAPER_SCRIPT = APP_DIR / "playwright_scraper.py"
 
@@ -140,63 +162,57 @@ async def scrape_playwright_stream(req: Request) -> StreamingResponse:
             assert proc.stdout is not None
             assert proc.stderr is not None
 
-            stdout_lines: list[str] = []
+            stdout_chunks: list[bytes] = []
 
             async def _read_stdout() -> None:
                 while True:
-                    line = await proc.stdout.readline()
-                    if not line:
+                    chunk = await proc.stdout.read(65536)
+                    if not chunk:
                         break
-                    stdout_lines.append(line.decode("utf-8", errors="replace"))
+                    stdout_chunks.append(chunk)
 
             stdout_task = asyncio.create_task(_read_stdout())
+            stderr_buffer = ""
 
             try:
-                # Stream one stderr line at a time.
-                # playwright_scraper emits exactly one JSON object per line to stderr.
                 while True:
-                    line_b = await proc.stderr.readline()
-                    if not line_b:
+                    chunk_b = await proc.stderr.read(65536)
+                    if not chunk_b:
                         break
-                    line = line_b.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                        if isinstance(obj, dict):
-                            for evt in _normalize_event_objects([obj]):
-                                yield _sse(evt)
-                            continue
-                    except Exception:
-                        pass
-                    # Best-effort recovery for concatenated/interleaved JSON fragments.
-                    rec_objs, rem = _extract_json_objects(line)
-                    rec_objs = _normalize_event_objects(rec_objs)
-                    if rec_objs:
-                        for evt in rec_objs:
+                    stderr_buffer += chunk_b.decode("utf-8", errors="replace")
+                    while True:
+                        newline_idx = stderr_buffer.find("\n")
+                        if newline_idx == -1:
+                            break
+                        line = stderr_buffer[:newline_idx]
+                        stderr_buffer = stderr_buffer[newline_idx + 1 :]
+                        for evt in _parse_stderr_fragment(line):
                             yield _sse(evt)
-                        residue = (rem or "").strip()
-                        if residue:
-                            yield _sse({"event": "info", "message": residue})
-                        continue
-                    # Preserve non-JSON diagnostics without dropping the stream.
-                    yield _sse({"event": "info", "message": line})
+
+                if stderr_buffer.strip():
+                    for evt in _parse_stderr_fragment(stderr_buffer):
+                        yield _sse(evt)
 
                 code = await proc.wait()
                 await stdout_task
 
-                raw_stdout = "".join(stdout_lines).strip()
+                raw_stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
                 final_line = raw_stdout.split("\n")[-1].strip() if raw_stdout else "{}"
                 result_payload: dict[str, Any] = {}
                 try:
-                    parsed = json.loads(final_line)
+                    parsed = json.loads(raw_stdout or final_line)
                     if isinstance(parsed, dict):
                         result_payload = parsed
                 except Exception:
-                    result_payload = {
-                        "text": "scrape-playwright: could not parse scraper result",
-                        "error": "playwright_parse_error",
-                    }
+                    try:
+                        parsed = json.loads(final_line)
+                        if isinstance(parsed, dict):
+                            result_payload = parsed
+                    except Exception:
+                        result_payload = {
+                            "text": "scrape-playwright: could not parse scraper result",
+                            "error": "playwright_parse_error",
+                        }
 
                 if code != 0 and not result_payload.get("error"):
                     result_payload["error"] = "playwright_scraper_failed"

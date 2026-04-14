@@ -39,6 +39,113 @@ async def _emit_summary_token_usage(
         pass
 
 
+def _build_page_content(item: dict[str, Any], content_field: str) -> str:
+    """
+    Build a rich, structured content string from a scraped page dict.
+
+    Uses all available fields — title, meta, structured elements (headings /
+    paragraphs), body text, internal links, schema types, and tech signals
+    inferred from network requests — so the LLM receives the full picture.
+    """
+    import json as _json
+
+    parts: list[str] = []
+
+    # ── 1. Meta ──────────────────────────────────────────────────────────────
+    title = _clean_text(str(item.get("title") or ""))
+    meta_desc = _clean_text(str(item.get("meta_description") or ""))
+    meta_kw = _clean_text(str(item.get("meta_keywords") or ""))
+    if title:
+        parts.append(f"Title: {title}")
+    if meta_desc:
+        parts.append(f"Meta Description: {meta_desc}")
+    if meta_kw:
+        parts.append(f"Meta Keywords: {meta_kw}")
+
+    # ── 2. Structured elements (headings + paragraphs) ───────────────────────
+    elements = item.get("elements") or []
+    if isinstance(elements, list):
+        headings: list[str] = []
+        paragraphs: list[str] = []
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
+            etype = str(el.get("type") or "").lower()
+            econtent = _clean_text(str(el.get("content") or ""))
+            if not econtent:
+                continue
+            if etype in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                headings.append(f"[{etype.upper()}] {econtent}")
+            elif etype == "p":
+                paragraphs.append(econtent)
+        if headings:
+            parts.append("\nHeadings:\n" + "\n".join(headings))
+        if paragraphs:
+            # cap paragraphs to avoid blowing the token budget
+            para_block = " | ".join(paragraphs[:60])
+            parts.append(f"\nParagraphs:\n{para_block[:6_000]}")
+
+    # ── 3. Body text (primary content field) ─────────────────────────────────
+    raw_content = (
+        item.get(content_field)
+        or item.get("text")
+        or item.get("snapshot")
+        or item.get("body_text")
+        or ""
+    )
+    if isinstance(raw_content, (dict, list)):
+        raw_content = _json.dumps(raw_content, ensure_ascii=False)
+    body = _clean_text(str(raw_content))
+    if body:
+        parts.append(f"\nBody Text:\n{body[:10_000]}")
+
+    # ── 4. Internal links ─────────────────────────────────────────────────────
+    internal = item.get("links_internal") or []
+    if isinstance(internal, list) and internal:
+        parts.append("\nInternal Links:\n" + "\n".join(str(u) for u in internal[:30]))
+
+    # ── 5. Schema types ───────────────────────────────────────────────────────
+    schemas = item.get("schema_types") or []
+    if isinstance(schemas, list) and schemas:
+        parts.append("Schema Markup: " + ", ".join(str(s) for s in schemas))
+
+    # ── 6. Tech signals from network requests ────────────────────────────────
+    network = item.get("network_requests") or []
+    if isinstance(network, list) and network:
+        tech_signals: list[str] = []
+        checks = [
+            ("analytics.google.com", "Google Analytics"),
+            ("googletagmanager", "Google Tag Manager"),
+            ("firebase", "Firebase"),
+            ("sentry", "Sentry"),
+            ("clarity.ms", "Microsoft Clarity"),
+            ("penpencil", "PenPencil API"),
+            ("unleash", "Unleash (feature flags)"),
+            ("hotjar", "Hotjar"),
+            ("intercom", "Intercom"),
+            ("stripe", "Stripe"),
+        ]
+        for pattern, label in checks:
+            if any(pattern in str(r) for r in network):
+                tech_signals.append(label)
+        if tech_signals:
+            parts.append("Tech Stack (from network): " + ", ".join(tech_signals))
+
+    # ── 7. Images (CDN / count) ───────────────────────────────────────────────
+    images = item.get("image_urls") or []
+    if isinstance(images, list) and images:
+        cdns = set()
+        from urllib.parse import urlparse as _up
+        for img in images:
+            try:
+                cdns.add(_up(str(img)).netloc)
+            except Exception:
+                pass
+        parts.append(f"Images: {len(images)} total, CDNs: {', '.join(sorted(cdns))}")
+
+    return "\n".join(parts)
+
+
 async def _summarize_one_page(
     skill_id: str,
     item: dict[str, Any],
@@ -49,37 +156,37 @@ async def _summarize_one_page(
 ) -> str:
     """
     LLM-summarise a single scraped page dict immediately as it arrives.
-    Tries content_field first, then "text", then "snapshot" as fallbacks.
-    Returns the markdown string (or the raw content if LLM fails).
+    Builds a rich structured content string from all available fields so the
+    LLM has the full picture and preserves details faithfully.
+    Returns the markdown string (or the raw body text if the LLM fails).
     """
-    import json as _json
     page_url = str(item.get(url_field) or "")
-    raw_content = (
-        item.get(content_field)
-        or item.get("text")
-        or item.get("snapshot")
-        or ""
-    )
-    if isinstance(raw_content, (dict, list)):
-        raw_content = _json.dumps(raw_content, ensure_ascii=False)
-    page_content = _clean_text(str(raw_content))[:14_000]
+    page_content = _build_page_content(item, content_field)
     if not page_content:
         return ""
 
     prompt = "\n".join([
         f"Skill: {skill_id}",
         f"Page URL: {page_url}",
-        "Rewrite the page content into concise natural language, preserving all key information and removing redundant words/repetition.",
-        "Do not invent data. Keep it compact and faithful.",
+        "Convert the structured page data below into detailed, faithful Markdown notes.",
+        "Rules:",
+        "- Preserve ALL facts: titles, descriptions, headings, program details, people, links, tech signals, image info.",
+        "- Use bullet points and sections to organise the information clearly.",
+        "- Remove only pure duplication (e.g. repeated image alt texts).",
+        "- Do NOT invent or omit data. More detail is better than less.",
         "",
-        "Page content:",
+        "Page data:",
         page_content,
     ])
     try:
         res = await _ai.chat(
             prompt,
-            system_prompt="You compress webpage extraction text into faithful natural-language notes.",
-            temperature=0.2,
+            system_prompt=(
+                "You are a precise webpage data extractor. "
+                "Your job is to convert structured page data into detailed Markdown notes "
+                "that preserve every meaningful fact. Do not compress or omit information."
+            ),
+            temperature=0.1,
             provider="openai",
         )
         await _emit_summary_token_usage(
@@ -151,23 +258,31 @@ async def _summarize_multi_page(
         if not isinstance(item, dict):
             continue
         page_url = str(item.get(url_field) or f"(page {idx})")
-        page_content = _clean_text(str(item.get(content_field) or ""))[:14_000]
+        page_content = _build_page_content(item, content_field) if isinstance(item, dict) else _clean_text(str(item.get(content_field) or ""))[:20_000]
         if not page_content:
             continue
         prompt = "\n".join([
             f"Skill: {skill_id}",
             f"Page URL: {page_url}",
-            "Rewrite the page content into concise natural language, preserving all key information and removing redundant words/repetition.",
-            "Do not invent data. Keep it compact and faithful.",
+            "Convert the structured page data below into detailed, faithful Markdown notes.",
+            "Rules:",
+            "- Preserve ALL facts: titles, descriptions, headings, program details, people, links, tech signals.",
+            "- Use bullet points and sections to organise the information clearly.",
+            "- Remove only pure duplication (e.g. repeated image alt texts).",
+            "- Do NOT invent or omit data. More detail is better than less.",
             "",
-            "Page content:",
+            "Page data:",
             page_content,
         ])
         try:
             res = await _ai.chat(
                 prompt,
-                system_prompt="You compress webpage extraction text into faithful natural-language notes.",
-                temperature=0.2,
+                system_prompt=(
+                    "You are a precise webpage data extractor. "
+                    "Your job is to convert structured page data into detailed Markdown notes "
+                    "that preserve every meaningful fact. Do not compress or omit information."
+                ),
+                temperature=0.1,
             )
             await _emit_summary_token_usage(
                 on_progress,
@@ -211,23 +326,31 @@ async def _summarize_multi_page_entries(
         if not isinstance(item, dict):
             continue
         page_url = str(item.get(url_field) or f"(page {idx})")
-        page_content = _clean_text(str(item.get(content_field) or ""))[:14_000]
+        page_content = _build_page_content(item, content_field) if isinstance(item, dict) else _clean_text(str(item.get(content_field) or ""))[:20_000]
         if not page_content:
             continue
         prompt = "\n".join([
             f"Skill: {skill_id}",
             f"Page URL: {page_url}",
-            "Rewrite the page content into concise natural language, preserving all key information and removing redundant words/repetition.",
-            "Do not invent data. Keep it compact and faithful.",
+            "Convert the structured page data below into detailed, faithful Markdown notes.",
+            "Rules:",
+            "- Preserve ALL facts: titles, descriptions, headings, program details, people, links, tech signals.",
+            "- Use bullet points and sections to organise the information clearly.",
+            "- Remove only pure duplication (e.g. repeated image alt texts).",
+            "- Do NOT invent or omit data. More detail is better than less.",
             "",
-            "Page content:",
+            "Page data:",
             page_content,
         ])
         try:
             res = await _ai.chat(
                 prompt,
-                system_prompt="You compress webpage extraction text into faithful natural-language notes.",
-                temperature=0.2,
+                system_prompt=(
+                    "You are a precise webpage data extractor. "
+                    "Your job is to convert structured page data into detailed Markdown notes "
+                    "that preserve every meaningful fact. Do not compress or omit information."
+                ),
+                temperature=0.1,
                 provider="openai",
             )
             await _emit_summary_token_usage(
