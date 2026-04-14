@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
+import json
 from typing import Any
+from urllib.parse import urlparse
 
 from app.db import get_pool
 from app.repositories import scraped_pages_repository as pages_repo
@@ -17,6 +19,98 @@ from app.services.onboarding_crawl_service import (
     run_gmaps_serper_skill,
     update_onboarding_crawl_outputs,
 )
+
+_LEGAL_URL_HINTS = (
+    "/privacy",
+    "/terms",
+    "/refund",
+    "/cancellation",
+    "/policy",
+)
+
+
+def _normalize_url(url: str) -> str:
+    return (str(url or "").strip().rstrip("/")).lower()
+
+
+def _origin_home(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    return str(url or "").strip().rstrip("/")
+
+
+def _is_legal_url(url: str) -> bool:
+    u = _normalize_url(url)
+    return any(hint in u for hint in _LEGAL_URL_HINTS)
+
+
+def _safe_raw(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("raw")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _pick_rows_for_summary(rows: list[dict[str, Any]], website_url: str, limit: int = 5) -> list[dict[str, Any]]:
+    """
+    Prefer signal-rich pages for onboarding:
+    - force include homepage when available
+    - avoid legal/policy pages
+    - keep recent ordering from DB query
+    """
+    if not rows:
+        return []
+
+    homepage = _origin_home(website_url)
+    picked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # 1) Homepage first (critical for target + CTA extraction)
+    for row in rows:
+        row_url = str(row.get("url") or _safe_raw(row).get("url") or "")
+        norm = _normalize_url(row_url)
+        if norm and norm == _normalize_url(homepage):
+            picked.append(row)
+            seen.add(norm)
+            break
+
+    # 2) Non-legal pages with non-empty markdown
+    for row in rows:
+        row_url = str(row.get("url") or _safe_raw(row).get("url") or "")
+        norm = _normalize_url(row_url)
+        if not norm or norm in seen:
+            continue
+        markdown = str(row.get("markdown") or "").strip()
+        if not markdown:
+            continue
+        if _is_legal_url(row_url):
+            continue
+        picked.append(row)
+        seen.add(norm)
+        if len(picked) >= limit:
+            return picked
+
+    # 3) Fallback: allow legal pages if not enough content pages
+    for row in rows:
+        row_url = str(row.get("url") or _safe_raw(row).get("url") or "")
+        norm = _normalize_url(row_url)
+        if not norm or norm in seen:
+            continue
+        markdown = str(row.get("markdown") or "").strip()
+        if not markdown:
+            continue
+        picked.append(row)
+        seen.add(norm)
+        if len(picked) >= limit:
+            break
+    return picked
 
 
 @register_task_stream("crawl")
@@ -106,20 +200,28 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 max_pages=5,
                 parallel=True,
                 max_parallel_pages=5,
+                skip_urls=[
+                    f"{_origin_home(website_url)}/privacy",
+                    f"{_origin_home(website_url)}/terms",
+                    f"{_origin_home(website_url)}/refund",
+                ],
                 onboarding_id=onboarding_id,
             )
         except RuntimeError as exc:
             scrape_error = str(exc)
 
-        # Fetch the 5 most recently stored pages for this URL and join markdown.
+        # Fetch recent rows and pick summary pages:
+        # homepage + non-legal content pages first.
         await send("stage", stage="summarizing", label="Building web summary")
         pool = get_pool()
         async with pool.acquire() as conn:
-            rows = await pages_repo.find_by_base_url(conn, website_url, limit=5)
+            rows = await pages_repo.find_by_base_url(conn, website_url, limit=30)
+
+        selected_rows = _pick_rows_for_summary(rows, website_url, limit=5)
 
         parts = [
             str(row["markdown"] or "").strip()
-            for row in rows
+            for row in selected_rows
             if str(row.get("markdown") or "").strip()
         ]
         web_summary = "\n\n".join(parts) if parts else f"Website: {website_url}"

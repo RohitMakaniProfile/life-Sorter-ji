@@ -36,6 +36,7 @@ async def run_scraper(
     max_depth: int | None = None,
     parallel: bool = True,
     max_parallel_pages: int = 5,
+    skip_urls: list[str] | None = None,
     # Optional context — all may be None
     onboarding_id: str | None = None,
     conversation_id: str | None = None,
@@ -66,6 +67,8 @@ async def run_scraper(
     }
     if max_depth is not None:
         args["maxDepth"] = max_depth
+    if skip_urls:
+        args["skipUrls"] = [str(u).strip() for u in skip_urls if str(u).strip()]
 
     input_json = json.dumps({"url": url, "args": args}, ensure_ascii=False)
 

@@ -8,6 +8,52 @@ from .models import ProgressCb
 from .utils import _get_by_path, _clean_text
 
 
+def _extract_page_content(item: dict[str, Any], content_field: str) -> str:
+    """
+    Build robust page content text for summarization across scraper schemas.
+    Priority:
+      1) explicit content field / text / snapshot / body_text
+      2) element-level content extracted by scraper
+      3) title + meta_description fallback
+    """
+    import json as _json
+
+    raw_content = (
+        item.get(content_field)
+        or item.get("text")
+        or item.get("snapshot")
+        or item.get("body_text")
+        or ""
+    )
+    if isinstance(raw_content, (dict, list)):
+        raw_content = _json.dumps(raw_content, ensure_ascii=False)
+    text = _clean_text(str(raw_content))
+    if text:
+        return text
+
+    # Fallback for crawler payloads that keep most text inside elements[].
+    elements = item.get("elements")
+    if isinstance(elements, list) and elements:
+        lines: list[str] = []
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
+            et = str(el.get("type") or "").strip()
+            content = _clean_text(str(el.get("content") or ""))
+            if not content:
+                continue
+            lines.append(f"{et}: {content}" if et else content)
+            if len(lines) >= 120:
+                break
+        if lines:
+            return "\n".join(lines)
+
+    title = _clean_text(str(item.get("title") or ""))
+    desc = _clean_text(str(item.get("meta_description") or ""))
+    fallback = "\n".join([v for v in [title, desc] if v]).strip()
+    return fallback
+
+
 async def _emit_summary_token_usage(
     on_progress: ProgressCb | None,
     *,
@@ -52,17 +98,8 @@ async def _summarize_one_page(
     Tries content_field first, then "text", then "snapshot" as fallbacks.
     Returns the markdown string (or the raw content if LLM fails).
     """
-    import json as _json
     page_url = str(item.get(url_field) or "")
-    raw_content = (
-        item.get(content_field)
-        or item.get("text")
-        or item.get("snapshot")
-        or ""
-    )
-    if isinstance(raw_content, (dict, list)):
-        raw_content = _json.dumps(raw_content, ensure_ascii=False)
-    page_content = _clean_text(str(raw_content))[:14_000]
+    page_content = _extract_page_content(item, content_field)[:14_000]
     if not page_content:
         return ""
 
