@@ -74,6 +74,17 @@
 
 
 
+Product Claw ->
+
+outcome + domain + task (selected claw) user selected
+/claw-onboarding  api call
+user selected + previous onboarding (web_url + scrap data)  -> onboarding row (4 fields)
+
+
+
+onboarding_crawl.py -> run_scraper
+current playwright
+new google vision
 
 
 
