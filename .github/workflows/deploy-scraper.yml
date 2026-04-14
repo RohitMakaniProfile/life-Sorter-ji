@@ -32,14 +32,46 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Set variables
+        env:
+          _VISION_KEY_DEV: ${{ secrets.SCRAPER_GOOGLE_VISION_API_KEY_DEV }}
+          _VISION_KEY_PROD: ${{ secrets.SCRAPER_GOOGLE_VISION_API_KEY_PROD }}
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
             echo "SERVICE=ikshan-scraper-dev" >> $GITHUB_ENV
             echo "REPO=ikshan-scraper-dev" >> $GITHUB_ENV
+            echo "APP_ENV=development" >> $GITHUB_ENV
+            printf 'GOOGLE_VISION_API_KEY=%s\n' "$_VISION_KEY_DEV" >> $GITHUB_ENV
           else
             echo "SERVICE=ikshan-scraper-prod" >> $GITHUB_ENV
             echo "REPO=ikshan-scraper-prod" >> $GITHUB_ENV
+            echo "APP_ENV=production" >> $GITHUB_ENV
+            printf 'GOOGLE_VISION_API_KEY=%s\n' "$_VISION_KEY_PROD" >> $GITHUB_ENV
           fi
+
+      - name: Render env-vars file
+        run: |
+          python3 - <<'PY'
+          import os
+
+          vision_key = os.environ.get("GOOGLE_VISION_API_KEY", "")
+          app_env    = os.environ.get("APP_ENV", "development")
+
+          mapping = {
+            "GOOGLE_VISION_API_KEY": vision_key,
+            "ENVIRONMENT": app_env,
+            "PORT": "8081",
+          }
+
+          out_path = "/tmp/scraper-env.yaml"
+          with open(out_path, "w", encoding="utf-8") as f:
+            for k, v in sorted(mapping.items()):
+              v = str(v).replace("'", "''")
+              f.write(f"{k}: '{v}'\n")
+          print(f"wrote {out_path} with {len(mapping)} vars")
+          PY
+        env:
+          GOOGLE_VISION_API_KEY: ${{ env.GOOGLE_VISION_API_KEY }}
+          APP_ENV: ${{ env.APP_ENV }}
 
       - name: Build & Push Docker Image
         run: |
@@ -54,9 +86,10 @@ jobs:
             --image asia-south1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/$REPO/app:${{ github.sha }} \
             --region asia-south1 \
             --platform managed \
-            --timeout=3600 \
+            --timeout=300 \
             --memory=2Gi \
-            --cpu=1 \
-            --concurrency=1 \
+            --cpu=2 \
+            --concurrency=4 \
             --min-instances=0 \
+            --env-vars-file /tmp/scraper-env.yaml \
             --allow-unauthenticated

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 PORT="${PORT:-8081}"
 HOST="${HOST:-0.0.0.0}"
-GOOGLE_VISION_API_KEY="${GOOGLE_VISION_API_KEY:-AIzaSyBwbaOLKjW0KdZhcngqIfbkH8k5KMAa-uE}"
+GOOGLE_VISION_API_KEY="${GOOGLE_VISION_API_KEY:-}"  # set via env or GitHub Actions secret
 
 export GOOGLE_VISION_API_KEY
 
