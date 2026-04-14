@@ -40,6 +40,16 @@ except ImportError:
     async_playwright = None
     PWTimeoutAsync = Exception
 
+# Optional OCR support via Google Vision API
+try:
+    from ocr_helper import ocr_page_sync, ocr_page_async, merge_ocr_into_elements
+except ImportError:
+    def ocr_page_sync(page, api_key=None): return ""  # noqa: E731
+    async def ocr_page_async(page, api_key=None): return ""  # noqa: E731
+    def merge_ocr_into_elements(elements, ocr_text): return elements  # noqa: E731
+
+_OCR_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", "").strip() or None
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers (duplicated from bs4_scraper for standalone use)
@@ -653,6 +663,12 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
             detect_tech_stack_from_page(page), script_samples
         )
 
+        # OCR: screenshot the page and extract text via Google Vision API
+        # Captures image-rendered content (stats, logos, banners) missed by DOM extraction
+        ocr_text = ocr_page_sync(page, _OCR_API_KEY) if _OCR_API_KEY else ""
+        if ocr_text:
+            elements = merge_ocr_into_elements(elements, ocr_text)
+
         return {
             "url": url_norm,
             "depth": depth,
@@ -661,6 +677,8 @@ def _scrape_single_page(context, url_norm: str, depth: int, base_domain: str,
             "meta_description": meta_desc,
             "meta_keywords": meta_keywords,
             "elements": elements,
+            "body_text": body_text,
+            "ocr_text": ocr_text,
             "links_internal": internal_links,
             "schema_types": parse_schema_types(html),
             "canonical": canonical,
@@ -828,6 +846,10 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
 
         internal_links, _ = parse_links(html, url_norm, base_domain)
         body_text = extract_text_from_html(html)
+
+        # OCR: screenshot the page and extract text via Google Vision API
+        ocr_text = await ocr_page_async(page, _OCR_API_KEY) if _OCR_API_KEY else ""
+
         try:
             data = await page.evaluate(_ELEMENTS_EVAL_JS, 500)
             if isinstance(data, list):
@@ -845,6 +867,8 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
             elements = []
         if not elements:
             elements = extract_content_elements(html)
+        if ocr_text:
+            elements = merge_ocr_into_elements(elements, ocr_text)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
         tech_stack = merge_retire_into_tech_stack(
             await detect_tech_stack_from_page_async(page), script_samples
@@ -858,6 +882,8 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
             "meta_description": meta_desc,
             "meta_keywords": meta_keywords,
             "elements": elements,
+            "body_text": body_text,
+            "ocr_text": ocr_text,
             "links_internal": internal_links,
             "schema_types": parse_schema_types(html),
             "canonical": canonical,
@@ -1306,6 +1332,11 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                     detect_tech_stack_from_page(page), _script_samples
                 )
 
+                # OCR: screenshot the page and extract text via Google Vision API
+                ocr_text = ocr_page_sync(page, _OCR_API_KEY) if _OCR_API_KEY else ""
+                if ocr_text:
+                    elements = merge_ocr_into_elements(elements, ocr_text)
+
                 page_record = {
                     "url": url_norm,
                     "depth": depth,
@@ -1314,6 +1345,8 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                     "meta_description": meta_desc,
                     "meta_keywords": meta_keywords,
                     "elements": elements,
+                    "body_text": body_text,
+                    "ocr_text": ocr_text,
                     "links_internal": internal_links,
                     "links_external": external_links,
                     "schema_types": parse_schema_types(html),

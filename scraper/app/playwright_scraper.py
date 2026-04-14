@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -34,6 +35,16 @@ try:
 except ImportError:
     async_playwright = None
     PWTimeoutAsync = Exception
+
+# Optional OCR support via Google Vision API
+try:
+    from ocr_helper import ocr_page_sync, ocr_page_async, merge_ocr_into_elements
+except ImportError:
+    def ocr_page_sync(page, api_key=None): return ""  # noqa: E731
+    async def ocr_page_async(page, api_key=None): return ""  # noqa: E731
+    def merge_ocr_into_elements(elements, ocr_text): return elements  # noqa: E731
+
+_OCR_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", "").strip() or None
 
 
 SKIP_EXTENSIONS = {
@@ -421,6 +432,11 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
         if not elements:
             elements = extract_content_elements(html)
 
+        # OCR: screenshot the page and extract text via Google Vision API
+        ocr_text = await ocr_page_async(page, _OCR_API_KEY) if _OCR_API_KEY else ""
+        if ocr_text:
+            elements = merge_ocr_into_elements(elements, ocr_text)
+
         internal_links, _ = parse_links(html, url_norm, base_domain)
         content_hash = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
 
@@ -432,6 +448,8 @@ async def _scrape_single_page_async(context, url_norm: str, depth: int, base_dom
             "meta_description": "",
             "meta_keywords": "",
             "elements": elements,
+            "body_text": body_text,
+            "ocr_text": ocr_text,
             "links_internal": internal_links,
             "schema_types": parse_schema_types(html),
             "canonical": "",
