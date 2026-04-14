@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getProducts } from '../../../api';
+import { apiPost } from '../../../api/http';
+import { API_ROUTES } from '../../../api/routes';
 
 export default function ProductsSidebar({ isOpen, onClose }) {
   const [loading, setLoading] = useState(false);
@@ -27,7 +29,16 @@ export default function ProductsSidebar({ isOpen, onClose }) {
     };
   }, [isOpen]);
 
-  const handleProductClick = (item) => {
+  const handleProductClick = async (item) => {
+    onClose();
+
+    let onboarding = null;
+    try {
+      onboarding = await apiPost(API_ROUTES.onboarding.fromProduct, { product_id: item?.id });
+    } catch {
+      // Fall back to basic flow without pre-created onboarding
+    }
+
     window.dispatchEvent(
       new CustomEvent('onboarding-product-select', {
         detail: {
@@ -35,10 +46,10 @@ export default function ProductsSidebar({ isOpen, onClose }) {
           outcome: item?.outcome,
           domain: item?.domain,
           task: item?.task,
+          onboarding,
         },
       }),
     );
-    onClose();
   };
 
   return (

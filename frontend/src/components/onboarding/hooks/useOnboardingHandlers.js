@@ -459,12 +459,103 @@ export function useOnboardingHandlers({
     setGbpValue('');
   }, [setSelectedTask, clearPostTask, setUrlValue, setGbpValue]);
 
+  // Called when user clicks a claw product after the API pre-creates the onboarding
+  const handleClawSelect = useCallback(async ({ onboarding, outcomeObj, domain, task }) => {
+    const oid = String(onboarding?.onboarding_id || onboarding?.id || '').trim();
+    if (!oid) {
+      // API failed — fall back to normal task click
+      handleTaskClick(task, outcomeObj, domain);
+      return;
+    }
+
+    // Point the session at the pre-created onboarding
+    onboardingIdRef.current = oid;
+
+    setSelectedOutcome(outcomeObj);
+    setSelectedDomain(domain);
+    setSelectedTask(task);
+
+    const websiteUrl = String(onboarding.website_url || '').trim();
+    if (websiteUrl) setUrlValue(websiteUrl);
+
+    // Restore scale answers from DB format { [question_id]: value } → state format { [index]: value }
+    const dbAnswers = onboarding.scale_answers || {};
+    if (Object.keys(dbAnswers).length > 0) {
+      const indexedAnswers = {};
+      STATIC_SCALE_QUESTIONS.forEach((q, i) => {
+        if (dbAnswers[q.id] != null) indexedAnswers[i] = dbAnswers[q.id];
+      });
+      if (Object.keys(indexedAnswers).length > 0) setScaleAnswers(indexedAnswers);
+    }
+
+    const webScrapDone = Boolean(onboarding.web_scrap_done);
+    const hasScaleAnswers = Object.keys(dbAnswers).length > 0;
+
+    const runRca = async () => {
+      setRcaCalling(true);
+      try {
+        const res = await rcaNextQuestion({ onboarding_id: oid });
+        if (res?.status === 'question' && res?.question) {
+          setCurrentQuestion(res.question);
+          setQuestionIndex(0);
+          setTimeout(() => {
+            setShowAnalysisTransition(false);
+            setShowDiagnostic(true);
+            setRcaCalling(false);
+            setTimeout(scrollToEnd, 50);
+          }, 800);
+        } else if (res?.status === 'complete') {
+          setShowAnalysisTransition(false);
+          setRcaCalling(false);
+          handleStartPlaybook();
+        } else {
+          throw new Error('Unexpected diagnostic response');
+        }
+      } catch {
+        setShowAnalysisTransition(false);
+        setRcaCalling(false);
+        setError('Failed to start diagnostic.');
+      }
+    };
+
+    if (webScrapDone) {
+      // Scraping already done — skip crawl, go straight to RCA
+      setShowUrlForm(false);
+      setShowDeeperDive(false);
+      setShowAnalysisTransition(true);
+      await runRca();
+    } else if (websiteUrl && hasScaleAnswers) {
+      // Have URL + scale answers — start crawl then RCA, skip UI forms
+      startCrawlForSession(oid, { websiteUrl }).catch(() => {});
+      setShowUrlForm(false);
+      setShowDeeperDive(false);
+      setShowAnalysisTransition(true);
+      try {
+        await waitForCrawlDone(90000);
+      } catch {
+        // Proceed to RCA even if crawl timed out
+      }
+      await runRca();
+    } else {
+      // No previous URL/answers — open URL form normally
+      handleTaskClick(task, outcomeObj, domain);
+    }
+  }, [
+    onboardingIdRef, handleTaskClick, handleStartPlaybook,
+    setSelectedOutcome, setSelectedDomain, setSelectedTask,
+    setUrlValue, setScaleAnswers,
+    setShowUrlForm, setShowDeeperDive, setShowAnalysisTransition,
+    setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic,
+    setError, startCrawlForSession, waitForCrawlDone, scrollToEnd,
+  ]);
+
   return {
     startNewJourney,
     handleOnboardingFieldUpdate,
     handleOutcomeClick,
     handleDomainClick,
     handleTaskClick,
+    handleClawSelect,
     handleUrlSubmit,
     handleUrlSkip,
     handleScaleSelect,

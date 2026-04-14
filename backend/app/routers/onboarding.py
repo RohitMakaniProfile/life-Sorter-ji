@@ -294,6 +294,118 @@ class OnboardingResetRequest(BaseModel):
     onboarding_id: str
 
 
+class CreateOnboardingFromProductRequest(BaseModel):
+    product_id: str
+
+
+class CreateOnboardingFromProductResponse(BaseModel):
+    onboarding_id: str
+    id: str
+    outcome: Optional[str] = None
+    domain: Optional[str] = None
+    task: Optional[str] = None
+    website_url: Optional[str] = None
+    scale_answers: Optional[dict[str, Any]] = None
+    web_scrap_done: bool = False
+
+
+@router.post("/from-product", response_model=CreateOnboardingFromProductResponse)
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def create_onboarding_from_product(
+    request: Request,
+    body: CreateOnboardingFromProductRequest = Body(...),
+) -> CreateOnboardingFromProductResponse:
+    """
+    Create a new onboarding for a claw product.
+
+    - Reads outcome/domain/task from the product row.
+    - Copies website_url and scale_answers from the user's most recent onboarding that has a URL.
+    - Sets web_scrap_done=True when 5+ scraped_pages rows exist for that URL (crawling can be skipped).
+    """
+    from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
+    from app.repositories import products_repository as products_repo
+    from app.repositories import scraped_pages_repository as scraped_pages_repo
+
+    product_id = (body.product_id or "").strip()
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+
+    jwt_user = get_request_user(request)
+    user_id = str(jwt_user.get("id") or "").strip() if jwt_user else None
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        product = await products_repo.find_by_id(conn, product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        outcome = str(product.get("outcome") or "")
+        domain = str(product.get("domain") or "")
+        task = str(product.get("task") or "")
+
+        # Copy website_url and scale_answers from previous onboarding if available
+        website_url: Optional[str] = None
+        scale_answers: Optional[dict[str, Any]] = None
+        if user_id:
+            prev = await onboarding_repo.find_website_scale_by_user(conn, user_id)
+            if prev:
+                website_url = str(prev.get("website_url") or "").strip() or None
+                raw_sa = prev.get("scale_answers")
+                if isinstance(raw_sa, dict) and raw_sa:
+                    scale_answers = raw_sa
+                elif isinstance(raw_sa, str):
+                    try:
+                        parsed_sa = json.loads(raw_sa)
+                        if isinstance(parsed_sa, dict) and parsed_sa:
+                            scale_answers = parsed_sa
+                    except Exception:
+                        pass
+
+        # Decide if crawling can be skipped
+        web_scrap_done = False
+        if website_url:
+            page_count = await scraped_pages_repo.count_by_base_url(conn, website_url)
+            web_scrap_done = page_count >= 5
+
+        # Build onboarding row
+        cols = ["outcome", "domain", "task", "web_scrap_done"]
+        vals: list[Any] = [outcome, domain, task, web_scrap_done]
+
+        if user_id:
+            cols.append("user_id")
+            vals.append(user_id)
+        if website_url:
+            cols.append("website_url")
+            vals.append(website_url)
+        if scale_answers:
+            cols.append("scale_answers")
+            vals.append(json.dumps(scale_answers))
+
+        row = await onboarding_repo.insert_with_fields(conn, cols, vals)
+
+    row_dict = dict(row)
+    oid = str(row_dict.get("id") or "")
+
+    sa = row_dict.get("scale_answers")
+    if isinstance(sa, str):
+        try:
+            sa = json.loads(sa)
+        except Exception:
+            sa = None
+
+    return CreateOnboardingFromProductResponse(
+        onboarding_id=oid,
+        id=oid,
+        outcome=outcome or None,
+        domain=domain or None,
+        task=task or None,
+        website_url=website_url,
+        scale_answers=sa if isinstance(sa, dict) else None,
+        web_scrap_done=web_scrap_done,
+    )
+
+
 @router.post("/reset")
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def reset_onboarding(

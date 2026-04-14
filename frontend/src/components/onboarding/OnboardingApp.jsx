@@ -132,8 +132,12 @@ export default function OnboardingApp() {
       const domain = String(detail.domain || '').trim();
       const task = String(detail.task || '').trim();
       if (!outcomeId || !domain || !task) return;
-      const outcome = outcomeOptions.find((o) => o.id === outcomeId) || { id: outcomeId, text: outcomeId, subtext: '' };
-      handlers.handleTaskClick(task, outcome, domain);
+      const outcomeObj = outcomeOptions.find((o) => o.id === outcomeId) || { id: outcomeId, text: outcomeId, subtext: '' };
+      if (detail.onboarding) {
+        handlers.handleClawSelect({ onboarding: detail.onboarding, outcomeObj, domain, task });
+      } else {
+        handlers.handleTaskClick(task, outcomeObj, domain);
+      }
     };
     window.addEventListener('onboarding-product-select', onProductSelect);
     return () => window.removeEventListener('onboarding-product-select', onProductSelect);

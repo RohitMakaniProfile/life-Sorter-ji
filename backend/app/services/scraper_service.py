@@ -111,7 +111,7 @@ async def run_scraper(
         markdown = await _summarize_one_page(
             "scrape-playwright",
             page,
-            content_field="snapshot",
+            content_field="body_text",
             url_field="url",
             on_progress=_skill_progress,
         )

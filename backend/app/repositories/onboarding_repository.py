@@ -16,6 +16,7 @@ _RETURNING_COLS = (
     "website_url", "gbp_url", "scale_answers", "business_profile",
     "web_summary", "rca_qa", "questions_answers",
     "crawl_cache_key", "onboarding_completed_at",
+    "web_scrap_done",
     "created_at", "updated_at",
 )
 
@@ -609,4 +610,18 @@ async def update_crawl_outputs(conn, onboarding_id: str, web_summary: str, busin
         [web_summary, business_profile, onboarding_id],
     )
     await conn.execute(q.sql, *q.params)
+
+
+async def find_website_scale_by_user(conn, user_id: str) -> Any:
+    """Return website_url and scale_answers from the latest onboarding row that has a URL for this user."""
+    q = build_query(
+        PostgreSQLQuery.from_(onboarding_t)
+        .select(onboarding_t.website_url, onboarding_t.scale_answers)
+        .where(onboarding_t.user_id == Parameter("%s"))
+        .where(onboarding_t.website_url.isnotnull())
+        .orderby(onboarding_t.created_at, order=Order.desc)
+        .limit(1),
+        [user_id],
+    )
+    return await conn.fetchrow(q.sql, *q.params)
 

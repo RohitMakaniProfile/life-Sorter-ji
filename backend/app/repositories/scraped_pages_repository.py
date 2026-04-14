@@ -190,6 +190,28 @@ async def find_latest_by_exact_url(conn, url: str) -> Any | None:
     return rows[0] if rows else None
 
 
+async def count_by_base_url(conn, base_url: str) -> int:
+    """Count scraped_pages rows whose url starts with the same origin."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(str(base_url or "").strip())
+        if parsed.scheme and parsed.netloc:
+            origin_prefix = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        else:
+            origin_prefix = str(base_url or "").strip().rstrip("/")
+    except Exception:
+        origin_prefix = str(base_url or "").strip().rstrip("/")
+
+    if not origin_prefix:
+        return 0
+
+    result = await conn.fetchval(
+        "SELECT COUNT(*) FROM scraped_pages WHERE url LIKE $1",
+        origin_prefix + "%",
+    )
+    return int(result or 0)
+
+
 async def find_by_skill_call_id(conn, skill_call_id: int) -> list[Any]:
     q = build_query(
         PostgreSQLQuery.from_(scraped_pages_t)

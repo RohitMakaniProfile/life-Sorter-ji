@@ -95,6 +95,7 @@ export const API_ROUTES = {
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
     playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
     reset: '/api/v1/onboarding/reset',
+    fromProduct: '/api/v1/onboarding/from-product',
   },
   aiChat: {
     stream: '/api/v1/ai-chat/stream',
