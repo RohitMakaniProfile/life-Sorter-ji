@@ -32,15 +32,14 @@ from .utils import (
 from .summarizer import (
     _summarize_single,
     _summarize_multi_page,
-    _summarize_multi_page_entries,
 )
 from .platform_scout import run_platform_scout
-from .scraper_service import run_playwright_skill
 
 
 async def _stream_skill_subprocess_stdout(
     proc: asyncio.subprocess.Process,
     on_progress: ProgressCb | None,
+    on_page: PageCb | None = None,
 ) -> tuple[str, bytes, str, int]:
     """
     Read skill subprocess stdout line-by-line so PROGRESS: events reach
@@ -55,13 +54,24 @@ async def _stream_skill_subprocess_stdout(
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
+    pending = ""
     while True:
-        line_b = await proc.stdout.readline()
-        if not line_b:
+        chunk_b = await proc.stdout.read(64 * 1024)
+        if not chunk_b:
             break
-        chunk = line_b.decode("utf-8", errors="replace")
-        stdout_parts.append(chunk)
-        for raw in chunk.splitlines():
+        chunk = pending + chunk_b.decode("utf-8", errors="replace")
+        stdout_parts.append(chunk_b.decode("utf-8", errors="replace"))
+        lines = chunk.splitlines(keepends=True)
+        pending = ""
+
+        complete_lines: list[str] = []
+        for ln in lines:
+            if ln.endswith("\n") or ln.endswith("\r"):
+                complete_lines.append(ln.rstrip("\r\n"))
+            else:
+                pending = ln
+
+        for raw in complete_lines:
             t = raw.strip()
             if not t:
                 continue
@@ -69,6 +79,12 @@ async def _stream_skill_subprocess_stdout(
                 raw_json = t[len("PROGRESS:"):].strip()
                 meta = _parse_progress_meta(raw_json)
                 meta["streamKind"] = _progress_stream_kind(meta)
+                if on_page is not None and meta.get("streamKind") == "data":
+                    try:
+                        await on_page(meta)
+                    except Exception:
+                        # Never break stream processing due to page callback failures.
+                        pass
                 event_name = str(meta.get("event", "info"))
                 message_text = str(meta.get("url") or meta.get("message") or event_name)
                 await _emit(on_progress, {
@@ -77,6 +93,26 @@ async def _stream_skill_subprocess_stdout(
                 })
             else:
                 result_line = t
+
+    if pending.strip():
+        t = pending.strip()
+        if t.startswith("PROGRESS:"):
+            raw_json = t[len("PROGRESS:"):].strip()
+            meta = _parse_progress_meta(raw_json)
+            meta["streamKind"] = _progress_stream_kind(meta)
+            if on_page is not None and meta.get("streamKind") == "data":
+                try:
+                    await on_page(meta)
+                except Exception:
+                    pass
+            event_name = str(meta.get("event", "info"))
+            message_text = str(meta.get("url") or meta.get("message") or event_name)
+            await _emit(on_progress, {
+                "stage": "running", "type": "info",
+                "message": message_text, "meta": meta,
+            })
+        else:
+            result_line = t
 
     stderr_data = await stderr_task
     exit_code = await proc.wait()
@@ -101,42 +137,6 @@ async def run_skill(
     # ── Platform scout (pure-Python, no subprocess) ───────────────────────
     if skill_id == "platform-scout":
         return await run_platform_scout(message, args, on_progress)
-
-    # ── Playwright scraper (remote microservice + scraped_pages table) ────
-    if skill_id == "scrape-playwright":
-        result = await run_playwright_skill(
-            message=message,
-            args=args or {},
-            on_progress=on_progress,
-            on_page=on_page,
-        )
-        # When on_page is provided, each page is already LLM-summarised and stored
-        # in DB by the caller's callback — skip post-run summarisation entirely.
-        if on_page is None and result.status == "ok" and result.data is not None and manifest.summary_mode in ("single", "multi_page"):
-            try:
-                if manifest.summary_mode == "multi_page":
-                    page_entries, summary_text = await _summarize_multi_page_entries(
-                        skill_id=skill_id,
-                        data=result.data,
-                        array_path=manifest.summary_array_path,
-                        content_field=manifest.summary_content_field,
-                        url_field=manifest.summary_url_field,
-                        fallback_text=result.text,
-                        on_progress=on_progress,
-                    )
-                    result.text = summary_text
-                    if page_entries and isinstance(result.data, dict):
-                        result.data = {**result.data, "_pageEntries": page_entries}
-                else:
-                    result.text = await _summarize_single(
-                        skill_id=skill_id,
-                        data=result.data,
-                        fallback_text=result.text,
-                        on_progress=on_progress,
-                    )
-            except Exception:
-                pass
-        return result
 
     # ── Generic subprocess skill ──────────────────────────────────────────
     script_path = manifest.directory / manifest.entry
@@ -169,7 +169,7 @@ async def run_skill(
     await proc.stdin.drain()
     proc.stdin.close()
 
-    stdout_text, stderr_data, result_line, exit_code = await _stream_skill_subprocess_stdout(proc, on_progress)
+    stdout_text, stderr_data, result_line, exit_code = await _stream_skill_subprocess_stdout(proc, on_progress, on_page)
     stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
 
     text = stdout_text.strip()
@@ -197,7 +197,12 @@ async def run_skill(
     if not text and err:
         text = ""
 
-    if status == "ok" and data is not None and manifest.summary_mode in ("single", "multi_page"):
+    if (
+        on_page is None
+        and status == "ok"
+        and data is not None
+        and manifest.summary_mode in ("single", "multi_page")
+    ):
         try:
             if manifest.summary_mode == "multi_page":
                 text = await _summarize_multi_page(
