@@ -18,6 +18,7 @@ from app.repositories import (
     token_usage_repository as token_repo,
     onboarding_repository as onboarding_repo,
     session_links_repository as session_links_repo,
+    scraped_pages_repository as scraped_pages_repo,
 )
 from app.services import form_flow_service
 from app.utils.token_cost import _compute_cost_usd_inr
@@ -585,18 +586,34 @@ async def set_skill_call_result(skill_call_id: str, state: str, text: str | None
         output = _to_obj(row["output"], [])
         if not isinstance(output, list):
             output = []
+
+        # ── Page entries: persist to scraped_pages, NOT to skill_calls.output ──
         result_data = data
         if isinstance(data, dict):
             page_entries = data.get("_pageEntries")
             if isinstance(page_entries, list):
+                # Update markdown on rows already inserted by scraper_service
+                # (they were inserted with empty markdown; now we fill it in)
+                conversation_id = str(row.get("conversation_id") or "").strip() or None
+                message_id_val = str(row.get("message_id") or "").strip() or None
                 for item in page_entries:
                     if not isinstance(item, dict):
                         continue
-                    output.append({
-                        "type": "page", "url": str(item.get("url") or ""),
-                        "raw": item.get("raw"), "text": str(item.get("text") or ""), "at": now_iso(),
-                    })
+                    pg_url = str(item.get("url") or "").strip()
+                    pg_markdown = str(item.get("text") or "").strip()
+                    if pg_url and pg_markdown:
+                        try:
+                            await conn.execute(
+                                "UPDATE scraped_pages SET markdown = $1, updated_at = NOW() "
+                                "WHERE url = $2 AND skill_call_id = $3::bigint",
+                                pg_markdown, pg_url, int(skill_call_id),
+                            )
+                        except Exception:
+                            pass
+                # Strip _pageEntries from result_data so it is not stored in skill_calls
                 result_data = {k: v for k, v in data.items() if k != "_pageEntries"}
+
+        # ── skill_calls.output: only progress events + final result (no pages) ──
         if text is not None or result_data is not None:
             output.append({"type": "result", "summary": text, "text": text, "data": result_data, "at": now_iso()})
 
@@ -679,6 +696,20 @@ def _normalize_url_for_match(url: str) -> str:
     return str(url or "").strip().lower().rstrip("/")
 
 
+def _base_origin(url: str) -> str:
+    from urllib.parse import urlparse
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    except Exception:
+        pass
+    return ""
+
+
 def _last_result_data_from_output(output: Any) -> Any:
     for entry in reversed(output if isinstance(output, list) else []):
         if isinstance(entry, dict) and entry.get("type") == "result":
@@ -687,6 +718,7 @@ def _last_result_data_from_output(output: Any) -> Any:
 
 
 def _extract_pages_from_output(output: Any) -> list[dict[str, Any]]:
+    """Legacy helper — kept for any callers still reading skill_calls.output."""
     out: list[dict[str, Any]] = []
     rows = output if isinstance(output, list) else []
     for entry in rows:
@@ -707,63 +739,60 @@ def _extract_pages_from_output(output: Any) -> list[dict[str, Any]]:
 
 
 async def find_latest_scrape_cache_by_url(url: str, *, limit: int = 250) -> dict[str, Any] | None:
-    target = _normalize_url_for_match(url)
-    if not target:
+    """
+    Return a minimal cache object {id, data, updatedAt} for a single-page scrape
+    if the URL has been scraped before.  Reads from scraped_pages table directly.
+    """
+    if not url:
         return None
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await skill_repo.find_recent_playwright_done(conn, limit)
-    for r in rows:
-        in_obj = _to_obj(r["input"], {})
-        args = in_obj.get("args") if isinstance(in_obj, dict) and isinstance(in_obj.get("args"), dict) else {}
-        row_url = _normalize_url_for_match(str(args.get("url") or ""))
-        if row_url != target:
-            continue
-        out = _to_obj(r["output"], [])
-        data = _last_result_data_from_output(out)
-        if data is None:
-            continue
-        return {"id": str(r["id"]), "data": data, "updatedAt": r["updated_at"]}
-    return None
-
-
-def _base_origin(url: str) -> str:
-    from urllib.parse import urlparse
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
+        row = await scraped_pages_repo.find_latest_by_exact_url(conn, url)
+    if row is None:
+        return None
+    # Re-assemble a minimal data structure matching what scraper_service returns
+    raw_val = row["raw"] or ""
     try:
-        parsed = urlparse(raw)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        raw_val = _to_obj(raw_val, {})
     except Exception:
         pass
-    return ""
+    data = {
+        "base_url": url,
+        "pages": [{"url": row["url"], "raw": raw_val, "text": row["markdown"] or ""}],
+        "reusedPageCount": 1,
+    }
+    return {"id": str(row["id"]), "data": data, "updatedAt": row["created_at"]}
 
 
 async def find_scraped_pages_for_base_url(base_url: str, *, limit_calls: int = 300) -> list[dict[str, Any]]:
+    """
+    Return all pages previously scraped for a given origin.
+    Reads from scraped_pages table (fast index scan on url LIKE 'origin%').
+    """
     base = _base_origin(base_url)
     if not base:
         return []
     pool = get_pool()
     async with pool.acquire() as conn:
-        rows = await skill_repo.find_recent_playwright_done(conn, limit_calls)
-    seen: set[str] = set()
+        rows = await scraped_pages_repo.find_by_base_url(conn, base, limit=limit_calls)
     pages: list[dict[str, Any]] = []
-    for r in rows:
-        in_obj = _to_obj(r["input"], {})
-        args = in_obj.get("args") if isinstance(in_obj, dict) and isinstance(in_obj.get("args"), dict) else {}
-        req_url = str(args.get("url") or "").strip()
-        if req_url and not _normalize_url_for_match(req_url).startswith(_normalize_url_for_match(base)):
+    seen: set[str] = set()
+    for row in rows:
+        page_url = _normalize_url_for_match(str(row["url"] or ""))
+        if not page_url or page_url in seen:
             continue
-        for p in _extract_pages_from_output(_to_obj(r["output"], [])):
-            page_url = _normalize_url_for_match(str(p.get("url") or ""))
-            if not page_url or not page_url.startswith(_normalize_url_for_match(base)):
-                continue
-            if page_url in seen:
-                continue
-            seen.add(page_url)
-            pages.append(p)
+        seen.add(page_url)
+        raw_val = row["raw"] or ""
+        try:
+            raw_val = _to_obj(raw_val, {})
+        except Exception:
+            pass
+        pages.append({
+            "url": row["url"],
+            "raw": raw_val,
+            "text": row["markdown"] or "",
+            "title": row["page_title"] or "",
+        })
     return pages
 
 

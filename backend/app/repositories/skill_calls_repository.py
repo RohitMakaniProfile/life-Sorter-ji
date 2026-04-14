@@ -97,7 +97,12 @@ async def get_output(conn, skill_call_id: int) -> Any:
 async def get_timing_and_output(conn, skill_call_id: int) -> Any:
     q = build_query(
         PostgreSQLQuery.from_(skill_calls_t)
-        .select(skill_calls_t.started_at, skill_calls_t.output)
+        .select(
+            skill_calls_t.started_at,
+            skill_calls_t.output,
+            skill_calls_t.conversation_id,
+            skill_calls_t.message_id,
+        )
         .where(skill_calls_t.id == _cast_bigint(Parameter("%s"))),
         [skill_call_id],
     )
