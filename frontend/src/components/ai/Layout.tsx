@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useUiAgents } from '../../context/UiAgentsContext';
 import { IKSHAN_AUTH_TOKEN_KEY } from '../../config/authStorage';
 import { getIsSuperAdmin } from '../../api/authSession';
@@ -7,6 +7,7 @@ import { getIsSuperAdmin } from '../../api/authSession';
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { agents, activeAgentId } = useUiAgents();
+  const navigate = useNavigate();
   const isSuperAdmin = getIsSuperAdmin();
   const AUTH_JWT_STORAGE_KEY = IKSHAN_AUTH_TOKEN_KEY;
   const ACTIVE_KEY = 'ikshan-active-agent-id';
@@ -45,8 +46,32 @@ export default function Layout() {
           </div>
         </div>
 
+        {/* Back button */}
+        <div className="px-3 pt-3">
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="group flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all duration-200 text-slate-400 hover:bg-slate-800 hover:text-white w-full"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+            <span className="text-sm">Back</span>
+          </button>
+        </div>
+
         {/* Nav */}
-        <nav className="px-3 pt-3 space-y-1">
+        <nav className="px-3 pt-2 space-y-1">
           <NavLink to="/chat" className={navLinkClass} end>
             <span className="text-lg text-slate-200 group-hover:text-white">💬</span>
             <span className="text-sm text-slate-200 group-hover:text-white">Chat</span>

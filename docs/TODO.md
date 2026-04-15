@@ -90,9 +90,9 @@ new google vision
 
 ===================
 # direct link to any playbook/onboarding so via single link user can view playbook or trigger phase2
-# doable claw loading icon
+# account ui
+# playbook ui restructure audit tab instead of verdict
 # playbook should be half visible then for full playbook there should be otp verification instead of before playbook. show otp in 3rd tab.
-# all claw agents direct to rca stage picking last onboarding website_url
 
 DONE
 # parallel scrapping
@@ -101,7 +101,10 @@ DONE
 # ikshan to doable claw icon in payment page
 # 2 login pages to single
 # google maps scrapping
+# doable claw loading icon
 # playbook dark mode
+# all claw agents direct to rca stage picking last onboarding website_url
+# phase2 ui to back to home
 
 Scrapping
 # ocr for homepage images

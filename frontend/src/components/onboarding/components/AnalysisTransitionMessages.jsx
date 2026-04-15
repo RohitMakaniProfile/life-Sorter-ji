@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef } from 'react';
-import { Globe, Brain, FileSearch, Search, MessageCircleQuestion } from 'lucide-react';
 import CrawlUrlList from '../../ai/chat/CrawlUrlList';
+import DoableClawLogo from './DoableClawLogo';
 
 /**
  * AnalysisTransitionMessages - Animated message sequence shown after scale questions
@@ -18,35 +18,30 @@ import CrawlUrlList from '../../ai/chat/CrawlUrlList';
 const ANALYSIS_MESSAGES = [
   {
     id: 'understanding',
-    icon: Brain,
     text: 'Agent understood your answers...',
     subtext: 'Connecting your business context with goals',
     phase: 'crawl',
   },
   {
     id: 'visiting',
-    icon: Globe,
     text: 'Agent is visiting your website...',
     subtext: 'Exploring pages and gathering information',
     phase: 'crawl',
   },
   {
     id: 'summarizing',
-    icon: FileSearch,
     text: 'Agent is summarizing website content...',
     subtext: 'Identifying key information about your business',
     phase: 'crawl',
   },
   {
     id: 'rootcause',
-    icon: Search,
     text: 'Finding root cause of your problem...',
     subtext: 'Analyzing patterns and potential blockers',
     phase: 'rca',
   },
   {
     id: 'questions',
-    icon: MessageCircleQuestion,
     text: 'Agent has questions about the root cause...',
     subtext: 'Preparing diagnostic questions based on analysis',
     phase: 'rca',
@@ -182,8 +177,6 @@ export default function AnalysisTransitionMessages({
   const message = ANALYSIS_MESSAGES[currentIndex];
   if (!message) return null;
 
-  const IconComponent = message.icon;
-
   // Build subtext with crawl progress if available
   let subtext = message.subtext;
   if (message.id === 'visiting' && crawlProgress?.pages_crawled) {
@@ -199,9 +192,9 @@ export default function AnalysisTransitionMessages({
           fadeState === 'in' ? 'translate-y-0 opacity-100' : '-translate-y-4 opacity-0'
         }`}
       >
-        {/* Icon */}
-        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/20 to-amber-500/20 ring-1 ring-white/10">
-          <IconComponent className="h-8 w-8 text-violet-400" />
+        {/* Animated logo */}
+        <div className="mb-6">
+          <DoableClawLogo size={72} />
         </div>
 
         {/* Main text */}
@@ -245,7 +238,7 @@ export default function AnalysisTransitionMessages({
         </div>
       )}
 
-      {/* Ambient animation */}
+      {/* Ambient glow */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full bg-gradient-to-br from-violet-500/5 to-amber-500/5 blur-3xl" />
       </div>
