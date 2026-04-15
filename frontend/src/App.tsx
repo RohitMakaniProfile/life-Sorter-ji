@@ -59,6 +59,11 @@ function DefaultChat() {
   );
 }
 
+function PlaybookPageRoute() {
+  const { onboardingId } = useParams<{ onboardingId: string }>();
+  return <PlaybookPage key={onboardingId} />;
+}
+
 function App() {
   return (
     <ErrorBoundary>
@@ -75,7 +80,7 @@ function App() {
             <Route path="/how-it-works" element={<HowItWorksPage />} />
             <Route path="/deep-analysis" element={<Navigate to="/payment" replace />} />
             <Route path="/playbook/:runId" element={<PlaybookRunPage />} />
-            <Route path="/playbook-view/:onboardingId" element={<PlaybookPage />} />
+            <Route path="/playbook-view/:onboardingId" element={<PlaybookPageRoute />} />
 
             <Route element={<Layout />}>
               <Route path="chat" element={<DefaultChat />} />

@@ -324,6 +324,7 @@ export async function getPlaybookHistory(
 export async function getPlaybookStatus(onboardingId: string): Promise<{
   onboarding_id: string;
   playbook_status: string;
+  website_url: string;
   content: { playbook: string; website_audit: string; context_brief: string; icp_card: string } | null;
 }> {
   return apiJson(API_ROUTES.onboarding.playbookStatus(onboardingId));

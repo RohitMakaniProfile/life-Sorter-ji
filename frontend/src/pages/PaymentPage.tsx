@@ -41,6 +41,23 @@ type CreateOrderResponse = {
   message?: string;
 };
 
+/** Read intent/websiteUrl/returnTo from URL query params (for shareable links). */
+function resolveQueryParams(search: string): Partial<PaymentLocationState> {
+  const params = new URLSearchParams(search);
+  const result: Partial<PaymentLocationState> = {};
+  const intent = params.get('intent');
+  if (intent === 'deep-analysis') result.intent = 'deep-analysis';
+  const websiteUrl = params.get('websiteUrl');
+  if (websiteUrl) result.websiteUrl = websiteUrl;
+  const returnTo = params.get('returnTo');
+  if (returnTo) result.returnTo = returnTo;
+  const reason = params.get('reason');
+  if (reason) result.reason = reason;
+  const planSlug = params.get('plan');
+  if (planSlug) result.requiredPlanSlug = planSlug;
+  return result;
+}
+
 /** Read & merge location.state with any previously-saved sessionStorage context. */
 function resolvePaymentState(locationState: PaymentLocationState): PaymentLocationState {
   let saved: Partial<PaymentLocationState> = {};
@@ -101,7 +118,8 @@ export default function PaymentPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const rawState = (location.state || {}) as PaymentLocationState;
-  const state = resolvePaymentState(rawState);
+  // Query params take precedence — enables shareable /payment?intent=deep-analysis&... URLs
+  const state = { ...resolvePaymentState(rawState), ...resolveQueryParams(location.search) };
 
   // Persist return context on first render so it survives payment gateway redirect.
   useEffect(() => {

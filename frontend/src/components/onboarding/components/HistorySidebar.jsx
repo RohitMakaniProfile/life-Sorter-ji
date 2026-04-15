@@ -55,10 +55,10 @@ export default function HistorySidebar({ isOpen, onClose }) {
   }, [isOpen]);
 
   const handlePlaybookClick = (item) => {
-    if (item?.runId) {
-      window.dispatchEvent(new CustomEvent('playbook-history-select', { detail: { runId: item.runId } }));
-    }
     onClose();
+    if (item?.sessionId) {
+      navigate(`/playbook-view/${item.sessionId}`);
+    }
   };
 
   return (
@@ -102,7 +102,7 @@ export default function HistorySidebar({ isOpen, onClose }) {
           ) : (
             playbooks.map((item) => (
               <button
-                key={item.runId}
+                key={item.sessionId || item.runId}
                 type="button"
                 onClick={() => handlePlaybookClick(item)}
                 className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-white/[0.04] transition-colors group"

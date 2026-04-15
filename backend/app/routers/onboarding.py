@@ -440,6 +440,7 @@ async def get_onboarding_playbook_status(
             raise HTTPException(status_code=403, detail="Access denied")
 
         playbook_status = str(row_dict.get("playbook_status") or "")
+        website_url = str(row_dict.get("website_url") or "").strip()
 
         content = None
         if playbook_status == "complete":
@@ -460,6 +461,7 @@ async def get_onboarding_playbook_status(
     return {
         "onboarding_id": oid,
         "playbook_status": playbook_status,
+        "website_url": website_url,
         "content": content,
     }
 

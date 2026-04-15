@@ -98,6 +98,7 @@ export default function PlaybookPage() {
 
   // ── Pre-loaded content (when playbook already complete) ────────────────
   const [completedContent, setCompletedContent] = useState(null);
+  const [websiteUrl, setWebsiteUrl] = useState('');
 
   // ── Gap questions ─────────────────────────────────────────────────────────
   const [gapQuestions, setGapQuestions] = useState([]);
@@ -142,6 +143,9 @@ export default function PlaybookPage() {
     const init = async () => {
       try {
         const data = await getPlaybookStatus(onboardingId);
+
+        // Store website URL for the deep-analysis button
+        if (data.website_url) setWebsiteUrl(data.website_url);
 
         // Already complete with content
         if (data.playbook_status === 'complete' && data.content?.playbook) {
@@ -265,8 +269,11 @@ export default function PlaybookPage() {
   }, []);
 
   const handleDeepAnalysis = useCallback(() => {
-    navigate('/payment');
-  }, [navigate]);
+    const params = new URLSearchParams({ intent: 'deep-analysis' });
+    if (websiteUrl) params.set('websiteUrl', websiteUrl);
+    params.set('returnTo', `/playbook-view/${onboardingId}`);
+    navigate(`/payment?${params.toString()}`);
+  }, [navigate, websiteUrl, onboardingId]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const wrapPage = (children) => (
