@@ -406,6 +406,64 @@ async def create_onboarding_from_product(
     )
 
 
+@router.get("/playbook-status")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def get_onboarding_playbook_status(
+    request: Request,
+    onboarding_id: str,
+) -> dict[str, Any]:
+    """
+    Return playbook status (and content if complete) for a given onboarding_id.
+    Requires authentication; the onboarding row must belong to the requesting user.
+    404 if the onboarding row does not exist.
+    """
+    user = require_request_user(request)
+    requesting_user_id = str(user.get("id") or "").strip()
+
+    from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
+    from app.repositories import playbook_runs_repository as playbook_repo
+
+    oid = (onboarding_id or "").strip()
+    if not oid:
+        raise HTTPException(status_code=400, detail="onboarding_id is required")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await onboarding_repo.find_by_id(conn, oid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Playbook not found")
+
+        row_dict = dict(row)
+        row_user_id = str(row_dict.get("user_id") or "").strip()
+        if row_user_id and row_user_id != requesting_user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        playbook_status = str(row_dict.get("playbook_status") or "")
+
+        content = None
+        if playbook_status == "complete":
+            pr = await playbook_repo.find_latest_complete_by_session(conn, oid)
+            if not pr:
+                pr = await playbook_repo.find_latest_via_onboarding_fk(conn, oid)
+            if pr:
+                pr_dict = dict(pr)
+                playbook_text = str(pr_dict.get("playbook") or "").strip()
+                if playbook_text:
+                    content = {
+                        "playbook": playbook_text,
+                        "website_audit": str(pr_dict.get("website_audit") or ""),
+                        "context_brief": str(pr_dict.get("context_brief") or ""),
+                        "icp_card": str(pr_dict.get("icp_card") or ""),
+                    }
+
+    return {
+        "onboarding_id": oid,
+        "playbook_status": playbook_status,
+        "content": content,
+    }
+
+
 @router.post("/reset")
 @limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
 async def reset_onboarding(

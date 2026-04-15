@@ -92,6 +92,7 @@ export const API_ROUTES = {
     precisionAnswer: '/api/v1/onboarding/precision/answer',
     gapQuestionsStart: '/api/v1/onboarding/gap-questions/start',
     playbookLaunch: '/api/v1/onboarding/playbook/launch',
+    playbookStatus: (onboardingId: string) => `/api/v1/onboarding/playbook-status?onboarding_id=${encodeURIComponent(onboardingId)}`,
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
     playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
     reset: '/api/v1/onboarding/reset',

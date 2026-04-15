@@ -27,6 +27,7 @@ import AdminPromptsPage from './pages/AdminPromptsPage';
 import AdminTokenUsagePage from './pages/AdminTokenUsagePage';
 import AdminOnboardingTokenUsagePage from './pages/AdminOnboardingTokenUsagePage';
 import AdminProductsPage from './pages/AdminProductsPage';
+import PlaybookPage from './pages/PlaybookPage';
 
 function ChatWithId() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -74,6 +75,7 @@ function App() {
             <Route path="/how-it-works" element={<HowItWorksPage />} />
             <Route path="/deep-analysis" element={<Navigate to="/payment" replace />} />
             <Route path="/playbook/:runId" element={<PlaybookRunPage />} />
+            <Route path="/playbook-view/:onboardingId" element={<PlaybookPage />} />
 
             <Route element={<Layout />}>
               <Route path="chat" element={<DefaultChat />} />

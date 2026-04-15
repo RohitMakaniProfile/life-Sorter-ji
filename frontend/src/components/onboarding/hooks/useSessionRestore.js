@@ -181,49 +181,8 @@ export function useSessionRestore({
             break;
 
           case 'playbook':
-            if (state.playbook_status === 'awaiting_gap_answers' && state.gap_questions?.length) {
-              setGapQuestions(state.gap_questions);
-              const restored = state.gap_answers_parsed && typeof state.gap_answers_parsed === 'object' ? state.gap_answers_parsed : {};
-              const indexed = {};
-              Object.entries(restored).forEach(([k, v]) => {
-                const idx = Number(String(k).replace(/^Q/i, '')) - 1;
-                if (Number.isFinite(idx) && idx >= 0) indexed[idx] = String(v);
-              });
-              setGapAnswers(indexed);
-              let next = 0;
-              while (next < state.gap_questions.length && indexed[next]) next += 1;
-              setGapCurrentIndex(next);
-              setShowGapQuestions(true);
-            }
-            setShowPlaybook(true);
-            if (state.playbook_status === 'error') {
-              markRetryNeeded();
-            } else if (state.playbook_status === 'generating' || state.playbook_status === 'started') {
-              prepareStreaming();
-              const sid = onboardingIdRef.current;
-              if (sid) {
-                startForSession(sid, { fresh: false }).catch(() => {});
-              }
-            } else if (state.playbook_status === 'complete') {
-              clearStepReached();
-              prepareStreaming();
-              const sid = onboardingIdRef.current;
-              if (sid) {
-                startForSession(sid, { fresh: false }).catch(() => {});
-              }
-            }
-            break;
-
           case 'complete':
-            setShowPlaybook(true);
-            clearStepReached();
-            prepareStreaming();
-            {
-              const sid = onboardingIdRef.current;
-              if (sid) {
-                startForSession(sid, { fresh: false }).catch(() => {});
-              }
-            }
+            // Handled above by the early redirect check — should not reach here.
             break;
 
           default:

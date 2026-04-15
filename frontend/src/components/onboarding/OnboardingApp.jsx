@@ -111,19 +111,6 @@ export default function OnboardingApp() {
     markRetryNeeded: playbook.markRetryNeeded,
   });
 
-  // Auto-launch playbook after returning from phone verify page
-  useEffect(() => {
-    if (!state.otpVerified) return;
-    let pending = false;
-    try { pending = sessionStorage.getItem('pending-playbook-launch') === 'true'; } catch { /* ignore */ }
-    if (!pending) return;
-    try { sessionStorage.removeItem('pending-playbook-launch'); } catch { /* ignore */ }
-    // Wait for session restore to finish populating the onboarding state
-    const t = setTimeout(() => {
-      handlers.handleStartPlaybook({ forceVerified: true }).catch(() => {});
-    }, 500);
-    return () => clearTimeout(t);
-  }, [state.otpVerified, handlers]);
 
   useEffect(() => {
     const onProductSelect = (e) => {

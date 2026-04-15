@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect } from 'react';
+import { useCallback } from 'react';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { coreApi } from '../../../api/services/core';
@@ -36,59 +36,45 @@ export function useOnboardingHandlers({
   const {
     selectedOutcome, setSelectedOutcome,
     selectedDomain, setSelectedDomain,
-    selectedTask, setSelectedTask,
-    showUrlForm, setShowUrlForm,
+    setSelectedTask,
+    setShowUrlForm,
     setToolPage,
     urlValue, setUrlValue,
     gbpValue, setGbpValue,
     setUrlSubmitting,
     earlyTools, setEarlyTools,
     setShowDeeperDive,
-    scaleQuestions, setScaleQuestions,
+    setScaleQuestions,
     scaleAnswers, setScaleAnswers,
     setShowDiagnostic,
-    currentQuestion, setCurrentQuestion,
-    questionIndex, setQuestionIndex,
+    setCurrentQuestion,
+    setQuestionIndex,
     loading, setLoading,
-    showPrecision, setShowPrecision,
+    setShowPrecision,
     setPrecisionQuestions,
     precisionIndex, setPrecisionIndex,
-    precisionAnswers, setPrecisionAnswers,
-    showGapQuestions, setShowGapQuestions,
-    gapQuestions, setGapQuestions,
-    gapAnswers, setGapAnswers,
-    gapCurrentIndex, setGapCurrentIndex,
-    setGapSavingIndex,
-    setShowPlaybook,
+    setPrecisionAnswers,
     setShowTransitionMessages,
-    setCheckingGapQuestions,
     setShowAnalysisTransition,
     setRcaCalling,
     setShowComplete,
     setError,
-    otpVerified, setOtpVerified,
-    setViewingRunId,
-    pendingPlaybookLaunchRef,
+    otpVerified,
     pendingTaskNodeTransitionRef,
-    urlStageTaskNodeRef,
     taskToolsCacheRef,
-    taskNodeTransition, setTaskNodeTransition,
+    setTaskNodeTransition,
     resetAll,
     clearPostTask,
     clearError,
   } = state;
 
   const {
-    prepareStreaming,
-    stopStreaming,
-    startForSession,
     clearStepReached,
     clearResumeArtifacts,
   } = playbook;
 
   const {
     startForSession: startCrawlForSession,
-    waitForCrawl,
     waitForCrawlDone,
   } = crawl;
 
@@ -250,102 +236,28 @@ export function useOnboardingHandlers({
     });
   }, [setScaleAnswers]);
 
-  // Playbook handlers
+  // Playbook handlers — now just redirect to the dedicated PlaybookPage
   const handleStartPlaybook = useCallback(async ({ forceVerified = false } = {}) => {
+    const oid = onboardingIdRef.current || (await ensureSession());
+    if (!oid) return;
+
     if (!forceVerified && !otpVerified) {
-      pendingPlaybookLaunchRef.current = true;
-      const oid = onboardingIdRef.current || '';
-      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
-      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
+      window.location.href = `/phone-verify?next=${encodeURIComponent(`/playbook-view/${oid}`)}&oid=${encodeURIComponent(oid)}`;
       return;
     }
 
-    setCheckingGapQuestions(true);
-    try {
-      const sid = await ensureSession();
-      await waitForCrawl();
-
-      const gapData = await coreApi.onboardingGapQuestionsStart({ onboarding_id: sid });
-      const parsedGap = gapData.questions || [];
-
-      if (Array.isArray(parsedGap) && parsedGap.length > 0) {
-        setGapQuestions(parsedGap);
-        const restored = gapData.gap_answers_parsed && typeof gapData.gap_answers_parsed === 'object' ? gapData.gap_answers_parsed : {};
-        const indexed = {};
-        Object.entries(restored).forEach(([k, v]) => {
-          const idx = Number(String(k).replace(/^Q/i, '')) - 1;
-          if (Number.isFinite(idx) && idx >= 0) indexed[idx] = String(v);
-        });
-        setGapAnswers(indexed);
-        let next = 0;
-        while (next < parsedGap.length && indexed[next]) next += 1;
-        setGapCurrentIndex(next);
-        setShowGapQuestions(true);
-        setShowPlaybook(true);
-        setCheckingGapQuestions(false);
-        return;
-      }
-
-      setCheckingGapQuestions(false);
-      setShowTransitionMessages(true);
-      setShowPlaybook(true);
-      prepareStreaming();
-
-      try {
-        await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
-        await startForSession(sid, { fresh: true, forceFresh: true });
-      } catch (launchErr) {
-        console.error('Playbook launch error:', launchErr);
-        setError('Failed to start playbook generation.');
-        setShowTransitionMessages(false);
-        stopStreaming();
-      }
-    } catch (err) {
-      console.error('Gap questions check error:', err);
-      setCheckingGapQuestions(false);
-      setError('Failed to check gap questions.');
-    }
-  }, [otpVerified, onboardingIdRef, ensureSession, waitForCrawl, prepareStreaming, startForSession, stopStreaming, setCheckingGapQuestions, setGapQuestions, setGapAnswers, setGapCurrentIndex, setShowGapQuestions, setShowPlaybook, setShowTransitionMessages, setError, pendingPlaybookLaunchRef]);
+    window.location.href = `/playbook-view/${oid}`;
+  }, [otpVerified, onboardingIdRef, ensureSession]);
 
   const handleTransitionComplete = useCallback(() => {
     setShowTransitionMessages(false);
     setTimeout(scrollToEnd, 50);
   }, [setShowTransitionMessages, scrollToEnd]);
 
-  const handleGapAnswer = useCallback(async (index, answerKey, answerText) => {
-    if (!otpVerified) {
-      pendingPlaybookLaunchRef.current = true;
-      const oid = onboardingIdRef.current || '';
-      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
-      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
-      return;
-    }
-    setGapSavingIndex(index);
-    try {
-      const sid = await ensureSession();
-      await coreApi.onboardingPlaybookMcqAnswer({
-        onboarding_id: sid,
-        question_index: index,
-        answer_key: answerKey,
-        answer_text: answerText,
-      });
-      setGapAnswers((prev) => ({ ...prev, [index]: answerKey }));
-      const next = index + 1;
-      if (next >= gapQuestions.length) {
-        setShowGapQuestions(false);
-        prepareStreaming();
-        await coreApi.onboardingPlaybookLaunch({ onboarding_id: sid });
-        await startForSession(sid, { fresh: false });
-      } else {
-        setGapCurrentIndex(next);
-      }
-    } catch {
-      setError('Failed to save answer.');
-      stopStreaming();
-    } finally {
-      setGapSavingIndex(null);
-    }
-  }, [otpVerified, onboardingIdRef, ensureSession, gapQuestions.length, prepareStreaming, startForSession, stopStreaming, setGapSavingIndex, setGapAnswers, setShowGapQuestions, setGapCurrentIndex, setError, pendingPlaybookLaunchRef]);
+  const handleGapAnswer = useCallback(async () => {
+    // Gap questions are now handled on the dedicated PlaybookPage.
+    // This handler is kept as a no-op for compatibility.
+  }, []);
 
   // Scale submit
   const handleScaleSubmit = useCallback(async () => {
