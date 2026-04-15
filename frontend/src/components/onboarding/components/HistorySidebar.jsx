@@ -1,11 +1,36 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getPlaybookHistory } from '../../../api';
+import { getEmailFromJwt, getPhoneNumberFromJwt, getUserIdFromJwt } from '../../../api/authSession';
+import { IKSHAN_AUTH_TOKEN_KEY } from '../../../config/authStorage';
+
+const ACTIVE_AGENT_STORAGE_KEY = 'ikshan-active-agent-id';
+const ONBOARDING_SESSION_STORAGE_KEY = 'doable-claw-onboarding-id';
+
+function formatPhoneForDisplay(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length >= 10) {
+    return `+91 ${digits.slice(-10)}`;
+  }
+  return String(raw || '').trim() || '';
+}
 
 export default function HistorySidebar({ isOpen, onClose }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [playbooks, setPlaybooks] = useState([]);
+
+  const handleLogout = () => {
+    try {
+      window.localStorage.removeItem(IKSHAN_AUTH_TOKEN_KEY);
+      window.localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY);
+      window.localStorage.removeItem(ONBOARDING_SESSION_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    onClose();
+    window.location.href = '/phone-verify';
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -97,20 +122,41 @@ export default function HistorySidebar({ isOpen, onClose }) {
           )}
         </div>
 
-        <div className="px-5 py-4 border-t border-white/10">
-          <button
-            type="button"
-            onClick={() => {
-              navigate('/conversations');
-              onClose();
-            }}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#857BFF] to-[#BF69A2] text-white text-sm font-semibold hover:brightness-110 transition-all"
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M2 4h12M2 8h8M2 12h10" strokeLinecap="round" />
-            </svg>
-            Chat history
-          </button>
+        <div className="border-t border-white/10">
+          <div className="px-5 pb-4 border-t border-white/10 pt-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-white/40 mb-1">Account</p>
+            <p className="text-sm text-white/90 mb-1">
+              {formatPhoneForDisplay(getPhoneNumberFromJwt()) || '—'}
+            </p>
+            {getEmailFromJwt() && !getPhoneNumberFromJwt() && (
+              <p className="text-xs text-white/45 mb-1">{getEmailFromJwt()}</p>
+            )}
+            {!getUserIdFromJwt() ? (
+              <button
+                type="button"
+                className="text-xs font-medium text-[#857BFF] hover:underline"
+                onClick={() => {
+                  onClose();
+                  navigate('/phone-verify');
+                }}
+              >
+                Sign in with phone
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="mt-2 w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-red-400/90 hover:bg-white/[0.06] transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+                Log out
+              </button>
+            )}
+          </div>
         </div>
       </aside>
     </>
