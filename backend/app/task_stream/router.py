@@ -48,22 +48,51 @@ def create_task_stream_router(
         body: TaskStreamStartRequest = Body(...),
         authorization: str | None = Header(default=None),
     ) -> dict[str, str]:
+        import structlog
+        logger = structlog.get_logger()
+
+        logger.info("task_stream_start_request",
+                   task_type=task_type,
+                   onboarding_id=body.onboarding_id,
+                   user_id=body.user_id,
+                   resume_if_exists=body.resume_if_exists,
+                   force_fresh=body.force_fresh,
+                   payload_keys=list(body.payload.keys()) if body.payload else [])
+
         task_fn = task_registry.get(task_type)
         if not task_fn:
+            logger.error("task_stream_unknown_type", task_type=task_type)
             raise HTTPException(status_code=404, detail=f"Unknown task_type: {task_type}")
+
         auth_oid, auth_uid = _actor_from_auth(authorization)
         eff_onboarding_id = body.onboarding_id or auth_oid
         eff_user_id = body.user_id or auth_uid
 
-        return await service.start_task_stream(
-            task_type=task_type,
-            task_fn=task_fn,
-            payload=body.payload or {},
-            onboarding_id=eff_onboarding_id,
-            user_id=eff_user_id,
-            resume_if_exists=body.resume_if_exists,
-            force_fresh=body.force_fresh,
-        )
+        logger.info("task_stream_effective_ids",
+                   eff_onboarding_id=eff_onboarding_id,
+                   eff_user_id=eff_user_id)
+
+        try:
+            result = await service.start_task_stream(
+                task_type=task_type,
+                task_fn=task_fn,
+                payload=body.payload or {},
+                onboarding_id=eff_onboarding_id,
+                user_id=eff_user_id,
+                resume_if_exists=body.resume_if_exists,
+                force_fresh=body.force_fresh,
+            )
+            logger.info("task_stream_started_success",
+                       stream_id=result.get("stream_id"),
+                       status=result.get("status"))
+            return result
+        except Exception as e:
+            logger.error("task_stream_start_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        task_type=task_type,
+                        onboarding_id=eff_onboarding_id)
+            raise
 
     @router.get("/events/{stream_id}")
     async def attach_stream(stream_id: str, cursor: str | None = None) -> StreamingResponse:
