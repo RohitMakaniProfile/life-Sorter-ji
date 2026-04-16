@@ -28,7 +28,6 @@ from app.config import get_settings
 from app.services.ai_helper import _extract_json_value, ai_helper as _ai
 from app.services.token_usage_service import (
     log_onboarding_token_usage,
-    STAGE_PRECISION_QUESTIONS,
     STAGE_GAP_QUESTIONS,
 )
 
@@ -1007,224 +1006,6 @@ async def generate_next_rca_question(
         return None
 
 
-_PRECISION_QUESTIONS_PROMPT_DEFAULT = """\
-You are an expert business diagnostician generating exactly 3 precision questions for onboarding.
-
-Use all available context:
-- outcome
-- outcome_label
-- domain
-- task
-- scale answers
-- web summary
-- business profile
-- RCA question/answer history
-
-Your job:
-- generate exactly 3 follow-up precision questions
-- identify contradictions, blind spots, weak assumptions, or missed opportunities
-- keep the questions business-specific and grounded in the provided context
-- avoid generic audit-style wording
-
-Return valid JSON only. No markdown fences. No prose.
-
-Allowed formats:
-1. {"questions":[...]}
-2. [...]
-
-Each question item must be:
-{
-  "type": "contradiction|blind_spot|unlock",
-  "insight": "short hypothesis being tested",
-  "question": "the actual question",
-  "options": ["option 1", "option 2", "option 3"],
-  "section_label": "short ui label"
-}
-"""
-
-
-async def generate_precision_questions(
-    outcome: str,
-    outcome_label: str,
-    domain: str,
-    task: str,
-    rca_history: list[dict[str, str]],
-    scale_answers: dict[str, Any] | None = None,
-    web_summary: str = "",
-    business_profile_text: str = "",
-    onboarding_id: str = "",
-) -> list[dict[str, Any]] | None:
-    """
-    Generate 3 precision questions from onboarding context and RCA history.
-    Returns a list of 3 question dicts, or None on failure.
-    """
-    settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_CLAUDE_MODEL  # Sonnet — faster + reliable JSON
-
-    if not api_key:
-        logger.warning("OpenRouter API key not configured — skipping precision questions")
-        return None
-
-    # If no crawl data and no answers, skip
-    if not rca_history:
-        logger.info("No RCA history — skipping precision questions")
-        return None
-
-    input_tokens = 0
-    output_tokens = 0
-    content = ""
-
-    try:
-        from app.services.prompts_service import get_prompt
-
-        system_prompt = await get_prompt(
-            "precision-questions",
-            default=_PRECISION_QUESTIONS_PROMPT_DEFAULT,
-        )
-
-        user_payload = {
-            "outcome": str(outcome or "").strip(),
-            "outcome_label": str(outcome_label or "").strip(),
-            "domain": str(domain or "").strip(),
-            "task": str(task or "").strip(),
-            "scale_answers": scale_answers or {},
-            "web_summary": str(web_summary or "").strip(),
-            "business_profile": business_profile_text.strip(),
-            "rca_history": rca_history or [],
-        }
-        t0 = time.monotonic()
-        result = await _call_openrouter_with_retry(
-            model=model,
-            system_prompt=system_prompt,
-            user_content=json.dumps(user_payload, ensure_ascii=True),
-            temperature=0.3,
-            max_tokens=1400,
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        content = str(result.get("message") or "")
-        usage = result.get("usage") or {}
-        input_tokens = int(usage.get("prompt_tokens") or 0)
-        output_tokens = int(usage.get("completion_tokens") or 0)
-        
-        logger.info("Precision questions raw response", raw_content=content[:4000] if content else "<empty>")
-
-        if not content or not content.strip():
-            logger.error("Precision questions: empty response")
-            if onboarding_id:
-                await log_onboarding_token_usage(
-                    onboarding_id=onboarding_id,
-                    stage=STAGE_PRECISION_QUESTIONS,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    success=False,
-                    error_msg="Empty response",
-                )
-            return None
-
-        parsed = json.loads(_extract_json_value(content))
-        if isinstance(parsed, dict):
-            questions = parsed.get("questions", [])
-        elif isinstance(parsed, list):
-            questions = parsed
-        else:
-            questions = []
-        if not questions or len(questions) < 1:
-            logger.error("Precision questions: empty or missing", raw=content[:300])
-            if onboarding_id:
-                await log_onboarding_token_usage(
-                    onboarding_id=onboarding_id,
-                    stage=STAGE_PRECISION_QUESTIONS,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    success=False,
-                    error_msg="No questions in response",
-                    raw_output=content,
-                )
-            return None
-
-        # Attach metadata for context pool to each question
-        _meta = {
-            "service": "openrouter",
-            "model": model,
-            "purpose": "precision_questions",
-            "system_prompt": system_prompt,
-            "user_message": json.dumps(user_payload, ensure_ascii=True),
-            "temperature": 0.3,
-            "max_tokens": 1400,
-            "raw_response": content,
-            "latency_ms": latency_ms,
-        }
-        for q in questions:
-            q["_meta"] = _meta
-
-        logger.info(
-            "Precision questions generated",
-            count=len(questions),
-            types=[q.get("type", "?") for q in questions],
-        )
-        
-        # Log successful token usage
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_PRECISION_QUESTIONS,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=True,
-            )
-        
-        return questions[:3]  # Ensure max 3
-
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            "Precision questions HTTP error",
-            status_code=e.response.status_code,
-            body=e.response.text[:300],
-        )
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_PRECISION_QUESTIONS,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=False,
-                error_msg=f"HTTP {e.response.status_code}",
-            )
-        return None
-    except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
-        logger.error("Precision questions parse error", error=str(e))
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_PRECISION_QUESTIONS,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=False,
-                error_msg=str(e),
-                raw_output=content,
-            )
-        return None
-    except httpx.RequestError as e:
-        logger.error("Precision questions request failed", error=str(e))
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_PRECISION_QUESTIONS,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=False,
-                error_msg=str(e),
-            )
-        return None
-
 
 # ══════════════════════════════════════════════════════════════
 #  GAP QUESTIONS — Pre-playbook clarifying questions
@@ -1367,7 +1148,6 @@ async def generate_gap_questions(
     web_summary: str = "",
     rca_handoff: str = "",
     rca_summary: str = "",
-    precision_answers: list[dict[str, Any]] | None = None,
     onboarding_id: str = "",
 ) -> list[dict[str, Any]] | None:
     """
@@ -1405,7 +1185,6 @@ async def generate_gap_questions(
             "rca_history": rca_history or [],
             "rca_handoff": str(rca_handoff or "").strip(),
             "rca_summary": str(rca_summary or "").strip(),
-            "precision_answers": precision_answers or [],
         }
         t0 = time.monotonic()
         result = await _call_openrouter_with_retry(

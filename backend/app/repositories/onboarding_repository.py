@@ -45,9 +45,7 @@ _SQL_RESET_FULL = (
     "    scale_answers = '{}'::jsonb, business_profile = '', "
     "    gap_questions = '[]'::jsonb, gap_answers = '', "
     "    rca_summary = '', rca_handoff = '', "
-    "    precision_questions = '[]'::jsonb, precision_answers = '[]'::jsonb, "
-    "    precision_status = 'not_started', precision_completed_at = NULL, "
-    "    playbook_status = 'not_started', playbook_started_at = NULL, "
+"    playbook_status = 'not_started', playbook_started_at = NULL, "
     "    playbook_completed_at = NULL, playbook_error = '', "
     "    crawl_run_id = NULL, crawl_cache_key = NULL, "
     "    playbook_run_id = NULL, web_summary = '', "
@@ -102,8 +100,7 @@ async def find_transcript_fields(conn, onboarding_id: str) -> Any:
         .select(
             onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
             onboarding_t.website_url, onboarding_t.gbp_url, onboarding_t.scale_answers,
-            onboarding_t.rca_qa, onboarding_t.precision_questions,
-            onboarding_t.precision_answers, onboarding_t.gap_questions,
+            onboarding_t.rca_qa, onboarding_t.gap_questions,
             onboarding_t.gap_answers,
         )
         .where(onboarding_t.id == Parameter("%s")).limit(1),
@@ -216,9 +213,6 @@ _STATE_COLS = (
     onboarding_t.rca_qa,
     onboarding_t.rca_summary,
     onboarding_t.rca_handoff,
-    onboarding_t.precision_questions,
-    onboarding_t.precision_answers,
-    onboarding_t.precision_status,
     onboarding_t.playbook_status,
     onboarding_t.playbook_error,
     onboarding_t.gap_questions,
@@ -418,94 +412,6 @@ async def save_website_audit(conn, onboarding_id: str, audit_text: str) -> None:
     await conn.execute(q.sql, *q.params)
 
 
-async def find_precision_context(conn, onboarding_id: str) -> Any:
-    """Fetch context needed for precision question generation."""
-    q = build_query(
-        PostgreSQLQuery.from_(onboarding_t)
-        .select(
-            onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
-            onboarding_t.scale_answers, onboarding_t.rca_qa,
-            onboarding_t.web_summary, onboarding_t.business_profile,
-        )
-        .where(onboarding_t.id == Parameter("%s")),
-        [onboarding_id],
-    )
-    return await conn.fetchrow(q.sql, *q.params)
-
-
-async def mark_precision_empty(conn, onboarding_id: str) -> None:
-    """Mark precision as complete with empty questions (no questions generated)."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.precision_questions, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_status, "complete")
-        .set(onboarding_t.precision_completed_at, fn.Now())
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [json.dumps([]), json.dumps([]), onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-async def save_precision_questions(conn, onboarding_id: str, questions_json: str) -> None:
-    """Persist generated precision questions and set status to awaiting_answers."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.precision_questions, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_status, "awaiting_answers")
-        .set(onboarding_t.precision_completed_at, None)
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [questions_json, json.dumps([]), onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-async def find_precision_state(conn, onboarding_id: str) -> Any:
-    """Fetch precision_questions, precision_answers, questions_answers for answer endpoint."""
-    q = build_query(
-        PostgreSQLQuery.from_(onboarding_t)
-        .select(
-            onboarding_t.id, onboarding_t.precision_questions,
-            onboarding_t.precision_answers, onboarding_t.questions_answers,
-        )
-        .where(onboarding_t.id == Parameter("%s")),
-        [onboarding_id],
-    )
-    return await conn.fetchrow(q.sql, *q.params)
-
-
-async def mark_precision_complete(conn, onboarding_id: str, answers_json: str, qa_json: str) -> None:
-    """Mark precision questions as fully answered."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.precision_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_status, "complete")
-        .set(onboarding_t.precision_completed_at, fn.Now())
-        .set(onboarding_t.questions_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [answers_json, qa_json, onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-async def update_precision_progress(conn, onboarding_id: str, answers_json: str, qa_json: str) -> None:
-    """Save partial precision answers (more questions remaining)."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.precision_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.precision_status, "awaiting_answers")
-        .set(onboarding_t.questions_answers, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [answers_json, qa_json, onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
 # ── Gap questions generation ──────────────────────────────────────────────────
 
 async def find_gap_questions_context(conn, onboarding_id: str) -> Any:
@@ -516,8 +422,7 @@ async def find_gap_questions_context(conn, onboarding_id: str) -> Any:
             onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
             onboarding_t.scale_answers, onboarding_t.rca_qa,
             onboarding_t.rca_summary, onboarding_t.rca_handoff,
-            onboarding_t.web_summary, onboarding_t.precision_questions,
-            onboarding_t.precision_answers,
+            onboarding_t.web_summary,
         )
         .where(onboarding_t.id == Parameter("%s")),
         [onboarding_id],

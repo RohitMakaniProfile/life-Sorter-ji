@@ -7,7 +7,8 @@ import WebsiteAuditStage from '../stages/WebsiteAuditStage';
 import PlaybookStage from '../stages/PlaybookStage';
 import HistoryPlaybookStage from '../stages/HistoryPlaybookStage';
 import CompleteStage from '../stages/CompleteStage';
-import AnalysisTransitionMessages from '../components/AnalysisTransitionMessages';
+import PreAuditTransitionMessages from '../components/PreAuditTransitionMessages';
+import PreRcaTransitionMessages from '../components/PreRcaTransitionMessages';
 import DeveloperTaskStreamsPanel from '../components/DeveloperTaskStreamsPanel';
 import FlowNode from '../components/FlowNode';
 
@@ -30,14 +31,8 @@ export function OnboardingStageRenderer({
 }) {
   const {
     viewingRunId, setViewingRunId,
-    checkingGapQuestions,
     showPlaybook,
     showTransitionMessages,
-    showGapQuestions,
-    gapQuestions,
-    gapAnswers,
-    gapCurrentIndex,
-    gapSavingIndex,
     showComplete,
     showDiagnostic,
     currentQuestion,
@@ -84,7 +79,6 @@ export function OnboardingStageRenderer({
   const {
     startNewJourney,
     handleTransitionComplete,
-    handleGapAnswer,
     handleStartPlaybook,
     handleScaleSelect,
     handleScaleSubmit,
@@ -109,22 +103,6 @@ export function OnboardingStageRenderer({
     );
   }
 
-
-  // Checking gap questions
-  if (checkingGapQuestions) {
-    return (
-      <StageLayout error={error} onClearError={clearError}>
-        <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
-        <div className="flex min-h-[50vh] flex-col items-center justify-center px-4">
-          <div className="flex flex-col items-center text-center">
-            <div className="mb-4 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-violet-500" />
-            <p className="text-sm text-white/60">Analyzing your responses...</p>
-          </div>
-        </div>
-      </StageLayout>
-    );
-  }
-
   // Playbook stage
   if (showPlaybook) {
     if (showTransitionMessages) {
@@ -141,18 +119,12 @@ export function OnboardingStageRenderer({
         <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
         <PlaybookStage
           task={selectedTask}
-          showGapQuestions={showGapQuestions}
-          gapQuestions={gapQuestions}
-          gapAnswers={gapAnswers}
-          gapCurrentIndex={gapCurrentIndex}
-          gapSavingIndex={gapSavingIndex}
-          onGapAnswer={handleGapAnswer}
           playbookStreaming={playbookStreaming}
           playbookText={playbookText}
           playbookDone={playbookDone}
           playbookResult={playbookResult}
           onGoHome={startNewJourney}
-          showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
+          showRetry={!playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}
           retryLabel="Retry Playbook"
           onRetryPlaybook={() => handleStartPlaybook()}
@@ -209,12 +181,21 @@ export function OnboardingStageRenderer({
     );
   }
 
-  // Analysis transition
+  // Pre-audit transition (crawl running after scale submit)
   if (showAnalysisTransition) {
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
-        <AnalysisTransitionMessages crawlStreaming={crawlStreaming} crawlProgress={crawlProgress} crawlProgressEvents={crawlProgressEvents} rcaCalling={rcaCalling} isComplete={false} onComplete={() => {}} />
+        <PreAuditTransitionMessages crawlStreaming={crawlStreaming} crawlProgress={crawlProgress} crawlProgressEvents={crawlProgressEvents} />
+      </StageLayout>
+    );
+  }
+
+  // Pre-RCA transition (after audit continue click, while rcaNextQuestion API call is in flight)
+  if (rcaCalling) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <PreRcaTransitionMessages />
       </StageLayout>
     );
   }
@@ -298,4 +279,3 @@ export function OnboardingStageRenderer({
   // Default: return null (main journey canvas will be rendered by parent)
   return null;
 }
-

@@ -25,13 +25,10 @@ export function useSessionRestore({
   setShowUrlForm,
   setShowDeeperDive,
   setShowDiagnostic,
+  setShowPrecision,
   setShowPlaybook,
-  setShowGapQuestions,
   setCurrentQuestion,
   setQuestionIndex,
-  setGapQuestions,
-  setGapAnswers,
-  setGapCurrentIndex,
   setEarlyTools,
   setShowWebsiteAudit,
   setWebsiteAuditText,
@@ -184,13 +181,6 @@ export function useSessionRestore({
             }
             break;
 
-          case 'precision':
-            // Precision questions removed — restore to website_audit stage instead
-            clearResumeArtifacts();
-            if (state.onboarding_id) onboardingIdRef.current = state.onboarding_id;
-            startWebsiteAuditStream(state.onboarding_id);
-            break;
-
           case 'website_audit':
             clearResumeArtifacts();
             if (state.onboarding_id) onboardingIdRef.current = state.onboarding_id;
@@ -237,17 +227,13 @@ export function useSessionRestore({
     setShowUrlForm,
     setShowDeeperDive,
     setShowDiagnostic,
+    setShowPrecision,
     setShowPlaybook,
-    setShowGapQuestions,
     setCurrentQuestion,
     setQuestionIndex,
-    setGapQuestions,
-    setGapAnswers,
-    setGapCurrentIndex,
     setEarlyTools,
     setShowWebsiteAudit,
     setWebsiteAuditText,
     startWebsiteAuditStream,
   ]);
 }
-

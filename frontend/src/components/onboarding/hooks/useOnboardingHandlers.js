@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
-import { coreApi, streamWebsiteAudit } from '../../../api/services/core';
+import { streamWebsiteAudit } from '../../../api/services/core';
 import { mapToolsToEarlyTools } from '../toolService';
 import { toRectObj, TASK_KEY_SEP, buildOnboardingPatch } from '../utils/onboardingUtils';
 import STATIC_SCALE_QUESTIONS from '../data/scale_questions.json';

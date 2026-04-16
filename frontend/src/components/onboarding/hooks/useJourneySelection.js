@@ -31,7 +31,6 @@ export function useJourneySelection({
   setShowDiagnostic,
   setShowComplete,
   setShowTransitionMessages,
-  setCheckingGapQuestions,
   setEarlyTools,
   setToolPage,
   setTaskNodeTransition,
@@ -49,9 +48,8 @@ export function useJourneySelection({
     setShowDiagnostic(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
-    setCheckingGapQuestions(false);
     setEarlyTools([]);
-  }, [setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowComplete, setShowTransitionMessages, setCheckingGapQuestions, setEarlyTools]);
+  }, [setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowComplete, setShowTransitionMessages, setEarlyTools]);
 
   const scheduleScrollToEnd = useCallback(() => {
     requestAnimationFrame(() => {

@@ -24,18 +24,6 @@ import type {
 export const coreApi = {
   onboardingPlaybookLaunch: (payload: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookLaunch, payload),
-  onboardingPlaybookGapAnswers: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookGapAnswers, payload),
-  onboardingPlaybookMcqAnswer: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.playbookMcqAnswer, payload),
-  onboardingPrecisionStart: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionStart, payload),
-  onboardingPrecisionAnswer: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.precisionAnswer, payload),
-  onboardingGapQuestionsStart: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.gapQuestionsStart, payload),
-  onboardingReset: (payload: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>(API_ROUTES.onboarding.reset, payload),
   request: apiRequest,
 };
 

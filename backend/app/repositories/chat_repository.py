@@ -24,7 +24,6 @@ from app.services.journey_service import (
     JOURNEY_STEP_URL,
     JOURNEY_STEP_SCALE,
     JOURNEY_STEP_DIAGNOSTIC,
-    JOURNEY_STEP_PRECISION,
     JOURNEY_STEP_GAP,
     JOURNEY_STEP_PLAYBOOK,
     get_outcome_options,
@@ -126,8 +125,6 @@ async def _attach_onboarding_transcript(
     website_url = str(row.get("website_url") or "").strip()
     scale_answers = _as_dict(row.get("scale_answers"))
     rca_qa = _as_list(row.get("rca_qa"))
-    precision_questions = _as_list(row.get("precision_questions"))
-    precision_answers = _as_list(row.get("precision_answers"))
     gap_questions = _as_list(row.get("gap_questions"))
     gap_answers_raw = str(row.get("gap_answers") or "").strip()
 
@@ -297,38 +294,6 @@ async def _attach_onboarding_transcript(
                 "content": answer,
                 "createdAt": created_at,
                 "messageId": f"onboarding:{sid}:diagnostic:{idx}:a",
-            })
-
-    # ── Precision Q&A ──
-    for idx, pq in enumerate(precision_questions):
-        question = str(pq.get("question") or "").strip()
-        options = pq.get("options") or []
-
-        # Find matching answer
-        answer = ""
-        for pa in precision_answers:
-            if pa.get("question_index") == idx:
-                answer = str(pa.get("answer") or "").strip()
-                break
-
-        if question:
-            onboarding_msgs.append({
-                "role": "assistant",
-                "content": question,
-                "options": options,
-                "allowCustomAnswer": True,
-                "journeyStep": JOURNEY_STEP_PRECISION,
-                "journeySelections": acc,
-                "kind": "final",
-                "createdAt": created_at,
-                "messageId": f"onboarding:{sid}:precision:{idx}:q",
-            })
-        if answer:
-            onboarding_msgs.append({
-                "role": "user",
-                "content": answer,
-                "createdAt": created_at,
-                "messageId": f"onboarding:{sid}:precision:{idx}:a",
             })
 
     # ── Gap Q&A ──

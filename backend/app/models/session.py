@@ -34,7 +34,7 @@ class LLMCallLog(BaseModel):
     timestamp: str = ""
     service: str = ""            # e.g. "openrouter"
     model: str = ""
-    purpose: str = ""            # "early_recommendations", "rca_question", "precision_questions", etc.
+    purpose: str = ""            # "early_recommendations", "rca_question", "gap_questions", etc.
     system_prompt: str = ""
     user_message: str = ""
     temperature: float = 0.0

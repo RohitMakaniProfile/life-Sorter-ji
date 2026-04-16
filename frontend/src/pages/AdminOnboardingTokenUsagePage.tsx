@@ -15,7 +15,6 @@ function StageBadge({ stage }: { stage: string }) {
   const s = stage || 'unknown';
   const colors: Record<string, string> = {
     rca_questions: 'bg-blue-500/20 text-blue-300',
-    precision_questions: 'bg-purple-500/20 text-purple-300',
     gap_questions: 'bg-amber-500/20 text-amber-300',
     business_profile: 'bg-emerald-500/20 text-emerald-300',
     playbook_stream: 'bg-pink-500/20 text-pink-300',

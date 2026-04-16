@@ -32,18 +32,9 @@ export function useOnboardingFlowState() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
-
-  // Gap questions
-  const [showGapQuestions, setShowGapQuestions] = useState(false);
-  const [gapQuestions, setGapQuestions] = useState([]);
-  const [gapAnswers, setGapAnswers] = useState({});
-  const [gapCurrentIndex, setGapCurrentIndex] = useState(0);
-  const [gapSavingIndex, setGapSavingIndex] = useState(null);
-
   // Playbook
   const [showPlaybook, setShowPlaybook] = useState(false);
   const [showTransitionMessages, setShowTransitionMessages] = useState(false);
-  const [checkingGapQuestions, setCheckingGapQuestions] = useState(false);
 
   // Analysis transition
   const [showAnalysisTransition, setShowAnalysisTransition] = useState(false);
@@ -71,13 +62,6 @@ export function useOnboardingFlowState() {
   // Task node transition
   const [taskNodeTransition, setTaskNodeTransition] = useState(null);
 
-  // Clear gap saving index after timeout
-  useEffect(() => {
-    if (gapSavingIndex == null) return;
-    const t = setTimeout(() => setGapSavingIndex(null), 3000);
-    return () => clearTimeout(t);
-  }, [gapSavingIndex]);
-
   // History playbook event listener
   useEffect(() => {
     const handler = (e) => setViewingRunId(e.detail?.runId || null);
@@ -95,15 +79,10 @@ export function useOnboardingFlowState() {
     setShowDiagnostic(false);
     setShowComplete(false);
     setShowPlaybook(false);
-    setShowGapQuestions(false);
     setShowTransitionMessages(false);
-    setCheckingGapQuestions(false);
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
     setScaleAnswers({});
-    setGapAnswers({});
-    setGapCurrentIndex(0);
-    setGapSavingIndex(null);
     setCurrentQuestion(null);
     setQuestionIndex(0);
   }, []);
@@ -115,7 +94,6 @@ export function useOnboardingFlowState() {
     setShowDiagnostic(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
-    setCheckingGapQuestions(false);
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
     setEarlyTools([]);
@@ -150,17 +128,9 @@ export function useOnboardingFlowState() {
     questionIndex, setQuestionIndex,
     loading, setLoading,
 
-    // Gap
-    showGapQuestions, setShowGapQuestions,
-    gapQuestions, setGapQuestions,
-    gapAnswers, setGapAnswers,
-    gapCurrentIndex, setGapCurrentIndex,
-    gapSavingIndex, setGapSavingIndex,
-
     // Playbook
     showPlaybook, setShowPlaybook,
     showTransitionMessages, setShowTransitionMessages,
-    checkingGapQuestions, setCheckingGapQuestions,
 
     // Analysis
     showAnalysisTransition, setShowAnalysisTransition,
@@ -190,4 +160,3 @@ export function useOnboardingFlowState() {
     clearError,
   };
 }
-

@@ -32,7 +32,6 @@ JOURNEY_STEP_TASK       = "task"
 JOURNEY_STEP_URL        = "url"
 JOURNEY_STEP_SCALE      = "scale"
 JOURNEY_STEP_DIAGNOSTIC = "diagnostic"
-JOURNEY_STEP_PRECISION  = "precision"
 JOURNEY_STEP_GAP        = "gap"
 JOURNEY_STEP_PLAYBOOK   = "playbook"
 JOURNEY_STEP_COMPLETE   = "complete"
@@ -161,20 +160,6 @@ def _diagnostic_message(question: dict[str, Any], acc: dict[str, Any]) -> dict[s
     }
 
 
-def _precision_question_message(
-    q: dict[str, Any], index: int, total: int, acc: dict[str, Any]
-) -> dict[str, Any]:
-    options = list(q.get("options") or [])
-    return {
-        "content": q.get("question", ""),
-        "options": options,
-        "allowCustomAnswer": True,
-        "journeyStep": JOURNEY_STEP_PRECISION,
-        "journeySelections": {**acc, "precisionIndex": index, "precisionTotal": total},
-        "kind": "final",
-    }
-
-
 def _gap_question_message(
     q: dict[str, Any], index: int, all_questions: list[dict[str, Any]], acc: dict[str, Any]
 ) -> dict[str, Any]:
@@ -224,78 +209,6 @@ async def _ensure_onboarding_session(acc: dict[str, Any]) -> str:
 
     await upsert_onboarding_patch(sid, patch)
     return sid
-
-
-# ── precision ──────────────────────────────────────────────────────────────────
-
-async def _precision_start(acc: dict[str, Any]) -> dict[str, Any]:
-    """Start precision questions after RCA diagnostic is complete."""
-    from app.db import get_pool
-    from app.repositories import onboarding_repository as onboarding_repo
-    from app.services.claude_rca_service import generate_precision_questions
-
-    sid = str(acc.get("onboardingSessionId") or "").strip()
-    if not sid:
-        return _complete_message(acc)
-
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        row = await onboarding_repo.find_precision_context(conn, sid)
-
-    if not row:
-        return _complete_message(acc)
-
-    outcome = str(row.get("outcome") or "")
-    domain = str(row.get("domain") or "")
-    task = str(row.get("task") or "")
-    scale_answers = _as_dict(row.get("scale_answers"))
-    rca_qa = _as_list(row.get("rca_qa"))
-    rca_history = [
-        {"question": str(it.get("question") or ""), "answer": str(it.get("answer") or "")}
-        for it in rca_qa
-        if isinstance(it, dict) and it.get("answer") not in (None, "")
-    ]
-
-    if not rca_history:
-        # Nothing to base precision on — skip straight to gap/playbook.
-        return await _gap_start(acc)
-
-    outcome_label = _OUTCOME_LABEL.get(outcome, "")
-
-    try:
-        questions = await generate_precision_questions(
-            outcome=outcome,
-            outcome_label=outcome_label,
-            domain=domain,
-            task=task,
-            rca_history=rca_history,
-            scale_answers=scale_answers or None,
-            web_summary="",
-            business_profile_text="",
-            onboarding_id=sid,
-        )
-    except Exception:
-        questions = []
-
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        if not questions:
-            await onboarding_repo.mark_precision_empty(conn, sid)
-            return await _gap_start(acc)
-
-        cleaned = [
-            {
-                "type": str(q.get("type") or ""),
-                "insight": str(q.get("insight") or ""),
-                "question": str(q.get("question") or ""),
-                "options": list(q.get("options") or []),
-                "section_label": str(q.get("section_label") or ""),
-            }
-            for q in questions[:3]
-        ]
-        await onboarding_repo.save_precision_questions(conn, sid, json.dumps(cleaned))
-
-    return _precision_question_message(cleaned[0], 0, len(cleaned), acc)
 
 
 # ── gap questions ──────────────────────────────────────────────────────────────
@@ -456,8 +369,8 @@ async def next_step(
                 q_dict = q_dict.__dict__
             return _diagnostic_message(q_dict, acc)
 
-        # RCA returned complete immediately — move to precision
-        return await _precision_start(acc)
+        # RCA returned complete immediately — move to gap/playbook
+        return await _gap_start(acc)
 
     # ── Diagnostic (RCA) ─────────────────────────────────────────────────────
     if current_step == JOURNEY_STEP_DIAGNOSTIC:
@@ -476,65 +389,8 @@ async def next_step(
                 q_dict = q_dict.__dict__
             return _diagnostic_message(q_dict, {**prev})
 
-        # Diagnostic complete → start precision questions
-        return await _precision_start({**prev})
-
-    # ── Precision questions ──────────────────────────────────────────────────
-    if current_step == JOURNEY_STEP_PRECISION:
-        from app.db import get_pool
-        from app.repositories import onboarding_repository as onboarding_repo
-
-        sid = str(prev.get("onboardingSessionId") or "").strip()
-        precision_index = int(prev.get("precisionIndex", 0))
-
-        pool = get_pool()
-        async with pool.acquire() as conn:
-            row = await onboarding_repo.find_precision_state(conn, sid)
-
-        if not row:
-            return await _gap_start(prev)
-
-        precision_questions = _as_list(row.get("precision_questions"))
-        precision_answers = _as_list(row.get("precision_answers"))
-
-        answer_payload: dict[str, Any] = {
-            "question_index": precision_index,
-            "answer": selected_option,
-        }
-        if precision_index < len(precision_questions):
-            pq = precision_questions[precision_index]
-            answer_payload["question"] = str(pq.get("question") or "")
-            answer_payload["type"] = str(pq.get("type") or "")
-        precision_answers.append(answer_payload)
-
-        qa_log = _as_list(row.get("questions_answers"))
-        qa_log.append(
-            {
-                "question": answer_payload.get("question", f"Precision Question {precision_index + 1}"),
-                "answer": selected_option,
-                "question_type": "precision",
-            }
-        )
-
-        next_idx = precision_index + 1
-        all_answered = next_idx >= len(precision_questions)
-
-        pool = get_pool()
-        async with pool.acquire() as conn:
-            if all_answered:
-                await onboarding_repo.mark_precision_complete(
-                    conn, sid, json.dumps(precision_answers), json.dumps(qa_log)
-                )
-            else:
-                await onboarding_repo.update_precision_progress(
-                    conn, sid, json.dumps(precision_answers), json.dumps(qa_log)
-                )
-
-        if all_answered:
-            return await _gap_start(prev)
-
-        next_q = precision_questions[next_idx]
-        return _precision_question_message(next_q, next_idx, len(precision_questions), prev)
+        # Diagnostic complete → start gap/playbook
+        return await _gap_start({**prev})
 
     # ── Gap questions ────────────────────────────────────────────────────────
     if current_step == JOURNEY_STEP_GAP:
