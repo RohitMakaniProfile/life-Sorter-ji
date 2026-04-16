@@ -1,34 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { clsx } from 'clsx';
-import PlaybookViewer from '../../PlaybookViewer';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
-const SECTION_DELIMITERS = {
-  context_brief: '---SECTION:context_brief---',
-  website_audit: '---SECTION:website_audit---',
-  playbook: '---SECTION:playbook---',
-};
+const PLAYBOOK_DELIMITER = '---SECTION:playbook---';
 
-function extractStreamSections(text) {
-  const positions = [];
-  for (const [key, delimiter] of Object.entries(SECTION_DELIMITERS)) {
-    const idx = text.indexOf(delimiter);
-    if (idx !== -1) positions.push({ idx, key, delimiter });
-  }
-  positions.sort((a, b) => a.idx - b.idx);
-
-  const sections = { context_brief: '', website_audit: '', playbook: '' };
-  for (let i = 0; i < positions.length; i++) {
-    const { key, delimiter, idx } = positions[i];
-    const start = idx + delimiter.length;
-    const end = i + 1 < positions.length ? positions[i + 1].idx : text.length;
-    sections[key] = text.slice(start, end).trim();
-  }
-  // If no delimiters found, treat entire text as playbook content
-  if (positions.length === 0) sections.playbook = text;
-  return sections;
+function extractPlaybookContent(text) {
+  const idx = text.indexOf(PLAYBOOK_DELIMITER);
+  if (idx !== -1) return text.slice(idx + PLAYBOOK_DELIMITER.length).trim();
+  // Strip all section delimiters and return full text
+  return text.replace(/---SECTION:[a-z_]+---/g, '').trim();
 }
 
 export default function PlaybookStage({
+  task,
   showGapQuestions,
   gapQuestions,
   gapAnswers,
@@ -39,7 +24,6 @@ export default function PlaybookStage({
   playbookText,
   playbookDone,
   playbookResult,
-  onDeepAnalysis,
   onGoHome,
   showRetry,
   onRetry,
@@ -48,90 +32,51 @@ export default function PlaybookStage({
   onRetryPlaybook,
 }) {
   const activeGap = Array.isArray(gapQuestions) ? gapQuestions[gapCurrentIndex] : null;
-  const streamContainerRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const [showCancelModal, setShowCancelModal] = useState(false);
 
-  // Auto-switch tab as stream sections arrive — only until user manually switches
-  const [streamTab, setStreamTab] = useState('audit');
-  const userSwitchedTabRef = useRef(false);
-  const sectionsSeenRef = useRef({ website_audit: false, playbook: false });
-
-  useEffect(() => {
-    if (!playbookStreaming) {
-      // Reset on each new stream
-      userSwitchedTabRef.current = false;
-      sectionsSeenRef.current = { website_audit: false, playbook: false };
-      setStreamTab('audit');
-      return;
-    }
-  }, [playbookStreaming]);
-
-  useEffect(() => {
-    if (!playbookText || playbookDone || userSwitchedTabRef.current) return;
-    const sections = extractStreamSections(playbookText);
-    if (sections.playbook && !sectionsSeenRef.current.playbook) {
-      sectionsSeenRef.current.playbook = true;
-      setStreamTab('playbook');
-    } else if (sections.website_audit && !sectionsSeenRef.current.website_audit) {
-      sectionsSeenRef.current.website_audit = true;
-      setStreamTab('audit');
-    }
-  }, [playbookText, playbookDone]);
-
-  const handleStreamTabChange = (tab) => {
-    userSwitchedTabRef.current = true;
-    setStreamTab(tab);
-  };
-  // true = auto-scroll is active; false = user scrolled up and locked it
   const autoScrollEnabledRef = useRef(true);
-  // prevents the scroll listener from reacting to our own programmatic scrolls
   const isProgrammaticScrollRef = useRef(false);
 
-  // Reset auto-scroll when a new stream starts
   useEffect(() => {
     if (playbookStreaming && !playbookDone) {
       autoScrollEnabledRef.current = true;
     }
   }, [playbookStreaming, playbookDone]);
-  const [showCancelModal, setShowCancelModal] = useState(false);
 
-  // Listen for user-initiated scrolls to lock / unlock auto-scroll
   useEffect(() => {
-    const el = streamContainerRef.current;
+    const el = scrollContainerRef.current;
     if (!el) return;
-
     const handleScroll = () => {
-      // Ignore scrolls we triggered ourselves
       if (isProgrammaticScrollRef.current) return;
-
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      // Within 40 px of the bottom → re-enable; anywhere above → lock
       autoScrollEnabledRef.current = distanceFromBottom <= 40;
     };
-
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
   }, [showGapQuestions]);
 
-  // Auto-scroll to bottom as tokens arrive, unless the user has locked it
   useEffect(() => {
     if (!playbookStreaming || !playbookText || playbookDone) return;
     if (!autoScrollEnabledRef.current) return;
-    const el = streamContainerRef.current;
+    const el = scrollContainerRef.current;
     if (!el) return;
-
-    // Mark the upcoming scroll as programmatic so the listener ignores it
     isProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
-    // Clear the flag after the browser has processed the scroll event
-    requestAnimationFrame(() => {
-      isProgrammaticScrollRef.current = false;
-    });
+    requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
   }, [playbookText, playbookStreaming, playbookDone]);
+
+  const title = task ? `Playbook: ${task}` : (playbookDone ? 'Your Playbook' : 'Generating Your Playbook…');
+  const displayTitle = showGapQuestions ? 'A Few More Questions' : title;
+
+  const playbookContent = playbookDone
+    ? (playbookResult?.playbook || extractPlaybookContent(playbookText || ''))
+    : extractPlaybookContent(playbookText || '');
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
-      <h1 className="m-0 mb-5 text-center text-[clamp(20px,2.5vw,32px)] font-extrabold text-white">
-        {showGapQuestions ? 'A Few More Questions' : playbookDone ? 'Your Playbook' : 'Generating Your Playbook…'}
+      <h1 className="m-0 mb-5 text-center text-[clamp(18px,2vw,26px)] font-bold text-white">
+        {displayTitle}
       </h1>
 
       {showGapQuestions && (
@@ -172,14 +117,11 @@ export default function PlaybookStage({
         </div>
       )}
 
-      {/* Cancel confirmation modal */}
       {showCancelModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="mx-4 w-full max-w-sm rounded-2xl border border-white/10 bg-[#1a1030] p-6 shadow-2xl">
             <h3 className="m-0 mb-2 text-lg font-bold text-white">Cancel Playbook?</h3>
-            <p className="m-0 mb-6 text-sm text-white/50">
-              Your playbook is being generated. What would you like to do?
-            </p>
+            <p className="m-0 mb-6 text-sm text-white/50">Your playbook is being generated. What would you like to do?</p>
             <div className="flex flex-col gap-3">
               <button
                 type="button"
@@ -208,16 +150,14 @@ export default function PlaybookStage({
       )}
 
       {!showGapQuestions && (
-        <div ref={streamContainerRef} className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
+        <div ref={scrollContainerRef} className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
           {playbookStreaming && !playbookText && (
             <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
           )}
 
           {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
             <div className="pt-10 text-center">
-              <p className="m-0 text-sm text-white/50">
-                No active playbook run found. Please click retry to start again.
-              </p>
+              <p className="m-0 text-sm text-white/50">No active playbook run found. Please click retry to start again.</p>
               <button
                 type="button"
                 onClick={onRetry}
@@ -228,86 +168,44 @@ export default function PlaybookStage({
             </div>
           )}
 
-          {/* During streaming: show PlaybookViewer once website_audit or playbook section is available */}
-          {playbookText && !playbookDone && (() => {
-            const sections = extractStreamSections(playbookText);
-            const hasViewer = sections.website_audit || sections.playbook;
-
-            if (hasViewer) {
-              return (
-                <>
-                  <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
-                    <PlaybookViewer
-                      phase={streamTab}
-                      themeMode="dark"
-                      onPhaseChange={handleStreamTabChange}
-                      playbookData={{
-                        playbook: sections.playbook ? `${sections.playbook}\n\n▍` : '',
-                        websiteAudit: sections.website_audit,
-                        contextBrief: sections.context_brief,
-                        icpCard: '',
-                      }}
-                    />
-                  </div>
-                  <div className="mb-6 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={() => setShowCancelModal(true)}
-                      className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              );
-            }
-
-            // Still in context_brief phase — show loading
-            return (
-              <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-3">
-                <div className="text-sm text-white/40">Analysing your business…</div>
-                <button
-                  type="button"
-                  onClick={() => setShowCancelModal(true)}
-                  className="cursor-pointer rounded-lg border border-white/15 bg-[#0d0d0d]/80 backdrop-blur-sm px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.08] hover:text-white/80"
-                >
-                  Cancel
-                </button>
+          {playbookText && (
+            <div className="rounded-xl border border-white/10 bg-[#161616] p-5">
+              {playbookStreaming && !playbookDone && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-white/40">
+                  <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+                  Generating…
+                </div>
+              )}
+              <div className="playbook-markdown text-sm leading-relaxed text-white/85">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {playbookContent + (playbookStreaming && !playbookDone ? '\n\n▍' : '')}
+                </ReactMarkdown>
               </div>
-            );
-          })()}
+            </div>
+          )}
+
+          {playbookText && playbookStreaming && !playbookDone && (
+            <div className="mt-4 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(true)}
+                className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {playbookDone && (
-            <>
-              <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
-                <PlaybookViewer
-                  initialPhase="playbook"
-                  themeMode="dark"
-                  playbookData={{
-                    playbook: playbookResult?.playbook || playbookText,
-                    websiteAudit: playbookResult?.website_audit || '',
-                    contextBrief: playbookResult?.context_brief || '',
-                    icpCard: playbookResult?.icp_card || '',
-                  }}
-                />
-              </div>
-              <div className="flex flex-row gap-4">
-                <button
-                    type="button"
-                    onClick={onDeepAnalysis}
-                    className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-br from-indigo-500 to-violet-500 py-3 px-8 text-[15px] font-bold text-white"
-                >
-                  Do Deep Analysis →
-                </button>
-                <button
-                    type="button"
-                    onClick={onGoHome}
-                    className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
-                >
-                  Start New Journey
-                </button>
-              </div>
-            </>
+            <div className="mt-5 flex flex-row gap-4">
+              <button
+                type="button"
+                onClick={onGoHome}
+                className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
+              >
+                Start New Journey
+              </button>
+            </div>
           )}
         </div>
       )}

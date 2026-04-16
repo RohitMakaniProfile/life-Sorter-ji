@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Navbar from '../components/onboarding/components/Navbar';
 import PlaybookStage from '../components/onboarding/stages/PlaybookStage';
-import PlaybookViewer from '../components/PlaybookViewer';
 import { getPlaybookStatus, coreApi } from '../api/index';
 import { runResumableTaskStream } from '../api/index';
-import { getUserIdFromJwt } from '../api/authSession';
-
-function isOtpVerified() {
-  return Boolean(getUserIdFromJwt());
-}
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 
@@ -94,7 +90,6 @@ function usePlaybookStream(onboardingId) {
 // ---------------------------------------------------------------------------
 export default function PlaybookPage() {
   const { onboardingId } = useParams();
-  const navigate = useNavigate();
 
   // ── Page-level state ──────────────────────────────────────────────────────
   const [pageState, setPageState] = useState('loading'); // loading|not_found|gap_questions|streaming|complete|error
@@ -102,7 +97,7 @@ export default function PlaybookPage() {
 
   // ── Pre-loaded content (when playbook already complete) ────────────────
   const [completedContent, setCompletedContent] = useState(null);
-  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [completedTask, setCompletedTask] = useState('');
 
   // ── Gap questions ─────────────────────────────────────────────────────────
   const [gapQuestions, setGapQuestions] = useState([]);
@@ -143,8 +138,7 @@ export default function PlaybookPage() {
       try {
         const data = await getPlaybookStatus(onboardingId);
 
-        // Store website URL for the deep-analysis button
-        if (data.website_url) setWebsiteUrl(data.website_url);
+        if (data.task) setCompletedTask(data.task);
 
         // Already complete with content
         if (data.playbook_status === 'complete' && data.content?.playbook) {
@@ -267,17 +261,6 @@ export default function PlaybookPage() {
     window.location.href = '/?reset=1';
   }, []);
 
-  const handleRequestOtp = useCallback(() => {
-    window.location.href = `/phone-verify?next=${encodeURIComponent(`/playbook-view/${onboardingId}`)}&oid=${encodeURIComponent(onboardingId)}`;
-  }, [onboardingId]);
-
-  const handleDeepAnalysis = useCallback(() => {
-    const params = new URLSearchParams({ intent: 'deep-analysis' });
-    if (websiteUrl) params.set('websiteUrl', websiteUrl);
-    params.set('returnTo', `/playbook-view/${onboardingId}`);
-    navigate(`/payment?${params.toString()}`);
-  }, [navigate, websiteUrl, onboardingId]);
-
   // ── Render ────────────────────────────────────────────────────────────────
   const wrapPage = (children) => (
     <div className="flex h-screen max-h-screen flex-col overflow-hidden bg-[#111] font-sans text-white">
@@ -338,41 +321,22 @@ export default function PlaybookPage() {
 
   // Complete — show full playbook
   if (pageState === 'complete') {
-    const content = completedContent || {
-      playbook: stream.result?.playbook || '',
-      website_audit: stream.result?.website_audit || '',
-      context_brief: stream.result?.context_brief || '',
-      icp_card: stream.result?.icp_card || '',
-    };
+    const playbookText = completedContent?.playbook || stream.result?.playbook || '';
+    const taskTitle = completedTask || '';
+    const title = taskTitle ? `Playbook: ${taskTitle}` : 'Your Playbook';
 
     return wrapPage(
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
-        <h1 className="m-0 mb-5 text-center text-[clamp(20px,2.5vw,32px)] font-extrabold text-white">
-          Your Playbook
+        <h1 className="m-0 mb-5 text-center text-[clamp(18px,2vw,26px)] font-bold text-white">
+          {title}
         </h1>
-        <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
-          <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
-            <PlaybookViewer
-              initialPhase={isOtpVerified() ? 'playbook' : 'audit'}
-              themeMode="dark"
-              otpVerified={isOtpVerified()}
-              onRequestOtp={handleRequestOtp}
-              playbookData={{
-                playbook: content.playbook,
-                websiteAudit: content.website_audit,
-                contextBrief: content.context_brief,
-                icpCard: content.icp_card,
-              }}
-            />
+        <div className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
+          <div className="rounded-xl border border-white/10 bg-[#161616] p-5">
+            <div className="playbook-markdown text-sm leading-relaxed text-white/85">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{playbookText}</ReactMarkdown>
+            </div>
           </div>
-          <div className="flex flex-row gap-4">
-            <button
-              type="button"
-              onClick={handleDeepAnalysis}
-              className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-br from-indigo-500 to-violet-500 py-3 px-8 text-[15px] font-bold text-white"
-            >
-              Do Deep Analysis →
-            </button>
+          <div className="mt-5 flex flex-row gap-4">
             <button
               type="button"
               onClick={handleGoHome}
@@ -389,6 +353,7 @@ export default function PlaybookPage() {
   // gap_questions | streaming states — reuse PlaybookStage
   return wrapPage(
     <PlaybookStage
+      task={completedTask}
       showGapQuestions={pageState === 'gap_questions'}
       gapQuestions={gapQuestions}
       gapAnswers={gapAnswers}
@@ -399,7 +364,6 @@ export default function PlaybookPage() {
       playbookText={stream.text}
       playbookDone={stream.done}
       playbookResult={stream.result}
-      onDeepAnalysis={handleDeepAnalysis}
       onGoHome={handleGoHome}
       showRetry={stream.retryNeeded && !stream.streaming && !stream.done}
       onRetry={handleRetry}

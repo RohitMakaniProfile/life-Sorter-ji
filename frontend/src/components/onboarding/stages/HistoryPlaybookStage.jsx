@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import PlaybookViewer from '../../PlaybookViewer';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getPlaybookRun } from '../../../api';
 
 export default function HistoryPlaybookStage({ runId, onBack, onDeepAnalysis, onStartNewJourney }) {
@@ -19,6 +20,9 @@ export default function HistoryPlaybookStage({ runId, onBack, onDeepAnalysis, on
     return () => { active = false; };
   }, [runId]);
 
+  const title = data?.task ? `Playbook: ${data.task}` : 'Your Playbook';
+  const playbookContent = data?.playbookData?.playbook || '';
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
       <div className="mb-2 flex items-center">
@@ -34,8 +38,8 @@ export default function HistoryPlaybookStage({ runId, onBack, onDeepAnalysis, on
         </button>
       </div>
 
-      <h1 className="m-0 mb-5 text-center text-[clamp(20px,2.5vw,32px)] font-extrabold text-white">
-        Your Playbook
+      <h1 className="m-0 mb-5 text-center text-[clamp(18px,2vw,26px)] font-bold text-white">
+        {loading ? 'Loading…' : title}
       </h1>
 
       {loading && (
@@ -50,33 +54,20 @@ export default function HistoryPlaybookStage({ runId, onBack, onDeepAnalysis, on
       {error && (
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <p className="text-sm text-red-400">{error}</p>
-          <button
-            type="button"
-            onClick={onBack}
-            className="text-sm text-violet-400 hover:text-violet-300"
-          >
+          <button type="button" onClick={onBack} className="text-sm text-violet-400 hover:text-violet-300">
             ← Back to history
           </button>
         </div>
       )}
 
       {data && (
-        <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
-          <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
-            <PlaybookViewer
-              initialPhase="playbook"
-              themeMode="dark"
-              playbookData={data.playbookData}
-            />
+        <div className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
+          <div className="rounded-xl border border-white/10 bg-[#161616] p-5">
+            <div className="playbook-markdown text-sm leading-relaxed text-white/85">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{playbookContent}</ReactMarkdown>
+            </div>
           </div>
-          <div className="flex flex-row gap-4">
-            <button
-              type="button"
-              onClick={onDeepAnalysis}
-              className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-br from-indigo-500 to-violet-500 py-3 px-8 text-[15px] font-bold text-white"
-            >
-              Do Deep Analysis →
-            </button>
+          <div className="mt-5 flex flex-row gap-4">
             <button
               type="button"
               onClick={onStartNewJourney}

@@ -114,4 +114,5 @@ STAGE_GAP_QUESTIONS = "gap_questions"
 STAGE_WEBSITE_AUDIT = "website_audit"
 STAGE_BUSINESS_PROFILE = "business_profile"
 STAGE_PLAYBOOK_STREAM = "playbook_stream"
+STAGE_WEB_SUMMARY = "web_summary"
 

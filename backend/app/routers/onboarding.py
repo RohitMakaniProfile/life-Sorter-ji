@@ -13,7 +13,7 @@ from app.middleware.auth_context import get_request_user, require_request_user
 from app.middleware.rate_limit import limiter
 from app.models.session import DynamicQuestion
 from app.services import onboarding_service
-from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions, generate_website_audit
+from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions, generate_website_audit, generate_web_summary_llm
 from app.services.onboarding_question_service import generate_next_rca_question_for_onboarding
 
 logger = structlog.get_logger()
@@ -444,6 +444,7 @@ async def get_onboarding_playbook_status(
 
         playbook_status = str(row_dict.get("playbook_status") or "")
         website_url = str(row_dict.get("website_url") or "").strip()
+        task = str(row_dict.get("task") or "").strip()
 
         content = None
         if playbook_status == "complete":
@@ -465,6 +466,7 @@ async def get_onboarding_playbook_status(
         "onboarding_id": oid,
         "playbook_status": playbook_status,
         "website_url": website_url,
+        "task": task,
         "content": content,
     }
 
@@ -1273,8 +1275,29 @@ async def stream_website_audit_endpoint(
         async def on_token(token: str) -> None:
             await queue.put(("token", token))
 
+        async def run_web_summary_bg() -> None:
+            """Generate LLM web summary in background and save to DB."""
+            try:
+                summary = await generate_web_summary_llm(
+                    raw_web_summary=web_summary,
+                    outcome=outcome,
+                    domain=domain,
+                    task=task,
+                    business_profile=business_profile,
+                    onboarding_id=onboarding_id,
+                )
+                if summary:
+                    async with pool.acquire() as conn:
+                        await onboarding_repo.save_web_summary(conn, onboarding_id, summary)
+                    logger.info("Web summary saved", onboarding_id=onboarding_id, length=len(summary))
+            except Exception as e:
+                logger.error("Background web summary failed", error=str(e))
+
         async def run_llm() -> None:
             try:
+                # Fire web summary generation in background (does not block streaming)
+                asyncio.create_task(run_web_summary_bg())
+
                 result = await generate_website_audit(
                     outcome=outcome,
                     domain=domain,

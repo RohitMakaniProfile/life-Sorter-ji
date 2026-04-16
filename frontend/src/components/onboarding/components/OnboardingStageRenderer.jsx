@@ -103,7 +103,6 @@ export function OnboardingStageRenderer({
         <HistoryPlaybookStage
           runId={viewingRunId}
           onBack={() => setViewingRunId(null)}
-          onDeepAnalysis={handleDeepAnalysis}
           onStartNewJourney={() => setViewingRunId(null)}
         />
       </StageLayout>
@@ -141,6 +140,7 @@ export function OnboardingStageRenderer({
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
         <PlaybookStage
+          task={selectedTask}
           showGapQuestions={showGapQuestions}
           gapQuestions={gapQuestions}
           gapAnswers={gapAnswers}
@@ -151,7 +151,6 @@ export function OnboardingStageRenderer({
           playbookText={playbookText}
           playbookDone={playbookDone}
           playbookResult={playbookResult}
-          onDeepAnalysis={handleDeepAnalysis}
           onGoHome={startNewJourney}
           showRetry={!showGapQuestions && !playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}

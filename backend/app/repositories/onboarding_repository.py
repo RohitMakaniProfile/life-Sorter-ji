@@ -629,6 +629,18 @@ async def find_crawl_context(conn, onboarding_id: str) -> Any:
     return await conn.fetchrow(q.sql, *q.params)
 
 
+async def save_web_summary(conn, onboarding_id: str, web_summary: str) -> None:
+    """Persist the LLM-generated web summary."""
+    q = build_query(
+        PostgreSQLQuery.update(onboarding_t)
+        .set(onboarding_t.web_summary, Parameter("%s"))
+        .set(onboarding_t.updated_at, fn.Now())
+        .where(onboarding_t.id == Parameter("%s")),
+        [web_summary, onboarding_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
+
 async def update_crawl_outputs(conn, onboarding_id: str, web_summary: str, business_profile: str) -> None:
     """Persist web_summary and business_profile from crawl."""
     q = build_query(

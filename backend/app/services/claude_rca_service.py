@@ -1745,3 +1745,97 @@ async def generate_website_audit(
             )
         return None
 
+
+_WEB_SUMMARY_PROMPT = """You are a business intelligence analyst. Given raw scraped website content and the user's specific task focus, produce a concise, structured summary that captures:
+1. What the business does and who it serves
+2. Key offerings, pricing signals, and value propositions
+3. Website strengths and gaps relevant to the user's task
+4. Trust signals, social proof, and calls to action present on the site
+
+Keep the summary factual, dense, and under 600 words. Format with short labelled sections. Do not invent information not present in the crawl data."""
+
+
+async def generate_web_summary_llm(
+    *,
+    raw_web_summary: str,
+    outcome: str,
+    domain: str,
+    task: str,
+    business_profile: str = "",
+    onboarding_id: str | None = None,
+) -> str | None:
+    """
+    Generate a focused, task-contextualized web summary from raw crawl data.
+    Stored back to onboarding.web_summary and used by RCA and playbook generators.
+    """
+    from app.config import get_settings
+    from app.services.token_usage_service import log_onboarding_token_usage, STAGE_WEB_SUMMARY
+
+    settings = get_settings()
+    api_key = getattr(settings, "OPENROUTER_API_KEY", None)
+    model = settings.OPENROUTER_CLAUDE_MODEL
+
+    if not api_key:
+        logger.warning("OpenRouter API key not configured — skipping web summary generation")
+        return None
+
+    if not raw_web_summary.strip():
+        logger.info("No raw web summary to process — skipping web summary generation")
+        return None
+
+    input_tokens = 0
+    output_tokens = 0
+    content = ""
+
+    try:
+        user_payload = {
+            "outcome": str(outcome or "").strip(),
+            "domain": str(domain or "").strip(),
+            "task": str(task or "").strip(),
+            "business_profile": str(business_profile or "").strip(),
+            "crawl_data": str(raw_web_summary or "").strip(),
+        }
+
+        t0 = time.monotonic()
+        result = await _call_openrouter_with_retry(
+            model=model,
+            system_prompt=_WEB_SUMMARY_PROMPT,
+            user_content=json.dumps(user_payload, ensure_ascii=True),
+            temperature=0.3,
+            max_tokens=1000,
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        content = str(result.get("message") or "").strip()
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+
+        logger.info("Web summary generated", length=len(content), latency_ms=latency_ms)
+
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_WEB_SUMMARY,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=True,
+            )
+
+        return content or None
+
+    except Exception as e:
+        logger.error("Web summary generation failed", error=str(e))
+        if onboarding_id:
+            await log_onboarding_token_usage(
+                onboarding_id=onboarding_id,
+                stage=STAGE_WEB_SUMMARY,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                success=False,
+                error_msg=str(e),
+                raw_output=content,
+            )
+        return None
