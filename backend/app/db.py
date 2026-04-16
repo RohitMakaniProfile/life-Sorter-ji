@@ -12,8 +12,23 @@ async def connect_db() -> None:
     global _pool
     if _pool is not None:
         return
-    print(f"[DB] Connecting with DATABASE_URL: {DATABASE_URL}")
-    _pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=10)
+    print("[DB] Connecting to PostgreSQL…")
+    try:
+        # Fail fast if Postgres is down (avoids hanging startup → browser ERR_CONNECTION_TIMED_OUT on :8000).
+        _pool = await asyncpg.create_pool(
+            dsn=DATABASE_URL,
+            min_size=1,
+            max_size=10,
+            timeout=30,
+            command_timeout=60,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            "PostgreSQL connection failed. Start Postgres locally and set DATABASE_URL in backend/.env "
+            "(copy from .env.example). Default without env is postgresql://localhost:5432/ikshan — "
+            "database must exist and user must have access. "
+            f"Underlying error: {e}",
+        ) from e
     print(f"[DB] Pool initialized: {_pool}")
 
 
