@@ -4,6 +4,7 @@ IKSHAN BACKEND — FastAPI Application Entry Point
 
 from __future__ import annotations
 
+import re
 import traceback
 from contextlib import asynccontextmanager
 import structlog
@@ -66,10 +67,20 @@ async def lifespan(app: FastAPI):
     # Load skills from disk — independent of DB, must run unconditionally.
     load_skills()
 
-    # ── DoableClaw Agent startup ───────────────────────────────────────────────
+    # ── PostgreSQL (required for onboarding, chat, agents) ─────────────────────
+    # Previously connect_db() failures were swallowed; the API then returned 500 "pool not initialized".
     try:
         await connect_db()
+        logger.info("✅ Database pool ready")
+    except Exception as e:
+        logger.error(
+            "FATAL: Cannot start API without PostgreSQL. Fix DATABASE_URL and ensure the server is running.",
+            error=str(e),
+        )
+        raise
 
+    # ── DoableClaw Agent / post-DB startup (non-fatal if a step fails) ───────
+    try:
         # Clean up any plans that were executing when the backend was last shut down
         from app.doable_claw_agent.stores import cleanup_stale_executing_plans
         stale_count = await cleanup_stale_executing_plans()
@@ -122,7 +133,7 @@ async def lifespan(app: FastAPI):
         await ensure_default_agents()
         logger.info("✅ DoableClaw Agent started")
     except Exception as e:
-        logger.warning("⚠️  DoableClaw Agent startup failed — research agent routes unavailable", error=str(e))
+        logger.warning("⚠️ Post-DB startup step failed — some agent features may be unavailable", error=str(e))
 
     yield
 
@@ -145,13 +156,16 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Local dev: .env may override CORS_ORIGINS and drop 127.0.0.1; regex covers any port on localhost / 127.0.0.1.
+    _cors: dict = {
+        "allow_origins": settings.CORS_ORIGINS,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if not settings.is_production:
+        _cors["allow_origin_regex"] = r"https?://(127\.0\.0\.1|localhost)(:\d+)?$"
+    app.add_middleware(CORSMiddleware, **_cors)
 
     setup_rate_limiter(app)
 
@@ -170,9 +184,18 @@ def create_app() -> FastAPI:
             error=str(exc),
             traceback=traceback.format_exc(),
         )
+        headers: dict[str, str] = {}
+        origin = request.headers.get("origin") or ""
+        if origin and (origin in settings.CORS_ORIGINS or (
+            not settings.is_production
+            and re.match(r"https?://(127\.0\.0\.1|localhost)(:\d+)?$", origin)
+        )):
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
         return JSONResponse(
             status_code=500,
             content={"detail": f"Internal server error: {str(exc)}"},
+            headers=headers,
         )
 
     # ── Routers ────────────────────────────────────────────────
