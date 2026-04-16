@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
-import { coreApi } from '../../../api/services/core';
+import { coreApi, streamWebsiteAudit } from '../../../api/services/core';
 import { mapToolsToEarlyTools } from '../toolService';
 import { toRectObj, TASK_KEY_SEP, buildOnboardingPatch } from '../utils/onboardingUtils';
 import STATIC_SCALE_QUESTIONS from '../data/scale_questions.json';
@@ -50,13 +50,12 @@ export function useOnboardingHandlers({
     setCurrentQuestion,
     setQuestionIndex,
     loading, setLoading,
-    setShowPrecision,
-    setPrecisionQuestions,
-    precisionIndex, setPrecisionIndex,
-    setPrecisionAnswers,
     setShowTransitionMessages,
     setShowAnalysisTransition,
     setRcaCalling,
+    setShowWebsiteAudit,
+    setWebsiteAuditText,
+    setWebsiteAuditLoading,
     setShowComplete,
     setError,
     otpVerified,
@@ -84,6 +83,18 @@ export function useOnboardingHandlers({
       requestAnimationFrame(() => scrollToEnd());
     });
   }, [scrollToEnd]);
+
+  // Shared: start streaming the website audit for a session
+  const startWebsiteAuditStream = useCallback((sid) => {
+    setWebsiteAuditText('');
+    setWebsiteAuditLoading(true);
+    setShowWebsiteAudit(true);
+    streamWebsiteAudit(sid, {
+      onToken: (token) => setWebsiteAuditText((prev) => prev + token),
+      onDone: (full) => { setWebsiteAuditText(full); setWebsiteAuditLoading(false); },
+      onError: () => { setWebsiteAuditText(''); setWebsiteAuditLoading(false); },
+    }).catch(() => setWebsiteAuditLoading(false));
+  }, [setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit]);
 
   // Start new journey
   const startNewJourney = useCallback(() => {
@@ -122,7 +133,6 @@ export function useOnboardingHandlers({
         setShowUrlForm(true);
         setShowDeeperDive(false);
         setShowDiagnostic(false);
-        setShowPrecision(false);
         setShowComplete(false);
         setToolPage(0);
       }
@@ -153,7 +163,7 @@ export function useOnboardingHandlers({
         console.warn('Onboarding update:', err?.message || err);
       }
     },
-    [updateOnboarding, scheduleScrollToEnd, clearPostTask, setSelectedOutcome, setSelectedDomain, setSelectedTask, setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowPrecision, setShowComplete, setToolPage, setEarlyTools, setTaskNodeTransition, pendingTaskNodeTransitionRef, taskToolsCacheRef],
+    [updateOnboarding, scheduleScrollToEnd, clearPostTask, setSelectedOutcome, setSelectedDomain, setSelectedTask, setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowComplete, setToolPage, setEarlyTools, setTaskNodeTransition, pendingTaskNodeTransitionRef, taskToolsCacheRef],
   );
 
   // Journey clicks
@@ -292,7 +302,8 @@ export function useOnboardingHandlers({
       } else if (res?.status === 'complete') {
         setShowAnalysisTransition(false);
         setRcaCalling(false);
-        handleStartPlaybook();
+        // RCA has no questions — show website audit then proceed
+        startWebsiteAuditStream(sid);
       } else {
         throw new Error('No diagnostic question available');
       }
@@ -303,7 +314,7 @@ export function useOnboardingHandlers({
     } finally {
       setLoading(false);
     }
-  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, handleStartPlaybook, setLoading, setShowAnalysisTransition, setShowDeeperDive, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, setError, scrollToEnd]);
+  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, startWebsiteAuditStream, setLoading, setShowAnalysisTransition, setShowDeeperDive, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, setError, scrollToEnd]);
 
   // Diagnostic handlers
   const handleDiagnosticAnswer = useCallback(async (answer) => {
@@ -313,17 +324,8 @@ export function useOnboardingHandlers({
       const sid = await ensureSession();
       const res = await rcaNextQuestion({ onboarding_id: sid, answer });
       if (res?.status === 'complete') {
-        const precData = await coreApi.onboardingPrecisionStart({ onboarding_id: sid });
-        if (precData?.available && precData?.questions?.length) {
-          setPrecisionQuestions(precData.questions);
-          setPrecisionAnswers({});
-          setPrecisionIndex(0);
-          setCurrentQuestion(precData.questions[0]);
-          setShowPrecision(true);
-          setTimeout(scrollToEnd, 50);
-          return;
-        }
-        handleStartPlaybook();
+        setShowDiagnostic(false);
+        startWebsiteAuditStream(sid);
         return;
       }
       if (res?.status === 'question' && res?.question) {
@@ -337,32 +339,14 @@ export function useOnboardingHandlers({
     } finally {
       setLoading(false);
     }
-  }, [loading, ensureSession, handleStartPlaybook, setLoading, setPrecisionQuestions, setPrecisionAnswers, setPrecisionIndex, setCurrentQuestion, setShowPrecision, setQuestionIndex, setError, scrollToEnd]);
+  }, [loading, ensureSession, startWebsiteAuditStream, setLoading, setShowDiagnostic, setCurrentQuestion, setQuestionIndex, setError]);
 
-  const handlePrecisionAnswer = useCallback(async (answer) => {
-    setLoading(true);
-    try {
-      const sid = await ensureSession();
-      const res = await coreApi.onboardingPrecisionAnswer({
-        onboarding_id: sid,
-        question_index: precisionIndex,
-        answer,
-      });
-      if (res?.all_answered) {
-        setShowPrecision(false);
-        handleStartPlaybook();
-        return;
-      }
-      if (res?.next_question) {
-        setPrecisionIndex((i) => i + 1);
-        setCurrentQuestion(res.next_question);
-      }
-    } catch {
-      setError('Failed to submit precision answer.');
-    } finally {
-      setLoading(false);
-    }
-  }, [ensureSession, precisionIndex, handleStartPlaybook, setLoading, setShowPrecision, setPrecisionIndex, setCurrentQuestion, setError]);
+  // Called when user clicks Continue on the website audit stage
+  const handleWebsiteAuditContinue = useCallback(() => {
+    setShowWebsiteAudit(false);
+    setWebsiteAuditText('');
+    handleStartPlaybook();
+  }, [handleStartPlaybook, setShowWebsiteAudit, setWebsiteAuditText]);
 
   const handleBackToStep1 = useCallback(() => {
     setSelectedTask(null);
@@ -419,7 +403,8 @@ export function useOnboardingHandlers({
         } else if (res?.status === 'complete') {
           setShowAnalysisTransition(false);
           setRcaCalling(false);
-          handleStartPlaybook();
+          // RCA has no questions — show website audit then proceed
+          startWebsiteAuditStream(oid);
         } else {
           throw new Error('Unexpected diagnostic response');
         }
@@ -453,16 +438,18 @@ export function useOnboardingHandlers({
       handleTaskClick(task, outcomeObj, domain);
     }
   }, [
-    onboardingIdRef, handleTaskClick, handleStartPlaybook,
+    onboardingIdRef, handleTaskClick,
     setSelectedOutcome, setSelectedDomain, setSelectedTask,
     setUrlValue, setScaleAnswers,
     setShowUrlForm, setShowDeeperDive, setShowAnalysisTransition,
     setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic,
+    startWebsiteAuditStream,
     setError, startCrawlForSession, waitForCrawlDone, scrollToEnd,
   ]);
 
   return {
     startNewJourney,
+    startWebsiteAuditStream,
     handleOnboardingFieldUpdate,
     handleOutcomeClick,
     handleDomainClick,
@@ -476,7 +463,7 @@ export function useOnboardingHandlers({
     handleTransitionComplete,
     handleGapAnswer,
     handleDiagnosticAnswer,
-    handlePrecisionAnswer,
+    handleWebsiteAuditContinue,
     handleBackToStep1,
     clearError,
     scheduleScrollToEnd,

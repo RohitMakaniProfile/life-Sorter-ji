@@ -25,17 +25,17 @@ export function useSessionRestore({
   setShowUrlForm,
   setShowDeeperDive,
   setShowDiagnostic,
-  setShowPrecision,
   setShowPlaybook,
   setShowGapQuestions,
   setCurrentQuestion,
   setQuestionIndex,
-  setPrecisionQuestions,
-  setPrecisionIndex,
   setGapQuestions,
   setGapAnswers,
   setGapCurrentIndex,
   setEarlyTools,
+  setShowWebsiteAudit,
+  setWebsiteAuditText,
+  startWebsiteAuditStream,
 
   // Playbook stream controls
   clearResumeArtifacts,
@@ -167,16 +167,22 @@ export function useSessionRestore({
             break;
 
           case 'precision':
+            // Precision questions removed — restore to website_audit stage instead
             clearResumeArtifacts();
-            if (state.precision_questions?.length) {
-              setPrecisionQuestions(state.precision_questions);
-              const answeredCount = state.precision_answers?.length || 0;
-              setPrecisionIndex(answeredCount);
-              if (answeredCount < state.precision_questions.length) {
-                setCurrentQuestion(state.precision_questions[answeredCount]);
-              }
-              setShowPrecision(true);
-              setShowDiagnostic(true);
+            if (state.onboarding_id) onboardingIdRef.current = state.onboarding_id;
+            startWebsiteAuditStream(state.onboarding_id);
+            break;
+
+          case 'website_audit':
+            clearResumeArtifacts();
+            if (state.onboarding_id) onboardingIdRef.current = state.onboarding_id;
+            if (state.website_audit) {
+              // Audit already in DB — restore it directly
+              setWebsiteAuditText(state.website_audit);
+              setShowWebsiteAudit(true);
+            } else {
+              // Audit not yet generated — stream it
+              startWebsiteAuditStream(state.onboarding_id);
             }
             break;
 
@@ -213,17 +219,17 @@ export function useSessionRestore({
     setShowUrlForm,
     setShowDeeperDive,
     setShowDiagnostic,
-    setShowPrecision,
     setShowPlaybook,
     setShowGapQuestions,
     setCurrentQuestion,
     setQuestionIndex,
-    setPrecisionQuestions,
-    setPrecisionIndex,
     setGapQuestions,
     setGapAnswers,
     setGapCurrentIndex,
     setEarlyTools,
+    setShowWebsiteAudit,
+    setWebsiteAuditText,
+    startWebsiteAuditStream,
   ]);
 }
 

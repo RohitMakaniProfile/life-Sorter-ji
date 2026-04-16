@@ -3,9 +3,13 @@ import { useNavigate, useParams } from 'react-router-dom';
 import Navbar from '../components/onboarding/components/Navbar';
 import PlaybookStage from '../components/onboarding/stages/PlaybookStage';
 import PlaybookViewer from '../components/PlaybookViewer';
-import { getPlaybookStatus, coreApi } from '../api/services/core';
-import { runResumableTaskStream } from '../api/services/taskStream';
+import { getPlaybookStatus, coreApi } from '../api/index';
+import { runResumableTaskStream } from '../api/index';
 import { getUserIdFromJwt } from '../api/authSession';
+
+function isOtpVerified() {
+  return Boolean(getUserIdFromJwt());
+}
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 
@@ -134,11 +138,6 @@ export default function PlaybookPage() {
     if (initDoneRef.current) return;
     initDoneRef.current = true;
 
-    // Gate: must be logged in before calling any protected API
-    if (!getUserIdFromJwt()) {
-      window.location.href = `/phone-verify?next=${encodeURIComponent(`/playbook-view/${onboardingId}`)}&oid=${encodeURIComponent(onboardingId)}`;
-      return;
-    }
 
     const init = async () => {
       try {
@@ -204,8 +203,8 @@ export default function PlaybookPage() {
         const msg = String(err?.message || err || '');
         const status = msg.match(/\b(401|403)\b/)?.[1];
         if (status === '401' || msg.toLowerCase().includes('authentication required')) {
-          // Token expired or invalid — send to phone-verify
-          window.location.href = `/phone-verify?next=${encodeURIComponent(`/playbook-view/${onboardingId}`)}&oid=${encodeURIComponent(onboardingId)}`;
+          // Not authenticated — load empty complete state; OTP gate will unlock tab 3
+          setPageState('complete');
           return;
         }
         if (status === '403' || msg.toLowerCase().includes('access denied')) {
@@ -267,6 +266,10 @@ export default function PlaybookPage() {
   const handleGoHome = useCallback(() => {
     window.location.href = '/?reset=1';
   }, []);
+
+  const handleRequestOtp = useCallback(() => {
+    window.location.href = `/phone-verify?next=${encodeURIComponent(`/playbook-view/${onboardingId}`)}&oid=${encodeURIComponent(onboardingId)}`;
+  }, [onboardingId]);
 
   const handleDeepAnalysis = useCallback(() => {
     const params = new URLSearchParams({ intent: 'deep-analysis' });
@@ -350,8 +353,10 @@ export default function PlaybookPage() {
         <div className="mx-auto w-full max-w-[800px] flex-1 overflow-auto">
           <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-sm">
             <PlaybookViewer
-              initialPhase="playbook"
+              initialPhase={isOtpVerified() ? 'playbook' : 'audit'}
               themeMode="dark"
+              otpVerified={isOtpVerified()}
+              onRequestOtp={handleRequestOtp}
               playbookData={{
                 playbook: content.playbook,
                 websiteAudit: content.website_audit,

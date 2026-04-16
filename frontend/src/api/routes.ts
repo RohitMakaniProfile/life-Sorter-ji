@@ -95,6 +95,7 @@ export const API_ROUTES = {
     playbookStatus: (onboardingId: string) => `/api/v1/onboarding/playbook-status?onboarding_id=${encodeURIComponent(onboardingId)}`,
     playbookGapAnswers: '/api/v1/onboarding/playbook/gap-answers',
     playbookMcqAnswer: '/api/v1/onboarding/playbook/mcq-answer',
+    websiteAuditStream: '/api/v1/onboarding/website-audit/stream',
     reset: '/api/v1/onboarding/reset',
     fromProduct: '/api/v1/onboarding/from-product',
   },

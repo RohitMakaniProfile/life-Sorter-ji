@@ -224,6 +224,7 @@ _STATE_COLS = (
     onboarding_t.gap_questions,
     onboarding_t.gap_answers,
     onboarding_t.onboarding_completed_at,
+    onboarding_t.website_audit,
 )
 
 
@@ -387,6 +388,35 @@ async def update_gap_answers(conn, onboarding_id: str, answers: str, status: str
 
 
 # ── Precision questions ───────────────────────────────────────────────────────
+
+async def find_website_audit_context(conn, onboarding_id: str) -> Any:
+    """Fetch context needed for website audit generation (post-RCA)."""
+    q = build_query(
+        PostgreSQLQuery.from_(onboarding_t)
+        .select(
+            onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
+            onboarding_t.website_url, onboarding_t.scale_answers,
+            onboarding_t.rca_qa, onboarding_t.rca_summary, onboarding_t.rca_handoff,
+            onboarding_t.web_summary, onboarding_t.business_profile,
+            onboarding_t.website_audit,
+        )
+        .where(onboarding_t.id == Parameter("%s")),
+        [onboarding_id],
+    )
+    return await conn.fetchrow(q.sql, *q.params)
+
+
+async def save_website_audit(conn, onboarding_id: str, audit_text: str) -> None:
+    """Persist the generated website audit text."""
+    q = build_query(
+        PostgreSQLQuery.update(onboarding_t)
+        .set(onboarding_t.website_audit, Parameter("%s"))
+        .set(onboarding_t.updated_at, fn.Now())
+        .where(onboarding_t.id == Parameter("%s")),
+        [audit_text, onboarding_id],
+    )
+    await conn.execute(q.sql, *q.params)
+
 
 async def find_precision_context(conn, onboarding_id: str) -> Any:
     """Fetch context needed for precision question generation."""

@@ -29,7 +29,6 @@ export function useJourneySelection({
   setShowUrlForm,
   setShowDeeperDive,
   setShowDiagnostic,
-  setShowPrecision,
   setShowComplete,
   setShowTransitionMessages,
   setCheckingGapQuestions,
@@ -48,12 +47,11 @@ export function useJourneySelection({
     setShowUrlForm(false);
     setShowDeeperDive(false);
     setShowDiagnostic(false);
-    setShowPrecision(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
     setCheckingGapQuestions(false);
     setEarlyTools([]);
-  }, [setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowPrecision, setShowComplete, setShowTransitionMessages, setCheckingGapQuestions, setEarlyTools]);
+  }, [setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowComplete, setShowTransitionMessages, setCheckingGapQuestions, setEarlyTools]);
 
   const scheduleScrollToEnd = useCallback(() => {
     requestAnimationFrame(() => {
@@ -105,7 +103,6 @@ export function useJourneySelection({
         setShowUrlForm(true);
         setShowDeeperDive(false);
         setShowDiagnostic(false);
-        setShowPrecision(false);
         setShowComplete(false);
         setToolPage(0);
       }
@@ -138,7 +135,7 @@ export function useJourneySelection({
         console.warn('Onboarding update:', err?.message || err);
       }
     },
-    [updateOnboarding, scheduleScrollToEnd, clearPostTask, setSelectedOutcome, setSelectedDomain, setSelectedTask, setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowPrecision, setShowComplete, setToolPage, setEarlyTools, setTaskNodeTransition],
+    [updateOnboarding, scheduleScrollToEnd, clearPostTask, setSelectedOutcome, setSelectedDomain, setSelectedTask, setShowUrlForm, setShowDeeperDive, setShowDiagnostic, setShowComplete, setToolPage, setEarlyTools, setTaskNodeTransition],
   );
 
   const handleOutcomeClick = useCallback((outcome) => {

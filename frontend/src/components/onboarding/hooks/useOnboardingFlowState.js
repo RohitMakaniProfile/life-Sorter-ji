@@ -32,11 +32,6 @@ export function useOnboardingFlowState() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  // Precision
-  const [showPrecision, setShowPrecision] = useState(false);
-  const [precisionQuestions, setPrecisionQuestions] = useState([]);
-  const [precisionIndex, setPrecisionIndex] = useState(0);
-  const [precisionAnswers, setPrecisionAnswers] = useState({});
 
   // Gap questions
   const [showGapQuestions, setShowGapQuestions] = useState(false);
@@ -53,6 +48,11 @@ export function useOnboardingFlowState() {
   // Analysis transition
   const [showAnalysisTransition, setShowAnalysisTransition] = useState(false);
   const [rcaCalling, setRcaCalling] = useState(false);
+
+  // Website audit
+  const [showWebsiteAudit, setShowWebsiteAudit] = useState(false);
+  const [websiteAuditText, setWebsiteAuditText] = useState('');
+  const [websiteAuditLoading, setWebsiteAuditLoading] = useState(false);
 
   // Other
   const [showComplete, setShowComplete] = useState(false);
@@ -93,20 +93,19 @@ export function useOnboardingFlowState() {
     setShowUrlForm(false);
     setShowDeeperDive(false);
     setShowDiagnostic(false);
-    setShowPrecision(false);
     setShowComplete(false);
     setShowPlaybook(false);
     setShowGapQuestions(false);
     setShowTransitionMessages(false);
     setCheckingGapQuestions(false);
+    setShowWebsiteAudit(false);
+    setWebsiteAuditText('');
     setScaleAnswers({});
-    setPrecisionAnswers({});
     setGapAnswers({});
     setGapCurrentIndex(0);
     setGapSavingIndex(null);
     setCurrentQuestion(null);
     setQuestionIndex(0);
-    setPrecisionIndex(0);
   }, []);
 
   // Clear post-task stages only
@@ -114,10 +113,11 @@ export function useOnboardingFlowState() {
     setShowUrlForm(false);
     setShowDeeperDive(false);
     setShowDiagnostic(false);
-    setShowPrecision(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
     setCheckingGapQuestions(false);
+    setShowWebsiteAudit(false);
+    setWebsiteAuditText('');
     setEarlyTools([]);
   }, []);
 
@@ -150,12 +150,6 @@ export function useOnboardingFlowState() {
     questionIndex, setQuestionIndex,
     loading, setLoading,
 
-    // Precision
-    showPrecision, setShowPrecision,
-    precisionQuestions, setPrecisionQuestions,
-    precisionIndex, setPrecisionIndex,
-    precisionAnswers, setPrecisionAnswers,
-
     // Gap
     showGapQuestions, setShowGapQuestions,
     gapQuestions, setGapQuestions,
@@ -171,6 +165,11 @@ export function useOnboardingFlowState() {
     // Analysis
     showAnalysisTransition, setShowAnalysisTransition,
     rcaCalling, setRcaCalling,
+
+    // Website audit
+    showWebsiteAudit, setShowWebsiteAudit,
+    websiteAuditText, setWebsiteAuditText,
+    websiteAuditLoading, setWebsiteAuditLoading,
 
     // Other
     showComplete, setShowComplete,

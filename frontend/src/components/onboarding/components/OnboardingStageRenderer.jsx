@@ -3,6 +3,7 @@ import TransitionMessages from '../components/TransitionMessages';
 import UrlStage from '../stages/UrlStage';
 import DeeperDiveStage from '../stages/DeeperDiveStage';
 import DiagnosticStage from '../stages/DiagnosticStage';
+import WebsiteAuditStage from '../stages/WebsiteAuditStage';
 import PlaybookStage from '../stages/PlaybookStage';
 import HistoryPlaybookStage from '../stages/HistoryPlaybookStage';
 import CompleteStage from '../stages/CompleteStage';
@@ -40,9 +41,6 @@ export function OnboardingStageRenderer({
     showComplete,
     showDiagnostic,
     currentQuestion,
-    showPrecision,
-    precisionIndex,
-    precisionAnswers,
     questionIndex,
     scaleAnswers,
     showAnalysisTransition,
@@ -63,6 +61,9 @@ export function OnboardingStageRenderer({
     taskNodeTransition,
     loading,
     error,
+    showWebsiteAudit,
+    websiteAuditText,
+    websiteAuditLoading,
   } = state;
 
   const {
@@ -88,7 +89,7 @@ export function OnboardingStageRenderer({
     handleScaleSelect,
     handleScaleSubmit,
     handleDiagnosticAnswer,
-    handlePrecisionAnswer,
+    handleWebsiteAuditContinue,
     handleUrlSubmit,
     handleUrlSkip,
     handleBackToStep1,
@@ -172,24 +173,32 @@ export function OnboardingStageRenderer({
     );
   }
 
+  // Website audit stage (after RCA)
+  if (showWebsiteAudit) {
+    return (
+      <StageLayout error={error} onClearError={clearError}>
+        <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
+        <WebsiteAuditStage
+          auditText={websiteAuditText}
+          loading={websiteAuditLoading}
+          onContinue={handleWebsiteAuditContinue}
+        />
+      </StageLayout>
+    );
+  }
+
   // Diagnostic stage
   if (showDiagnostic && currentQuestion) {
-    const answerHandler = showPrecision ? handlePrecisionAnswer : handleDiagnosticAnswer;
-    const activeIndex = showPrecision ? precisionIndex : questionIndex;
     return (
       <StageLayout error={error} onClearError={clearError}>
         <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
         <DiagnosticStage
           currentQuestion={currentQuestion}
-          questionIndex={activeIndex}
-          scaleAnswers={showPrecision ? precisionAnswers : scaleAnswers}
+          questionIndex={questionIndex}
+          scaleAnswers={scaleAnswers}
           onAnswer={(opt) => {
-            if (showPrecision) {
-              state.setPrecisionAnswers((prev) => ({ ...prev, [activeIndex]: opt }));
-            } else {
-              state.setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
-            }
-            answerHandler(opt);
+            state.setScaleAnswers((prev) => ({ ...prev, [questionIndex]: opt }));
+            handleDiagnosticAnswer(opt);
           }}
           loading={loading}
           onBack={() => {

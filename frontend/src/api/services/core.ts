@@ -330,6 +330,54 @@ export async function getPlaybookStatus(onboardingId: string): Promise<{
   return apiJson(API_ROUTES.onboarding.playbookStatus(onboardingId));
 }
 
+export interface WebsiteAuditStreamCallbacks {
+  onToken?: (token: string) => void;
+  onDone?: (fullText: string) => void;
+  onError?: (message: string) => void;
+}
+
+export async function streamWebsiteAudit(
+  onboardingId: string,
+  callbacks: WebsiteAuditStreamCallbacks,
+): Promise<void> {
+  const response = await apiRequest(`${getApiBase()}${API_ROUTES.onboarding.websiteAuditStream}`, {
+    method: 'POST',
+    credentials: 'include',
+    body: JSON.stringify({ onboarding_id: onboardingId }),
+  });
+  if (!response.ok) throw new Error(await extractApiError(response));
+  if (!response.body) throw new Error('No response body');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6)) as { type: string; token?: string; full_text?: string; message?: string };
+        if (data.type === 'token' && data.token) {
+          callbacks.onToken?.(data.token);
+        } else if (data.type === 'done') {
+          callbacks.onDone?.(data.full_text ?? '');
+          return;
+        } else if (data.type === 'error') {
+          callbacks.onError?.(data.message ?? 'Audit stream error');
+          return;
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+  }
+}
+
 export async function getPlaybookRun(runId: string): Promise<PlaybookRunDetail> {
   return apiJson<PlaybookRunDetail>(API_ROUTES.aiChat.playbookRun(runId));
 }

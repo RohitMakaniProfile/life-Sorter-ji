@@ -111,6 +111,7 @@ async def log_onboarding_token_usage(
 STAGE_RCA_QUESTIONS = "rca_questions"
 STAGE_PRECISION_QUESTIONS = "precision_questions"
 STAGE_GAP_QUESTIONS = "gap_questions"
+STAGE_WEBSITE_AUDIT = "website_audit"
 STAGE_BUSINESS_PROFILE = "business_profile"
 STAGE_PLAYBOOK_STREAM = "playbook_stream"
 

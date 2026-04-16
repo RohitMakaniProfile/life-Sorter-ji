@@ -320,22 +320,28 @@ export interface PlaybookData {
   icpCard?: string;
 }
 
+type PlaybookPhase = 'audit' | 'quickwin' | 'playbook';
+
 const PlaybookViewer = ({
   playbookData,
   initialPhase,
   phase: controlledPhase,
   onPhaseChange,
   themeMode,
+  otpVerified = true,
+  onRequestOtp,
 }: {
   playbookData: PlaybookData;
-  initialPhase?: 'verdict' | 'quickwin' | 'playbook';
-  phase?: 'verdict' | 'quickwin' | 'playbook';
-  onPhaseChange?: (phase: 'verdict' | 'quickwin' | 'playbook') => void;
+  initialPhase?: PlaybookPhase;
+  phase?: PlaybookPhase;
+  onPhaseChange?: (phase: PlaybookPhase) => void;
   themeMode?: ThemeMode;
+  otpVerified?: boolean;
+  onRequestOtp?: () => void;
 }) => {
-  const [internalPhase, setInternalPhase] = useState<'verdict' | 'quickwin' | 'playbook'>(initialPhase ?? 'verdict');
+  const [internalPhase, setInternalPhase] = useState<PlaybookPhase>(initialPhase ?? 'audit');
   const phase = controlledPhase ?? internalPhase;
-  const setPhase = (p: 'verdict' | 'quickwin' | 'playbook') => {
+  const setPhase = (p: PlaybookPhase) => {
     setInternalPhase(p);
     onPhaseChange?.(p);
   };
@@ -355,8 +361,8 @@ const PlaybookViewer = ({
   const isDark = mode === 'dark';
   const theme = PLAYBOOK_THEME[mode];
 
-  const phases: Array<'verdict' | 'quickwin' | 'playbook'> = ['verdict', 'quickwin', 'playbook'];
-  const phaseLabels = { verdict: 'The Verdict', quickwin: 'Quick Win', playbook: 'Full Playbook' };
+  const phases: Array<PlaybookPhase> = ['audit', 'quickwin', 'playbook'];
+  const phaseLabels: Record<PlaybookPhase, string> = { audit: 'Site Audit', quickwin: 'Quick Win', playbook: 'Full Playbook' };
   const pi = phases.indexOf(phase);
 
   const audit = playbookData.websiteAudit || '';
@@ -431,8 +437,8 @@ const PlaybookViewer = ({
         ))}
       </div>
 
-      {/* ── VERDICT TAB ── */}
-      {phase === 'verdict' && (
+      {/* ── AUDIT TAB ── */}
+      {phase === 'audit' && (
         <div>
           {overallScore !== null && (
             <div style={{
@@ -669,8 +675,64 @@ const PlaybookViewer = ({
         </div>
       )}
 
+      {/* ── FULL PLAYBOOK TAB (OTP gate) ── */}
+      {phase === 'playbook' && !otpVerified && (
+        <div style={{ position: 'relative', borderRadius: 16, overflow: 'hidden' }}>
+          {/* Blurred preview of first 3 steps */}
+          <div style={{ filter: 'blur(5px)', opacity: 0.22, userSelect: 'none', pointerEvents: 'none' }}>
+            {steps.slice(0, 3).map((step) => (
+              <div key={step.num} style={{
+                background: theme.panelBg, borderRadius: 13, marginBottom: 7,
+                border: `1px solid ${theme.border}`, padding: '13px 15px',
+                display: 'flex', gap: 11, alignItems: 'center',
+              }}>
+                <div style={{ width: 28, height: 28, borderRadius: 8, flexShrink: 0, background: '#7c3aed', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800 }}>
+                  {step.num}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: theme.primaryText, lineHeight: 1.3 }}>{step.title}</div>
+                  <span style={{ display: 'inline-block', marginTop: 4, fontSize: 8.5, fontWeight: 800, letterSpacing: '.06em', padding: '2px 7px', borderRadius: 20, background: isDark ? '#381317' : '#fee2e2', color: '#dc2626', border: `1px solid ${isDark ? '#b91c1c' : '#fca5a5'}` }}>HIGH PRIORITY</span>
+                </div>
+              </div>
+            ))}
+            {steps.length === 0 && (
+              <div style={{ height: 180, background: theme.panelBg, borderRadius: 13, border: `1px solid ${theme.border}` }} />
+            )}
+          </div>
+          {/* Lock overlay */}
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            background: isDark
+              ? 'linear-gradient(to bottom, rgba(17,24,39,0.2) 0%, rgba(17,24,39,0.97) 45%)'
+              : 'linear-gradient(to bottom, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0.97) 45%)',
+            padding: '2rem', borderRadius: 16,
+          }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: 12 }}>🔒</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: theme.primaryText, marginBottom: 8, textAlign: 'center' }}>
+              Unlock Your Full Playbook
+            </div>
+            <div style={{ fontSize: 12.5, color: theme.mutedText, textAlign: 'center', maxWidth: 280, marginBottom: 24, lineHeight: 1.65 }}>
+              Verify your phone number to get your personalised 10-step growth playbook.
+            </div>
+            <button
+              onClick={onRequestOtp}
+              style={{
+                padding: '12px 32px',
+                background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+                border: 'none', borderRadius: 12, cursor: 'pointer',
+                fontSize: 13.5, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+                boxShadow: '0 4px 20px rgba(124,58,237,.4)',
+              }}
+            >
+              Verify Phone Number →
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── FULL PLAYBOOK TAB ── */}
-      {phase === 'playbook' && (
+      {phase === 'playbook' && otpVerified && (
         <div>
           {oneLever && (
             <div style={{

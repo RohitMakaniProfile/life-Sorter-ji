@@ -32,12 +32,6 @@ export const INITIAL_ONBOARDING_STATE = {
   questionIndex: 0,
   loading: false,
 
-  // Precision questions
-  showPrecision: false,
-  precisionQuestions: [],
-  precisionIndex: 0,
-  precisionAnswers: {},
-
   // Gap questions
   showGapQuestions: false,
   gapQuestions: [],
@@ -91,12 +85,6 @@ export function useOnboardingState() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  // Precision questions
-  const [showPrecision, setShowPrecision] = useState(false);
-  const [precisionQuestions, setPrecisionQuestions] = useState([]);
-  const [precisionIndex, setPrecisionIndex] = useState(0);
-  const [precisionAnswers, setPrecisionAnswers] = useState({});
-
   // Gap questions
   const [showGapQuestions, setShowGapQuestions] = useState(false);
   const [gapQuestions, setGapQuestions] = useState([]);
@@ -136,20 +124,17 @@ export function useOnboardingState() {
     setShowUrlForm(false);
     setShowDeeperDive(false);
     setShowDiagnostic(false);
-    setShowPrecision(false);
     setShowComplete(false);
     setShowPlaybook(false);
     setShowGapQuestions(false);
     setShowTransitionMessages(false);
     setCheckingGapQuestions(false);
     setScaleAnswers({});
-    setPrecisionAnswers({});
     setGapAnswers({});
     setGapCurrentIndex(0);
     setGapSavingIndex(null);
     setCurrentQuestion(null);
     setQuestionIndex(0);
-    setPrecisionIndex(0);
   }, []);
 
   /**
@@ -159,7 +144,6 @@ export function useOnboardingState() {
     setShowUrlForm(false);
     setShowDeeperDive(false);
     setShowDiagnostic(false);
-    setShowPrecision(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
     setCheckingGapQuestions(false);
@@ -223,12 +207,6 @@ export function useOnboardingState() {
     currentQuestion, setCurrentQuestion,
     questionIndex, setQuestionIndex,
     loading, setLoading,
-
-    // Precision questions
-    showPrecision, setShowPrecision,
-    precisionQuestions, setPrecisionQuestions,
-    precisionIndex, setPrecisionIndex,
-    precisionAnswers, setPrecisionAnswers,
 
     // Gap questions
     showGapQuestions, setShowGapQuestions,

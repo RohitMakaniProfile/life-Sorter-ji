@@ -13,7 +13,7 @@ from app.middleware.auth_context import get_request_user, require_request_user
 from app.middleware.rate_limit import limiter
 from app.models.session import DynamicQuestion
 from app.services import onboarding_service
-from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions
+from app.services.claude_rca_service import generate_precision_questions, generate_gap_questions, generate_website_audit
 from app.services.onboarding_question_service import generate_next_rca_question_for_onboarding
 
 logger = structlog.get_logger()
@@ -66,7 +66,7 @@ class ToolsByQ1Q2Q3Response(BaseModel):
 class OnboardingStateResponse(BaseModel):
     """Response for GET /onboarding/state - returns the current onboarding state for resumption."""
     onboarding_id: str
-    stage: str = "start"  # start | url | questions | diagnostic | precision | playbook | complete
+    stage: str = "start"  # start | url | questions | diagnostic | website_audit | precision | playbook | complete
     outcome: Optional[str] = None
     domain: Optional[str] = None
     task: Optional[str] = None
@@ -84,6 +84,7 @@ class OnboardingStateResponse(BaseModel):
     gap_questions: Optional[list[dict[str, Any]]] = None
     gap_answers: Optional[str] = None
     gap_answers_parsed: Optional[dict[str, str]] = None
+    website_audit: Optional[str] = None
 
 
 def _as_dict(v: Any) -> dict[str, Any]:
@@ -134,10 +135,13 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
         # If there's no rca_summary, RCA is still in progress
         if not rca_summary:
             return "diagnostic"
-        # If RCA is complete, next is precision or playbook
-        if precision_status:
-            return "precision" if precision_status == "awaiting_answers" else "playbook"
-        return "playbook"
+        # RCA complete — check precision/playbook status
+        if precision_status == "awaiting_answers":
+            return "precision"
+        if precision_status == "complete":
+            return "playbook"
+        # RCA done, precision not yet started → show website audit stage
+        return "website_audit"
 
     # Parse scale_answers - handle both raw JSONB (dict) and JSON strings
     scale_answers_raw = row.get("scale_answers")
@@ -243,6 +247,7 @@ async def get_onboarding_state(
             gap_questions=gap_questions if gap_questions else None,
             gap_answers=str(row_dict.get("gap_answers") or "") or None,
             gap_answers_parsed=_parse_gap_answers_map(row_dict.get("gap_answers")) or None,
+            website_audit=str(row_dict.get("website_audit") or "") or None,
         )
 
 
@@ -628,6 +633,16 @@ class PrecisionQuestionItem(BaseModel):
     question: str = ""
     options: list[str] = []
     section_label: str = ""
+
+
+class WebsiteAuditGenerateRequest(BaseModel):
+    onboarding_id: Optional[str] = None
+
+
+class WebsiteAuditGenerateResponse(BaseModel):
+    onboarding_id: str
+    audit_text: str
+    available: bool = True
 
 
 class StartOnboardingPrecisionRequest(BaseModel):
@@ -1194,4 +1209,120 @@ async def onboarding_gap_questions_start(request: Request, body: StartGapQuestio
             questions=[GapQuestionItem(**q) for q in cleaned],
             available=len(cleaned) > 0,
         )
+
+
+class WebsiteAuditRequest(BaseModel):
+    onboarding_id: str
+
+
+@router.post("/website-audit/stream")
+@limiter.limit(lambda: get_settings().RATE_LIMIT_DEFAULT)
+async def stream_website_audit_endpoint(
+    request: Request,
+    body: WebsiteAuditRequest,
+):
+    """
+    Stream website audit generation as SSE tokens.
+    If audit already exists in DB → returns it immediately as a single 'done' event.
+    Otherwise streams tokens from LLM, saves result to DB, then sends 'done'.
+
+    SSE events:
+      data: {"type": "token", "token": "..."}
+      data: {"type": "done",  "full_text": "..."}
+      data: {"type": "error", "message": "..."}
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+    from app.db import get_pool
+    from app.repositories import onboarding_repository as onboarding_repo
+
+    onboarding_id = body.onboarding_id.strip()
+    if not onboarding_id:
+        raise HTTPException(status_code=400, detail="onboarding_id is required")
+
+    pool = get_pool()
+
+    async def generate():
+        # 1. Fetch context row
+        async with pool.acquire() as conn:
+            row = await onboarding_repo.find_website_audit_context(conn, onboarding_id)
+            if not row:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Onboarding session not found'})}\n\n"
+                return
+
+            row_dict = dict(row)
+            existing_audit = str(row_dict.get("website_audit") or "").strip()
+
+        # 2. If audit already saved → return immediately
+        if existing_audit:
+            yield f"data: {json.dumps({'type': 'done', 'full_text': existing_audit})}\n\n"
+            return
+
+        # 3. Otherwise stream from LLM
+        outcome = str(row_dict.get("outcome") or "").strip()
+        domain = str(row_dict.get("domain") or "").strip()
+        task = str(row_dict.get("task") or "").strip()
+        website_url = str(row_dict.get("website_url") or "").strip()
+        scale_answers = _as_dict(row_dict.get("scale_answers")) or {}
+        rca_qa_raw = _as_list(row_dict.get("rca_qa")) or []
+        rca_summary = str(row_dict.get("rca_summary") or "").strip()
+        rca_handoff = str(row_dict.get("rca_handoff") or "").strip()
+        web_summary = str(row_dict.get("web_summary") or "").strip()
+        business_profile = str(row_dict.get("business_profile") or "").strip()
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_token(token: str) -> None:
+            await queue.put(("token", token))
+
+        async def run_llm() -> None:
+            try:
+                result = await generate_website_audit(
+                    outcome=outcome,
+                    domain=domain,
+                    task=task,
+                    website_url=website_url,
+                    scale_answers=scale_answers,
+                    rca_history=rca_qa_raw,
+                    rca_summary=rca_summary,
+                    rca_handoff=rca_handoff,
+                    web_summary=web_summary,
+                    business_profile=business_profile,
+                    onboarding_id=onboarding_id,
+                    on_token=on_token,
+                )
+                full_text = result or ""
+                # Save to DB
+                if full_text:
+                    async with pool.acquire() as conn:
+                        await onboarding_repo.save_website_audit(conn, onboarding_id, full_text)
+                await queue.put(("done", full_text))
+            except Exception as e:
+                logger.error("Website audit stream failed", error=str(e))
+                await queue.put(("error", str(e)))
+
+        task_handle = asyncio.create_task(run_llm())
+
+        try:
+            while True:
+                event_type, data = await asyncio.wait_for(queue.get(), timeout=120.0)
+                if event_type == "token":
+                    yield f"data: {json.dumps({'type': 'token', 'token': data})}\n\n"
+                elif event_type == "done":
+                    yield f"data: {json.dumps({'type': 'done', 'full_text': data})}\n\n"
+                    break
+                elif event_type == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'message': data})}\n\n"
+                    break
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Generation timed out'})}\n\n"
+        finally:
+            task_handle.cancel()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 

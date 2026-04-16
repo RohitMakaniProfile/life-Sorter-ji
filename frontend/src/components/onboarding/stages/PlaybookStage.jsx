@@ -51,7 +51,7 @@ export default function PlaybookStage({
   const streamContainerRef = useRef(null);
 
   // Auto-switch tab as stream sections arrive — only until user manually switches
-  const [streamTab, setStreamTab] = useState('verdict');
+  const [streamTab, setStreamTab] = useState('audit');
   const userSwitchedTabRef = useRef(false);
   const sectionsSeenRef = useRef({ website_audit: false, playbook: false });
 
@@ -60,7 +60,7 @@ export default function PlaybookStage({
       // Reset on each new stream
       userSwitchedTabRef.current = false;
       sectionsSeenRef.current = { website_audit: false, playbook: false };
-      setStreamTab('verdict');
+      setStreamTab('audit');
       return;
     }
   }, [playbookStreaming]);
@@ -73,7 +73,7 @@ export default function PlaybookStage({
       setStreamTab('playbook');
     } else if (sections.website_audit && !sectionsSeenRef.current.website_audit) {
       sectionsSeenRef.current.website_audit = true;
-      setStreamTab('verdict');
+      setStreamTab('audit');
     }
   }, [playbookText, playbookDone]);
 
