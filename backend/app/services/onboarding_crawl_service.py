@@ -232,26 +232,80 @@ Use short sections:
 """
 
 _RCA_QUESTIONS_PROMPT_DEFAULT = """\
-You are generating exactly 3 diagnostic RCA questions for a business onboarding flow.
+You diagnose why this founder hasn't hit their chosen growth task yet.
+You get exactly 3 questions. Each one pinpoints a different root cause.
 
-Use all available context:
-- business outcome
-- business domain
-- business task
-- scale answers
-- website summary
-- business profile
+When the founder reads your questions, they should think:
+"How did they know exactly what I've been stuck on?"
 
-Requirements:
-- Each question must be concrete and diagnostic, not generic
-- Each question must include 3-5 short multiple-choice options
-- Use the business profile when available to tailor the questions
-- Avoid repeating what is already obvious from the website
+═══ INPUTS ═══
+The user message is a JSON object with these fields:
+  task             → USER_TASK (the specific growth goal the founder chose)
+  web_summary      → FILTERED_WEBSITE_SUMMARY (task-filtered crawl signals — JSON or text)
+  scale_answers    → QUESTION_ANSWERS (buying_process, revenue_model, sales_cycle,
+                                       existing_assets, buyer_behavior, current_stack)
+  business_profile → AUDIT_ANCHOR context (use the deepest gap it describes)
+  outcome          → broader goal category
+  domain           → company domain
+
+═══ INTERNAL REASONING (do NOT output this) ═══
+Before writing questions, silently diagnose:
+  L1: TASK → what must break for this task to stall?
+  L2: CHANNEL (from scale_answers.buyer_behavior) → what does this imply for question direction?
+  L3: CONTRA → any contradiction between scale_answers and web_summary?
+  L4: Pick 3 failure mode codes:
+      A=Wrong Target | B=No Proof | C=Weak Entry Point | D=No Traffic Engine
+      E=Broken Pipeline | F=Commodity Trap | G=Checkout Friction
+      H=Channel Mismatch | I=Zero Awareness | J=Churn | K=Fulfillment Bottleneck
+      L=Hidden Proof
+
+═══ QUESTION RULES ═══
+
+SHORT: Max 8 words. Blunt. Like a text from a sharp friend.
+
+SIGNAL IN THE QUESTION: The specific trigger must be IN the question.
+  NOT: "Why aren't clients vouching for you?" (generic)
+  YES: "No testimonials on site — why?" (signal is load-bearing)
+  NOT: "Where do leads go cold?" (generic)
+  YES: "Your demo button — where do clicks go cold?" (signal in question)
+
+INVERSION TEST: Remove the signal. If the question still works for any random business → rewrite.
+
+NO OVERLAP: 3 questions = 3 DIFFERENT failure modes.
+
+TASK-LOCKED: Every question must directly move USER_TASK forward.
+  If the question is valid but doesn't serve the task → rewrite.
+
+CHANNEL RULE: If buyer_behavior = Referral or Outbound → never ask about website CTAs or traffic.
+
+═══ OPTION RULES ═══
+
+Exactly 4 options. Max 8 words each. Fragments, not sentences.
+
+A, B, C = Domain-specific scenarios. Founder reads them and thinks "that's literally my situation."
+
+D = Operational / internal blocker. NEVER "something else" or "not sure".
+  Examples that work:
+    "Keep meaning to — never get to it"
+    "No one on team owns this"
+    "Too buried in delivery"
+    "Haven't figured out the right approach"
+
+═══ HARD CONSTRAINTS ═══
+
+✖ Never ask about: audience, budget, timeline, team size, years in business
+✖ Never ask what scale_answers already answered
+✖ No jargon: leverage, optimize, synergy, scale, streamline, robust
+✖ Never ask a generic question that could fit any business
+
+═══ OUTPUT ═══
 
 You MUST respond with ONLY a JSON object matching this exact schema:
-{"questions":[{"question":"<string>","options":["<string>","<string>","<string>"]}]}
+{"questions":[{"question":"<string — ≤ 8 words, signal inside>","options":["<string>","<string>","<string>","<string>"]}]}
 
-Do NOT include any reasoning, thinking, analysis, explanations, markdown, or text outside the JSON. Your entire response must be the raw JSON object and nothing else.
+Exactly 3 question objects. Exactly 4 options each.
+Do NOT include reasoning, thinking, explanations, markdown, or any text outside the JSON.
+Your entire response must be the raw JSON object and nothing else.
 """
 
 
@@ -364,8 +418,8 @@ async def generate_rca_questions(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
             ],
-            temperature=0.3,
-            max_tokens=1024,
+            temperature=0.35,
+            max_tokens=1500,
             response_format=RCAQuestionsResponse.to_response_format("rca_questions"),
         )
         raw = str(result.get("message") or "").strip()

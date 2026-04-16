@@ -6,6 +6,7 @@ import Navbar from '../components/onboarding/components/Navbar';
 import PlaybookStage from '../components/onboarding/stages/PlaybookStage';
 import { getPlaybookStatus, coreApi } from '../api/index';
 import { runResumableTaskStream } from '../api/index';
+import { DOMAIN_TASKS } from '../components/onboarding/onboardingJourneyData';
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 
@@ -60,7 +61,7 @@ function usePlaybookStream(onboardingId) {
               icp_card: e.icp_card || '',
             });
           },
-          onError(e) {
+          onError(_e) {
             if (runIdRef.current !== myRun) return;
             finished = true;
             setStreaming(false);
@@ -98,6 +99,7 @@ export default function PlaybookPage() {
   // ── Pre-loaded content (when playbook already complete) ────────────────
   const [completedContent, setCompletedContent] = useState(null);
   const [completedTask, setCompletedTask] = useState('');
+  const [completedDomain, setCompletedDomain] = useState('');
 
   // ── Gap questions ─────────────────────────────────────────────────────────
   const [gapQuestions, setGapQuestions] = useState([]);
@@ -138,7 +140,9 @@ export default function PlaybookPage() {
       try {
         const data = await getPlaybookStatus(onboardingId);
 
+        if (data.domain) setCompletedDomain(data.domain);
         if (data.task) setCompletedTask(data.task);
+        else if (data.domain) setCompletedTask(data.domain);
 
         // Already complete with content
         if (data.playbook_status === 'complete' && data.content?.playbook) {
@@ -322,28 +326,108 @@ export default function PlaybookPage() {
   // Complete — show full playbook
   if (pageState === 'complete') {
     const playbookText = completedContent?.playbook || stream.result?.playbook || '';
-    const taskTitle = completedTask || '';
-    const title = taskTitle ? `Playbook: ${taskTitle}` : 'Your Playbook';
+
+    // Derive task label: API value first, then extract from playbook H1
+    const taskLabel = (() => {
+      if (completedTask) return completedTask;
+      const m = playbookText.match(/^#\s+The\s+"([^"]+)"\s+Playbook/im)
+        || playbookText.match(/^#\s+The\s+([^#\n]+?)\s+Playbook/im);
+      return m ? m[1].trim() : null;
+    })();
 
     return wrapPage(
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
-        <h1 className="m-0 mb-5 text-center text-[clamp(18px,2vw,26px)] font-bold text-white">
-          {title}
-        </h1>
-        <div className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
-          <div className="rounded-xl border border-white/10 bg-[#161616] p-5">
-            <div className="playbook-markdown text-sm leading-relaxed text-white/85">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{playbookText}</ReactMarkdown>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {/* ── Task header bar ── */}
+        <div style={{
+          flexShrink: 0,
+          padding: '12px 24px',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 6,
+        }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: '.12em',
+            textTransform: 'uppercase', color: '#475569',
+          }}>
+            Your Playbook
+          </span>
+          {taskLabel && (
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 8,
+              padding: '5px 16px',
+              background: 'rgba(139,92,246,0.10)',
+              border: '1px solid rgba(139,92,246,0.22)',
+              borderRadius: 999,
+              maxWidth: '80%',
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+              <span style={{
+                fontSize: 13, fontWeight: 600, color: '#c4b5fd',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {taskLabel}
+              </span>
             </div>
-          </div>
-          <div className="mt-5 flex flex-row gap-4">
-            <button
-              type="button"
-              onClick={handleGoHome}
-              className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
-            >
-              Start New Journey
-            </button>
+          )}
+        </div>
+
+        {/* ── Scrollable playbook ── */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
+          <div className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
+            <div className="rounded-2xl border border-white/[0.07] bg-[#111318] px-6 py-7">
+              <div className="playbook-markdown leading-relaxed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{playbookText}</ReactMarkdown>
+              </div>
+            </div>
+
+            {/* ── Other tasks in this domain ── */}
+            {completedDomain && DOMAIN_TASKS[completedDomain]?.length > 0 && (
+              <div className="mt-6">
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: '#475569', marginBottom: 10 }}>
+                  Other {completedDomain} tasks
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                  {DOMAIN_TASKS[completedDomain]
+                    .filter((t) => t !== completedTask)
+                    .map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => { window.location.href = `/?task=${encodeURIComponent(t)}&domain=${encodeURIComponent(completedDomain)}`; }}
+                        style={{
+                          cursor: 'pointer',
+                          border: '1px solid rgba(255,255,255,0.10)',
+                          borderRadius: 10,
+                          background: 'rgba(255,255,255,0.04)',
+                          padding: '8px 14px',
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: 'rgba(255,255,255,0.60)',
+                          transition: 'all 0.15s',
+                          textAlign: 'left',
+                          lineHeight: 1.35,
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139,92,246,0.12)'; e.currentTarget.style.borderColor = 'rgba(139,92,246,0.35)'; e.currentTarget.style.color = '#c4b5fd'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; e.currentTarget.style.color = 'rgba(255,255,255,0.60)'; }}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-row gap-4">
+              <button
+                type="button"
+                onClick={handleGoHome}
+                className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
+              >
+                Start New Journey
+              </button>
+            </div>
           </div>
         </div>
       </div>,

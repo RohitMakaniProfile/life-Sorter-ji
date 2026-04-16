@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { outcomeOptions } from '../onboardingJourneyData';
+import { outcomeOptions, OUTCOME_DOMAINS } from '../onboardingJourneyData';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { mapToolsToEarlyTools } from '../toolService';
@@ -56,6 +56,24 @@ export function useSessionRestore({
       const urlParams = new URLSearchParams(window.location.search);
       if (urlParams.get('reset') === '1') {
         try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
+        return;
+      }
+
+      // If ?task=...&domain=... is in URL, pre-select that task and open URL form
+      const preTask = urlParams.get('task');
+      const preDomain = urlParams.get('domain');
+      if (preTask && preDomain) {
+        try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
+        const outcomeEntry = Object.entries(OUTCOME_DOMAINS).find(([, domains]) => domains.includes(preDomain));
+        if (outcomeEntry) {
+          const outcomeObj = outcomeOptions.find((o) => o.id === outcomeEntry[0]);
+          if (outcomeObj) {
+            setSelectedOutcome(outcomeObj);
+            setSelectedDomain(preDomain);
+            setSelectedTask(preTask);
+            setShowUrlForm(true);
+          }
+        }
         return;
       }
 

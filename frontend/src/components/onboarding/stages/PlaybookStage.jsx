@@ -66,18 +66,65 @@ export default function PlaybookStage({
     requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
   }, [playbookText, playbookStreaming, playbookDone]);
 
-  const title = task ? `Playbook: ${task}` : (playbookDone ? 'Your Playbook' : 'Generating Your Playbook…');
-  const displayTitle = showGapQuestions ? 'A Few More Questions' : title;
-
   const playbookContent = playbookDone
     ? (playbookResult?.playbook || extractPlaybookContent(playbookText || ''))
     : extractPlaybookContent(playbookText || '');
 
+  // Derive task label: prefer prop, then extract from playbook h1
+  // New prompt writes: # The "[Task Name]" Playbook
+  const taskLabel = (() => {
+    if (task) return task;
+    const src = playbookContent || playbookText || '';
+    // Match: # The "XYZ" Playbook  or  # The XYZ Playbook
+    const m = src.match(/^#\s+The\s+"([^"]+)"\s+Playbook/im)
+      || src.match(/^#\s+The\s+([^#\n]+?)\s+Playbook/im);
+    return m ? m[1].trim() : null;
+  })();
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
-      <h1 className="m-0 mb-5 text-center text-[clamp(18px,2vw,26px)] font-bold text-white">
-        {displayTitle}
-      </h1>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+
+      {/* ── Task header bar ── */}
+      <div style={{
+        flexShrink: 0,
+        padding: '12px 24px',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 6,
+      }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: '.12em',
+          textTransform: 'uppercase', color: '#475569',
+        }}>
+          {showGapQuestions ? 'A Few More Questions' : playbookDone ? 'Your Playbook' : 'Generating Playbook…'}
+        </span>
+
+        {!showGapQuestions && taskLabel && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '5px 16px',
+            background: 'rgba(139,92,246,0.10)',
+            border: '1px solid rgba(139,92,246,0.22)',
+            borderRadius: 999,
+            maxWidth: '80%',
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#c4b5fd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{taskLabel}</span>
+          </div>
+        )}
+
+        {!showGapQuestions && !taskLabel && playbookStreaming && !playbookDone && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', animation: 'pulse 1.2s ease-in-out infinite' }} />
+            <span style={{ fontSize: 12, color: '#64748b' }}>Thinking…</span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Scrollable content ── */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
 
       {showGapQuestions && (
         <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5">
@@ -169,14 +216,14 @@ export default function PlaybookStage({
           )}
 
           {playbookText && (
-            <div className="rounded-xl border border-white/10 bg-[#161616] p-5">
+            <div className="rounded-2xl border border-white/[0.07] bg-[#111318] px-6 py-7">
               {playbookStreaming && !playbookDone && (
-                <div className="mb-3 flex items-center gap-2 text-xs text-white/40">
+                <div className="mb-4 flex items-center gap-2 text-xs text-white/40">
                   <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
                   Generating…
                 </div>
               )}
-              <div className="playbook-markdown text-sm leading-relaxed text-white/85">
+              <div className="playbook-markdown leading-relaxed">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {playbookContent + (playbookStreaming && !playbookDone ? '\n\n▍' : '')}
                 </ReactMarkdown>
@@ -209,6 +256,7 @@ export default function PlaybookStage({
           )}
         </div>
       )}
+      </div>{/* end scrollable content */}
     </div>
   );
 }

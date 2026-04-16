@@ -436,3 +436,166 @@ body:has(.phase2-root) {
     transform: translateX(-50%);
   }
 }
+
+/* ── Markdown rendering: shared audit base ─────────────────────────────── */
+.audit-md p { margin: 0 0 0.65em; }
+.audit-md p:last-child { margin-bottom: 0; }
+
+.audit-md h1, .audit-md h2, .audit-md h3 {
+  color: #f1f5f9; font-weight: 700; line-height: 1.35; margin: 1.1em 0 0.4em;
+}
+.audit-md h1 { font-size: 1.15rem; }
+.audit-md h2 { font-size: 1.05rem; }
+.audit-md h3 { font-size: 0.95rem; color: #cbd5e1; }
+.audit-md ul, .audit-md ol { margin: 0.4em 0 0.7em 1.3em; padding: 0; }
+.audit-md li { margin-bottom: 0.3em; line-height: 1.65; }
+.audit-md strong { color: #f1f5f9; font-weight: 700; }
+.audit-md em { color: #cbd5e1; }
+.audit-md code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 0.82em; background: rgba(139,92,246,0.12); color: #c4b5fd;
+  padding: 1px 5px; border-radius: 4px;
+}
+.audit-md pre {
+  background: #0d1117; border: 1px solid #1e293b; border-radius: 8px;
+  padding: 0.85rem 1rem; overflow-x: auto; margin: 0.6em 0;
+}
+.audit-md pre code { background: none; padding: 0; color: #94a3b8; font-size: 0.82em; }
+.audit-md table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 0.5em 0; }
+.audit-md th {
+  text-align: left; padding: 7px 10px; background: #111827; color: #94a3b8;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; border-bottom: 1px solid #1e293b;
+}
+.audit-md td { padding: 7px 10px; border-bottom: 1px solid #1a2535; color: #cbd5e1; vertical-align: top; }
+.audit-md tr:last-child td { border-bottom: none; }
+.audit-md tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+.audit-md hr { border: none; border-top: 1px solid #1e293b; margin: 1rem 0; }
+.audit-md blockquote {
+  border-left: 3px solid #334155; margin: 0.5em 0;
+  padding: 0.4em 0.8em; color: #94a3b8; font-style: italic;
+}
+
+/* ── Playbook markdown — premium visual hierarchy ──────────────────────── */
+
+/* Title (H1) */
+.playbook-markdown h1 {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #f8fafc;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  margin: 0 0 1.1em;
+}
+
+/* Section headers (H2) */
+.playbook-markdown h2 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  line-height: 1.35;
+  margin: 1.6em 0 0.5em;
+  padding-bottom: 0.4em;
+  border-bottom: 1px solid rgba(139,92,246,0.18);
+}
+
+/* Sub-headers (H3) */
+.playbook-markdown h3 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #c4b5fd;
+  line-height: 1.35;
+  margin: 1.2em 0 0.35em;
+  letter-spacing: 0.01em;
+}
+
+/* Body paragraphs */
+.playbook-markdown p {
+  margin: 0 0 0.85em;
+  line-height: 1.78;
+  color: rgba(255,255,255,0.80);
+}
+.playbook-markdown p:last-child { margin-bottom: 0; }
+
+/* Inline labels like **Goal:** **What to do:** */
+.playbook-markdown strong {
+  color: #f1f5f9;
+  font-weight: 700;
+}
+
+/* Step dividers — visible violet gradient line */
+.playbook-markdown hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(139,92,246,0.45), transparent);
+  margin: 1.6em 0;
+}
+
+/* Lists */
+.playbook-markdown ul, .playbook-markdown ol {
+  margin: 0.35em 0 0.85em 1.25em;
+  padding: 0;
+}
+.playbook-markdown li {
+  margin-bottom: 0.4em;
+  line-height: 1.7;
+  color: rgba(255,255,255,0.78);
+}
+.playbook-markdown ul li::marker { color: rgba(139,92,246,0.7); }
+.playbook-markdown ol li::marker { color: rgba(139,92,246,0.7); font-weight: 600; }
+
+.playbook-markdown em { color: #cbd5e1; }
+
+/* Inline code (tool names, etc.) */
+.playbook-markdown code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 0.8em;
+  background: rgba(139,92,246,0.14);
+  color: #c4b5fd;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+/* Code blocks (prompts / scripts) */
+.playbook-markdown pre {
+  background: #0c0f16;
+  border: 1px solid rgba(139,92,246,0.18);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  margin: 0.7em 0 1em;
+}
+.playbook-markdown pre code {
+  background: none;
+  padding: 0;
+  color: #94a3b8;
+  font-size: 0.8em;
+  line-height: 1.7;
+}
+
+/* Tables */
+.playbook-markdown table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 0.6em 0 1em;
+}
+.playbook-markdown th {
+  text-align: left; padding: 8px 12px; background: rgba(139,92,246,0.1);
+  color: #a78bfa; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+  border-bottom: 1px solid rgba(139,92,246,0.2);
+}
+.playbook-markdown td {
+  padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
+  color: #cbd5e1; vertical-align: top;
+}
+.playbook-markdown tr:last-child td { border-bottom: none; }
+.playbook-markdown tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+/* Blockquotes */
+.playbook-markdown blockquote {
+  border-left: 3px solid rgba(139,92,246,0.5);
+  margin: 0.6em 0;
+  padding: 0.5em 1em;
+  background: rgba(139,92,246,0.05);
+  border-radius: 0 6px 6px 0;
+  color: #94a3b8;
+}

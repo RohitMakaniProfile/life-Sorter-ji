@@ -445,6 +445,8 @@ async def get_onboarding_playbook_status(
         playbook_status = str(row_dict.get("playbook_status") or "")
         website_url = str(row_dict.get("website_url") or "").strip()
         task = str(row_dict.get("task") or "").strip()
+        domain = str(row_dict.get("domain") or "").strip()
+        outcome = str(row_dict.get("outcome") or "").strip()
 
         content = None
         if playbook_status == "complete":
@@ -467,6 +469,8 @@ async def get_onboarding_playbook_status(
         "playbook_status": playbook_status,
         "website_url": website_url,
         "task": task,
+        "domain": domain,
+        "outcome": outcome,
         "content": content,
     }
 
