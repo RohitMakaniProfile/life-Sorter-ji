@@ -233,6 +233,16 @@ async def create_stream(
     status: str,
     expires_at: datetime,
 ) -> None:
+    import structlog
+    logger = structlog.get_logger()
+
+    logger.info("repo_create_stream_start",
+               stream_id=stream_id,
+               task_type=task_type,
+               session_id=session_id,
+               user_id=user_id,
+               status=status)
+
     q = build_query(
         PostgreSQLQuery.into(task_stream_streams_t)
         .columns(
@@ -245,7 +255,31 @@ async def create_stream(
         ),
         [stream_id, task_type, session_id, user_id, status, expires_at],
     )
-    await conn.execute(q.sql, *q.params)
+
+    logger.info("repo_create_stream_executing_sql", sql=q.sql[:200], params_count=len(q.params))
+
+    try:
+        result = await conn.execute(q.sql, *q.params)
+        logger.info("repo_create_stream_executed", result=result, stream_id=stream_id)
+
+        # Verify the row was actually inserted
+        verify_q = build_query(
+            PostgreSQLQuery.from_(task_stream_streams_t)
+            .select(task_stream_streams_t.stream_id)
+            .where(task_stream_streams_t.stream_id == Parameter("%s")),
+            [stream_id],
+        )
+        verify_result = await conn.fetchval(verify_q.sql, *verify_q.params)
+        logger.info("repo_create_stream_verified",
+                   stream_id=stream_id,
+                   found=verify_result is not None,
+                   found_id=verify_result)
+    except Exception as e:
+        logger.error("repo_create_stream_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    stream_id=stream_id)
+        raise
 
 
 async def set_stream_status(conn, stream_id: str, status: str, expires_at: datetime) -> None:
