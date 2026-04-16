@@ -86,6 +86,7 @@ export function useOnboardingHandlers({
 
   // Shared: start streaming the website audit for a session
   const startWebsiteAuditStream = useCallback((sid) => {
+    setShowAnalysisTransition(false);
     setWebsiteAuditText('');
     setWebsiteAuditLoading(true);
     setShowWebsiteAudit(true);
@@ -94,7 +95,7 @@ export function useOnboardingHandlers({
       onDone: (full) => { setWebsiteAuditText(full); setWebsiteAuditLoading(false); },
       onError: () => { setWebsiteAuditText(''); setWebsiteAuditLoading(false); },
     }).catch(() => setWebsiteAuditLoading(false));
-  }, [setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit]);
+  }, [setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit, setShowAnalysisTransition]);
 
   // Start new journey
   const startNewJourney = useCallback(() => {
@@ -287,34 +288,15 @@ export function useOnboardingHandlers({
       setShowDeeperDive(false);
       await waitForCrawlDone(90000);
 
-      setRcaCalling(true);
-      const res = await rcaNextQuestion({ onboarding_id: sid });
-
-      if (res?.status === 'question' && res?.question) {
-        setCurrentQuestion(res.question);
-        setQuestionIndex(0);
-        setTimeout(() => {
-          setShowAnalysisTransition(false);
-          setShowDiagnostic(true);
-          setRcaCalling(false);
-          setTimeout(scrollToEnd, 50);
-        }, 800);
-      } else if (res?.status === 'complete') {
-        setShowAnalysisTransition(false);
-        setRcaCalling(false);
-        // RCA has no questions — show website audit then proceed
-        startWebsiteAuditStream(sid);
-      } else {
-        throw new Error('No diagnostic question available');
-      }
+      // Website audit comes before RCA — start it now
+      startWebsiteAuditStream(sid);
     } catch {
       setShowAnalysisTransition(false);
-      setRcaCalling(false);
-      setError('Failed to start diagnostic.');
+      setError('Failed to start analysis.');
     } finally {
       setLoading(false);
     }
-  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, startWebsiteAuditStream, setLoading, setShowAnalysisTransition, setShowDeeperDive, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, setError, scrollToEnd]);
+  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, startWebsiteAuditStream, setLoading, setShowAnalysisTransition, setShowDeeperDive, setError]);
 
   // Diagnostic handlers
   const handleDiagnosticAnswer = useCallback(async (answer) => {
@@ -325,7 +307,7 @@ export function useOnboardingHandlers({
       const res = await rcaNextQuestion({ onboarding_id: sid, answer });
       if (res?.status === 'complete') {
         setShowDiagnostic(false);
-        startWebsiteAuditStream(sid);
+        handleStartPlaybook();
         return;
       }
       if (res?.status === 'question' && res?.question) {
@@ -339,14 +321,36 @@ export function useOnboardingHandlers({
     } finally {
       setLoading(false);
     }
-  }, [loading, ensureSession, startWebsiteAuditStream, setLoading, setShowDiagnostic, setCurrentQuestion, setQuestionIndex, setError]);
+  }, [loading, ensureSession, handleStartPlaybook, setLoading, setShowDiagnostic, setCurrentQuestion, setQuestionIndex, setError]);
 
-  // Called when user clicks Continue on the website audit stage
-  const handleWebsiteAuditContinue = useCallback(() => {
+  // Called when user clicks Continue on the website audit stage — now starts RCA
+  const handleWebsiteAuditContinue = useCallback(async () => {
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
-    handleStartPlaybook();
-  }, [handleStartPlaybook, setShowWebsiteAudit, setWebsiteAuditText]);
+    setLoading(true);
+    try {
+      const sid = await ensureSession();
+      setRcaCalling(true);
+      const res = await rcaNextQuestion({ onboarding_id: sid });
+      if (res?.status === 'question' && res?.question) {
+        setCurrentQuestion(res.question);
+        setQuestionIndex(0);
+        setShowDiagnostic(true);
+        setRcaCalling(false);
+        setTimeout(scrollToEnd, 50);
+      } else if (res?.status === 'complete') {
+        setRcaCalling(false);
+        handleStartPlaybook();
+      } else {
+        throw new Error('No diagnostic question available');
+      }
+    } catch (err) {
+      setRcaCalling(false);
+      setError(`Failed to start diagnostic: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [ensureSession, handleStartPlaybook, setShowWebsiteAudit, setWebsiteAuditText, setLoading, setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic, scrollToEnd, setError]);
 
   const handleBackToStep1 = useCallback(() => {
     setSelectedTask(null);
@@ -387,32 +391,9 @@ export function useOnboardingHandlers({
     const webScrapDone = Boolean(onboarding.web_scrap_done);
     const hasScaleAnswers = Object.keys(dbAnswers).length > 0;
 
-    const runRca = async () => {
-      setRcaCalling(true);
-      try {
-        const res = await rcaNextQuestion({ onboarding_id: oid });
-        if (res?.status === 'question' && res?.question) {
-          setCurrentQuestion(res.question);
-          setQuestionIndex(0);
-          setTimeout(() => {
-            setShowAnalysisTransition(false);
-            setShowDiagnostic(true);
-            setRcaCalling(false);
-            setTimeout(scrollToEnd, 50);
-          }, 800);
-        } else if (res?.status === 'complete') {
-          setShowAnalysisTransition(false);
-          setRcaCalling(false);
-          // RCA has no questions — show website audit then proceed
-          startWebsiteAuditStream(oid);
-        } else {
-          throw new Error('Unexpected diagnostic response');
-        }
-      } catch {
-        setShowAnalysisTransition(false);
-        setRcaCalling(false);
-        setError('Failed to start diagnostic.');
-      }
+    const runRca = () => {
+      // Website audit comes before RCA — show audit first, RCA starts after user clicks Continue
+      startWebsiteAuditStream(oid);
     };
 
     if (webScrapDone) {
@@ -442,9 +423,8 @@ export function useOnboardingHandlers({
     setSelectedOutcome, setSelectedDomain, setSelectedTask,
     setUrlValue, setScaleAnswers,
     setShowUrlForm, setShowDeeperDive, setShowAnalysisTransition,
-    setRcaCalling, setCurrentQuestion, setQuestionIndex, setShowDiagnostic,
     startWebsiteAuditStream,
-    setError, startCrawlForSession, waitForCrawlDone, scrollToEnd,
+    setError, startCrawlForSession, waitForCrawlDone,
   ]);
 
   return {

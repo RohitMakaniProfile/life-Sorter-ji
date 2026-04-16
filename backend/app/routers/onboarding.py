@@ -66,7 +66,7 @@ class ToolsByQ1Q2Q3Response(BaseModel):
 class OnboardingStateResponse(BaseModel):
     """Response for GET /onboarding/state - returns the current onboarding state for resumption."""
     onboarding_id: str
-    stage: str = "start"  # start | url | questions | diagnostic | website_audit | precision | playbook | complete
+    stage: str = "start"  # start | url | questions | website_audit | diagnostic | playbook | complete
     outcome: Optional[str] = None
     domain: Optional[str] = None
     task: Optional[str] = None
@@ -110,21 +110,19 @@ def _as_list(v: Any) -> list[dict[str, Any]]:
 
 
 def _determine_onboarding_stage(row: dict[str, Any]) -> str:
-    """Determine the current onboarding stage based on row data."""
+    """Determine the current onboarding stage based on row data.
+
+    Flow order: url → questions → website_audit → diagnostic → playbook → complete
+    """
     # Check if onboarding is complete
     onboarding_completed_at = row.get("onboarding_completed_at")
     if onboarding_completed_at:
         return "complete"
 
-    # Check if playbook is complete or generating
+    # Check if playbook is active or complete
     playbook_status = str(row.get("playbook_status") or "")
     if playbook_status in ("complete", "generating", "started", "ready", "awaiting_gap_answers", "error"):
         return "playbook"
-
-    # Check if precision questions are in progress
-    precision_status = str(row.get("precision_status") or "")
-    if precision_status == "awaiting_answers":
-        return "precision"
 
     # Parse rca_qa - handle both raw JSONB (dict/list) and JSON strings
     rca_qa_raw = row.get("rca_qa")
@@ -132,22 +130,22 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
 
     rca_summary = str(row.get("rca_summary") or "")
     if rca_qa and len(rca_qa) > 0:
-        # If there's no rca_summary, RCA is still in progress
+        # RCA in progress (no summary yet)
         if not rca_summary:
             return "diagnostic"
-        # RCA complete — check precision/playbook status
-        if precision_status == "awaiting_answers":
-            return "precision"
-        if precision_status == "complete":
-            return "playbook"
-        # RCA done, precision not yet started → show website audit stage
-        return "website_audit"
+        # RCA complete → go to playbook
+        return "playbook"
 
     # Parse scale_answers - handle both raw JSONB (dict) and JSON strings
     scale_answers_raw = row.get("scale_answers")
     scale_answers = _as_dict(scale_answers_raw) if scale_answers_raw is not None else {}
+
     if scale_answers and len(scale_answers) > 0:
-        return "diagnostic"
+        # Website audit comes before RCA; if audit is done, proceed to diagnostic
+        website_audit = str(row.get("website_audit") or "").strip()
+        if website_audit:
+            return "diagnostic"
+        return "website_audit"
 
     # Check if URL is provided
     website_url = str(row.get("website_url") or "").strip()
