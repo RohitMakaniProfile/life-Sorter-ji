@@ -1,1154 +1,548 @@
--- ═══════════════════════════════════════════════════════════════════════════════
--- FULL DATABASE SETUP — life-Sorter-ji (Cloud SQL / PostgreSQL)
--- ═══════════════════════════════════════════════════════════════════════════════
--- Canonical schema for local Postgres / Cloud SQL.
--- Run order: this single file creates everything from scratch.
--- Safe to re-run: all statements use IF NOT EXISTS / OR REPLACE.
--- This file is the only schema artifact in backend/migrations/.
---
--- Tables:
---   Phase 1 (current app runtime):
---     onboarding, payments, plans, payment_checkout_context, user_plan_grants,
---     crawl_*, playbook_runs, "Persona: founder/owner"
---
---   Phase 2 (Research Agent — asyncpg):
---     agents, agent_config_versions, conversations, messages, skill_calls,
---     scraped_pages, plan_runs, token_usage
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ============================================================================
+-- Ikshan AI - Full PostgreSQL Schema
+-- ============================================================================
+-- This file contains the complete database schema for a fresh deployment
+-- Run this on a new database to set up all tables, indexes, and constraints
+-- ============================================================================
 
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- ─────────────────────────────────────────────────────────────────────────────
--- SHARED UTILITIES
--- ─────────────────────────────────────────────────────────────────────────────
+-- ============================================================================
+-- USERS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number VARCHAR(20) UNIQUE,
+    email VARCHAR(255) UNIQUE,
+    name VARCHAR(255),
+    auth_provider VARCHAR(50) DEFAULT 'phone',
+    onboarding_session_id UUID,
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE INDEX IF NOT EXISTS idx_users_phone_number ON users(phone_number);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+-- ============================================================================
+-- ONBOARDING TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS onboarding (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    session_id UUID,
+
+    -- Journey selection
+    outcome VARCHAR(255),
+    domain VARCHAR(255),
+    task TEXT,
+
+    -- Website and scale
+    website_url TEXT,
+    gbp_url TEXT,
+    scale_answers JSONB DEFAULT '{}'::jsonb,
+
+    -- Website scraping and analysis
+    web_scrap_done BOOLEAN NOT NULL DEFAULT FALSE,
+    web_summary TEXT DEFAULT '',
+    business_profile TEXT DEFAULT '',
+    website_audit TEXT NOT NULL DEFAULT '',
+    crawl_cache_key VARCHAR(255),
+    crawl_run_id UUID,
+
+    -- RCA (Root Cause Analysis)
+    rca_qa JSONB DEFAULT '[]'::jsonb,
+    rca_summary TEXT DEFAULT '',
+    rca_handoff TEXT DEFAULT '',
+    questions_answers JSONB DEFAULT '[]'::jsonb,
+
+    -- Gap questions (deprecated but kept for backward compatibility)
+    gap_questions JSONB DEFAULT '[]'::jsonb,
+    gap_answers TEXT DEFAULT '',
+
+    -- Precision questions (deprecated but kept for backward compatibility)
+    precision_questions JSONB DEFAULT '[]'::jsonb,
+    precision_answers TEXT DEFAULT '',
+    precision_status VARCHAR(50),
+    precision_completed_at TIMESTAMP WITH TIME ZONE,
+
+    -- Playbook generation
+    playbook_status VARCHAR(50) DEFAULT 'not_started',
+    playbook_started_at TIMESTAMP WITH TIME ZONE,
+    playbook_completed_at TIMESTAMP WITH TIME ZONE,
+    playbook_error TEXT DEFAULT '',
+    playbook_run_id UUID,
+
+    -- Linked conversation
+    conversation_id UUID,
+
+    -- Completion tracking
+    onboarding_completed_at TIMESTAMP WITH TIME ZONE,
+
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_user_id ON onboarding(user_id);
+CREATE INDEX IF NOT EXISTS idx_onboarding_session_id ON onboarding(session_id);
+CREATE INDEX IF NOT EXISTS idx_onboarding_playbook_status ON onboarding(playbook_status);
+CREATE INDEX IF NOT EXISTS idx_onboarding_created_at ON onboarding(created_at DESC);
+
+-- ============================================================================
+-- CONVERSATIONS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS conversations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    onboarding_id UUID REFERENCES onboarding(id) ON DELETE SET NULL,
+    session_id UUID,
+
+    -- Conversation metadata
+    title VARCHAR(500),
+    agent_id VARCHAR(255),
+    status VARCHAR(50) DEFAULT 'active',
+
+    -- Message storage
+    messages JSONB DEFAULT '[]'::jsonb,
+
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_onboarding_id ON conversations(onboarding_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);
+
+-- ============================================================================
+-- SESSION LINKS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS session_links (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID NOT NULL UNIQUE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_links_session_id ON session_links(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_links_user_id ON session_links(user_id);
+
+-- ============================================================================
+-- OTP SESSIONS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS otp_sessions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number VARCHAR(20) NOT NULL,
+    otp_code VARCHAR(10) NOT NULL,
+    verified BOOLEAN DEFAULT FALSE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_otp_sessions_phone_number ON otp_sessions(phone_number);
+CREATE INDEX IF NOT EXISTS idx_otp_sessions_expires_at ON otp_sessions(expires_at);
+
+-- ============================================================================
+-- OTP LOGS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS otp_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number VARCHAR(20) NOT NULL,
+    otp_code VARCHAR(10) NOT NULL,
+    provider VARCHAR(50) DEFAULT '2factor',
+    status VARCHAR(50),
+    provider_response TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_otp_logs_phone_number ON otp_logs(phone_number);
+CREATE INDEX IF NOT EXISTS idx_otp_logs_created_at ON otp_logs(created_at DESC);
+
+-- ============================================================================
+-- SCRAPED PAGES TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS scraped_pages (
+    id SERIAL PRIMARY KEY,
+    url TEXT NOT NULL,
+    raw TEXT,
+    markdown TEXT,
+    skill_call_id INTEGER,
+    conversation_id UUID,
+    onboarding_id UUID,
+    user_id UUID,
+    message_id UUID,
+    page_title TEXT,
+    status_code INTEGER,
+    crawl_depth INTEGER,
+    content_type TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_url ON scraped_pages(url);
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_skill_call_id ON scraped_pages(skill_call_id);
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_conversation_id ON scraped_pages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_onboarding_id ON scraped_pages(onboarding_id);
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_user_id ON scraped_pages(user_id);
+CREATE INDEX IF NOT EXISTS idx_scraped_pages_created_at ON scraped_pages(created_at DESC);
+
+-- ============================================================================
+-- TASK STREAM TABLES
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS task_stream_streams (
+    stream_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID NOT NULL,
+    task_type VARCHAR(100) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    result JSONB,
+    error TEXT,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_stream_streams_session_id ON task_stream_streams(session_id);
+CREATE INDEX IF NOT EXISTS idx_task_stream_streams_task_type ON task_stream_streams(task_type);
+CREATE INDEX IF NOT EXISTS idx_task_stream_streams_status ON task_stream_streams(status);
+CREATE INDEX IF NOT EXISTS idx_task_stream_streams_created_at ON task_stream_streams(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS task_stream_maps (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID NOT NULL,
+    stream_id UUID NOT NULL REFERENCES task_stream_streams(stream_id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(session_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_stream_maps_session_id ON task_stream_maps(session_id);
+CREATE INDEX IF NOT EXISTS idx_task_stream_maps_stream_id ON task_stream_maps(stream_id);
+
+CREATE TABLE IF NOT EXISTS task_stream_spawn_locks (
+    lock_key VARCHAR(255) PRIMARY KEY,
+    acquired_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_stream_spawn_locks_expires_at ON task_stream_spawn_locks(expires_at);
+
+-- ============================================================================
+-- AGENTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS agents (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    system_prompt TEXT,
+    model VARCHAR(100),
+    temperature NUMERIC(3,2),
+    max_tokens INTEGER,
+    tools JSONB DEFAULT '[]'::jsonb,
+    config JSONB DEFAULT '{}'::jsonb,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_is_active ON agents(is_active);
+
+-- ============================================================================
+-- PLANS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS plans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    steps JSONB DEFAULT '[]'::jsonb,
+    is_template BOOLEAN DEFAULT FALSE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_is_template ON plans(is_template);
+CREATE INDEX IF NOT EXISTS idx_plans_created_by ON plans(created_by);
+
+-- ============================================================================
+-- PLAN RUNS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS plan_runs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id UUID REFERENCES plans(id) ON DELETE CASCADE,
+    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(50) DEFAULT 'pending',
+    current_step INTEGER DEFAULT 0,
+    steps_data JSONB DEFAULT '[]'::jsonb,
+    result JSONB,
+    error TEXT,
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_runs_plan_id ON plan_runs(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_runs_conversation_id ON plan_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_plan_runs_user_id ON plan_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_plan_runs_status ON plan_runs(status);
+
+-- ============================================================================
+-- SKILL CALLS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS skill_calls (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    skill_name VARCHAR(255) NOT NULL,
+    parameters JSONB DEFAULT '{}'::jsonb,
+    result JSONB,
+    status VARCHAR(50) DEFAULT 'pending',
+    error TEXT,
+    duration_ms INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_calls_conversation_id ON skill_calls(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_skill_calls_skill_name ON skill_calls(skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_calls_status ON skill_calls(status);
+CREATE INDEX IF NOT EXISTS idx_skill_calls_created_at ON skill_calls(created_at DESC);
+
+-- ============================================================================
+-- TOKEN USAGE TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS token_usage (
+    id SERIAL PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    session_id TEXT,
+    conversation_id TEXT,
+    user_id TEXT,
+
+    -- Model and provider info
+    model TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL DEFAULT '',
+
+    -- Token counts
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+
+    -- Cost tracking
+    cost_usd NUMERIC(12,6),
+    cost_inr NUMERIC(12,2),
+
+    -- Success tracking
+    success BOOLEAN,
+    error_msg TEXT,
+    raw_output TEXT,
+
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_message_id ON token_usage(message_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_session_id ON token_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_conversation_id ON token_usage(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);
+
+-- ============================================================================
+-- ADMIN GRANTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS admin_grants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL DEFAULT 'admin',
+    granted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    revoked_at TIMESTAMP WITH TIME ZONE,
+    UNIQUE(user_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_grants_user_id ON admin_grants(user_id);
+CREATE INDEX IF NOT EXISTS idx_admin_grants_role ON admin_grants(role);
+
+-- ============================================================================
+-- USER PLAN GRANTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS user_plan_grants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_name VARCHAR(100) NOT NULL,
+    granted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_plan_grants_user_id ON user_plan_grants(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_plan_grants_plan_name ON user_plan_grants(plan_name);
+CREATE INDEX IF NOT EXISTS idx_user_plan_grants_expires_at ON user_plan_grants(expires_at);
+
+-- ============================================================================
+-- PAYMENT CHECKOUT TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS payment_checkout (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    order_id VARCHAR(255) UNIQUE NOT NULL,
+    amount NUMERIC(12,2) NOT NULL,
+    currency VARCHAR(10) DEFAULT 'INR',
+    status VARCHAR(50) DEFAULT 'pending',
+    payment_gateway VARCHAR(50) DEFAULT 'juspay',
+    gateway_order_id VARCHAR(255),
+    gateway_response JSONB,
+    plan_name VARCHAR(100),
+    metadata JSONB DEFAULT '{}'::jsonb,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_checkout_user_id ON payment_checkout(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_checkout_order_id ON payment_checkout(order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_checkout_status ON payment_checkout(status);
+
+-- ============================================================================
+-- PRODUCTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS products (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    price NUMERIC(12,2) NOT NULL,
+    currency VARCHAR(10) DEFAULT 'INR',
+    plan_name VARCHAR(100),
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active);
+CREATE INDEX IF NOT EXISTS idx_products_plan_name ON products(plan_name);
+
+-- ============================================================================
+-- PROMPTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS prompts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    key VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100),
+    title VARCHAR(255),
+    content TEXT NOT NULL,
+    variables JSONB DEFAULT '[]'::jsonb,
+    is_active BOOLEAN DEFAULT TRUE,
+    version INTEGER DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompts_key ON prompts(key);
+CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts(category);
+CREATE INDEX IF NOT EXISTS idx_prompts_is_active ON prompts(is_active);
+
+-- ============================================================================
+-- SYSTEM CONFIG TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS system_config (
+    key VARCHAR(255) PRIMARY KEY,
+    value TEXT NOT NULL,
+    type VARCHAR(50) DEFAULT 'string',
+    description TEXT,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Insert default system config values
+INSERT INTO system_config (key, value, type, description)
+VALUES
+    ('sms.report_link_enabled', 'false', 'boolean', 'Enable SMS notification for research report completion')
+ON CONFLICT (key) DO NOTHING;
+
+-- ============================================================================
+-- REPORT LINK SMS LOGS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS report_link_sms_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id UUID NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    phone_number VARCHAR(20) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    provider_message_id VARCHAR(255),
+    error TEXT,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_conversation_id ON report_link_sms_logs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_user_id ON report_link_sms_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_status ON report_link_sms_logs(status);
+
+-- ============================================================================
+-- TRIGGERS FOR updated_at
+-- ============================================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ language 'plpgsql';
 
+-- Apply triggers to all tables with updated_at column
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- ═══════════════════════════════════════════════════════════════════════════════
--- PHASE 1 — Onboarding, payments, crawl, playbook
--- ═══════════════════════════════════════════════════════════════════════════════
+CREATE TRIGGER update_onboarding_updated_at BEFORE UPDATE ON onboarding
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- ─────────────────────────────────────────────────────────────────────────────
--- onboarding
--- Phase 1 journey snapshot: outcome / domain / task and URLs keyed by onboarding.id.
--- user_id is optional until linked to an authenticated user.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS onboarding (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TRIGGER update_conversations_updated_at BEFORE UPDATE ON conversations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    user_id         TEXT,
+CREATE TRIGGER update_scraped_pages_updated_at BEFORE UPDATE ON scraped_pages
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    outcome         TEXT,
-    domain          TEXT,
-    task            TEXT,
+CREATE TRIGGER update_task_stream_streams_updated_at BEFORE UPDATE ON task_stream_streams
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    website_url     TEXT,
-    gbp_url         TEXT,
+CREATE TRIGGER update_agents_updated_at BEFORE UPDATE ON agents
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Optional: unified Q&A log for replay/debug (separate from RCA transcript)
-    questions_answers   JSONB NOT NULL DEFAULT '[]'::jsonb,
+CREATE TRIGGER update_plans_updated_at BEFORE UPDATE ON plans
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Evolving RCA question/answer history (Phase 1 diagnostic transcript)
-    rca_qa          JSONB NOT NULL DEFAULT '[]'::jsonb,
+CREATE TRIGGER update_plan_runs_updated_at BEFORE UPDATE ON plan_runs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Phase 1 scale / business-profile answers
-    scale_answers   JSONB NOT NULL DEFAULT '{}'::jsonb,
-    business_profile TEXT NOT NULL DEFAULT '',
+CREATE TRIGGER update_skill_calls_updated_at BEFORE UPDATE ON skill_calls
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Gap questions (if playbook needs more context)
-    gap_questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
-    gap_answers     TEXT NOT NULL DEFAULT '',
+CREATE TRIGGER update_user_plan_grants_updated_at BEFORE UPDATE ON user_plan_grants
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- RCA completion artifacts (used by playbook prompts)
-    rca_summary     TEXT NOT NULL DEFAULT '',
-    rca_handoff     TEXT NOT NULL DEFAULT '',
+CREATE TRIGGER update_payment_checkout_updated_at BEFORE UPDATE ON payment_checkout
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Precision phase (post-RCA refinement before playbook)
-    precision_questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
-    precision_answers     JSONB NOT NULL DEFAULT '[]'::jsonb,
-    precision_status      TEXT NOT NULL DEFAULT 'not_started',
-    precision_completed_at TIMESTAMPTZ,
+CREATE TRIGGER update_products_updated_at BEFORE UPDATE ON products
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Playbook state (DB-backed, avoids session_store)
-    playbook_status     TEXT NOT NULL DEFAULT 'not_started',
-    playbook_started_at TIMESTAMPTZ,
-    playbook_completed_at TIMESTAMPTZ,
-    playbook_error      TEXT NOT NULL DEFAULT '',
+CREATE TRIGGER update_prompts_updated_at BEFORE UPDATE ON prompts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Pointers to persisted subsystems
-    crawl_run_id     UUID,
-    crawl_cache_key  TEXT,
-    playbook_run_id  UUID,
-    conversation_id  TEXT,  -- Links to conversations table for Phase 2 access
+CREATE TRIGGER update_system_config_updated_at BEFORE UPDATE ON system_config
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    -- Crawl summary (generated from crawl service)
-    web_summary      TEXT NOT NULL DEFAULT '',
+CREATE TRIGGER update_report_link_sms_logs_updated_at BEFORE UPDATE ON report_link_sms_logs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-    onboarding_completed_at TIMESTAMPTZ,
+-- ============================================================================
+-- END OF SCHEMA
+-- ============================================================================
 
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_onboarding_user_id
-    ON onboarding (user_id)
-    WHERE user_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_onboarding_conversation_id
-    ON onboarding (conversation_id)
-    WHERE conversation_id IS NOT NULL;
-
-DROP TRIGGER IF EXISTS trg_onboarding_updated_at ON onboarding;
-CREATE TRIGGER trg_onboarding_updated_at
-    BEFORE UPDATE ON onboarding
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE onboarding IS
-    'Onboarding flow selections and URLs per session; user_id nullable until identity is linked.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- plans (catalog) + session entitlements + checkout binding (order → plan)
--- credits_allocation NULL = unlimited uses for that grant; finite = decremented later.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS plans (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    slug                    TEXT NOT NULL,
-    name                    TEXT NOT NULL,
-    description             TEXT NOT NULL DEFAULT '',
-    price_inr               NUMERIC(10,2) NOT NULL,
-    credits_allocation      INTEGER NULL,
-    features                JSONB NOT NULL DEFAULT '{}'::jsonb,
-    display_order           INTEGER NOT NULL DEFAULT 0,
-    active                  BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT plans_slug_unique UNIQUE (slug)
-);
-
-CREATE INDEX IF NOT EXISTS idx_plans_active_order
-    ON plans (active, display_order);
-
-DROP TRIGGER IF EXISTS trg_plans_updated_at ON plans;
-CREATE TRIGGER trg_plans_updated_at
-    BEFORE UPDATE ON plans
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE plans IS
-    'Sellable plan catalog (prices, credit pools, feature flags). Seed from app/data/plans_seed.json + SQL below.';
-
--- payment_checkout_context + user_plan_grants: created after `users` (FK to users.id). See below.
-
--- Seed plans (fixed UUIDs for stable FK references; ON CONFLICT upserts)
-INSERT INTO plans (id, slug, name, description, price_inr, credits_allocation, features, display_order, active)
-VALUES
-    (
-        '11111111-1111-4111-8111-111111111101'::uuid,
-        'deep_analysis_l1',
-        'Deep Analysis — Report',
-        'Create deep analysis reports with the research AI agent (compute-heavy). Required before using the deep analysis chat.',
-        499.00,
-        NULL,
-        '{"deep_analysis_report": true, "execute_report_actions": false}'::jsonb,
-        1,
-        TRUE
-    ),
-    (
-        '11111111-1111-4111-8111-111111111102'::uuid,
-        'report_actions_l2',
-        'Report Actions — Execution',
-        'Run and execute action items generated on an existing deep analysis report (future workflow). Upgrade after you have a report.',
-        799.00,
-        NULL,
-        '{"deep_analysis_report": false, "execute_report_actions": true, "coming_soon": true}'::jsonb,
-        2,
-        TRUE
-    )
-ON CONFLICT (slug) DO UPDATE SET
-    name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    price_inr = EXCLUDED.price_inr,
-    credits_allocation = EXCLUDED.credits_allocation,
-    features = EXCLUDED.features,
-    display_order = EXCLUDED.display_order,
-    active = EXCLUDED.active,
-    updated_at = NOW();
-
--- ─────────────────────────────────────────────────────────────────────────────
--- crawl_cache / crawl_runs
--- Crawl persistence for reuse across sessions (cache) + per-request audit (runs).
--- ─────────────────────────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS crawl_cache (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    normalized_url  TEXT NOT NULL,
-    crawler_version TEXT NOT NULL DEFAULT 'v1',
-    crawl_raw       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    crawl_summary   JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_crawl_cache_url_version
-    ON crawl_cache (normalized_url, crawler_version);
-
-DROP TRIGGER IF EXISTS trg_crawl_cache_updated_at ON crawl_cache;
-CREATE TRIGGER trg_crawl_cache_updated_at
-    BEFORE UPDATE ON crawl_cache
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TABLE IF NOT EXISTS crawl_runs (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id      TEXT NOT NULL,
-    user_id         UUID,
-    input_url       TEXT NOT NULL,
-    normalized_url  TEXT NOT NULL,
-    url_type        TEXT NOT NULL DEFAULT 'website',
-    status          TEXT NOT NULL DEFAULT 'running',
-    cache_hit       BOOLEAN NOT NULL DEFAULT FALSE,
-    crawl_cache_id  UUID REFERENCES crawl_cache(id) ON DELETE SET NULL,
-    error           TEXT NOT NULL DEFAULT '',
-    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    finished_at     TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_crawl_runs_session_id
-    ON crawl_runs (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_crawl_runs_user_id
-    ON crawl_runs (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_crawl_runs_normalized_url
-    ON crawl_runs (normalized_url);
-
-DROP TRIGGER IF EXISTS trg_crawl_runs_updated_at ON crawl_runs;
-CREATE TRIGGER trg_crawl_runs_updated_at
-    BEFORE UPDATE ON crawl_runs
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
--- ─────────────────────────────────────────────────────────────────────────────
--- playbook_runs
--- Persist playbook generation outputs independent of session_store.
--- ─────────────────────────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS playbook_runs (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id      TEXT NOT NULL,
-    user_id         UUID,
-    status          TEXT NOT NULL DEFAULT 'running',
-    error           TEXT NOT NULL DEFAULT '',
-    onboarding_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
-    crawl_snapshot      JSONB NOT NULL DEFAULT '{}'::jsonb,
-    context_brief   TEXT NOT NULL DEFAULT '',
-    icp_card        TEXT NOT NULL DEFAULT '',
-    playbook        TEXT NOT NULL DEFAULT '',
-    website_audit   TEXT NOT NULL DEFAULT '',
-    latencies       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_playbook_runs_session_id
-    ON playbook_runs (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_playbook_runs_user_id
-    ON playbook_runs (user_id);
-
-DROP TRIGGER IF EXISTS trg_playbook_runs_updated_at ON playbook_runs;
-CREATE TRIGGER trg_playbook_runs_updated_at
-    BEFORE UPDATE ON playbook_runs
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
--- ─────────────────────────────────────────────────────────────────────────────
--- payments
--- JusPay/HDFC payment lifecycle records, linked to session_id.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS payments (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- Opaque Phase-1 onboarding session_id (no FK; canonical row lives in onboarding)
-    session_id              TEXT,
-
-    order_id                TEXT UNIQUE NOT NULL,
-    juspay_order_id         TEXT,
-
-    amount                  NUMERIC(10,2) NOT NULL,
-    currency                TEXT DEFAULT 'INR',
-    status                  TEXT DEFAULT 'CREATED',
-
-    customer_email          TEXT,
-    customer_phone          TEXT,
-
-    txn_id                  TEXT,
-    payment_method          TEXT,
-    payment_method_type     TEXT,
-
-    refund_amount           NUMERIC(10,2),
-    udf1                    TEXT,
-    udf2                    TEXT,
-
-    created_at              TIMESTAMPTZ DEFAULT now(),
-    updated_at              TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_payments_session_id
-    ON payments (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_payments_order_id
-    ON payments (order_id);
-
-CREATE INDEX IF NOT EXISTS idx_payments_created_at
-    ON payments (created_at DESC);
-
-DROP TRIGGER IF EXISTS trg_payments_updated_at ON payments;
-CREATE TRIGGER trg_payments_updated_at
-    BEFORE UPDATE ON payments
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE payments IS
-    'Payment orders and status tracking for Stage 2 access (JusPay/HDFC).';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- "Persona: founder/owner"
--- External knowledge table provided by product team.
--- NOTE: table name contains special chars; keep quoted exactly for compatibility.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS "Persona: founder/owner" (
-    id                      BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    created_at              TIMESTAMPTZ DEFAULT now(),
-
-    problem_statement       TEXT NOT NULL,
-    scenario_discussed      TEXT NOT NULL,
-
-    root_cause_category     TEXT NOT NULL,
-    priority_level          TEXT NOT NULL,
-    confidence_level        TEXT NOT NULL,
-
-    business_impact_tags    TEXT NOT NULL,
-    early_warning_signals   TEXT NOT NULL,
-    common_misfixes         TEXT NOT NULL,
-
-    solution_strategy       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    tools_referenced        TEXT NOT NULL,
-    implementation_phases   JSONB NOT NULL DEFAULT '[]'::jsonb,
-
-    primary_owner           TEXT NOT NULL,
-    automation_potential    TEXT NOT NULL,
-
-    source_platform         TEXT NOT NULL,
-    source_context          TEXT NOT NULL
-);
-
-COMMENT ON TABLE "Persona: founder/owner" IS
-    'Founder/owner persona KB rows used for strategy diagnostics and recommendations.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- NOTE:
--- Phase 1 is keyed by `onboarding.session_id` (and the same string on payments,
--- crawl_runs, playbook_runs, etc.). Auth identity is handled in application tables
--- (e.g. users / OTP sessions) as implemented by the app, not via a monolithic
--- session snapshot table in this schema.
---
--- Heavier account-centric billing tables (e.g. subscriptions, usage_quotas) are
--- omitted until the app needs them; add via dedicated migrations.
---
--- ═══════════════════════════════════════════════════════════════════════════════
--- PHASE 2 — Research Agent tables
--- ═══════════════════════════════════════════════════════════════════════════════
-
--- ─────────────────────────────────────────────────────────────────────────────
--- agents
--- UI-configurable research agents. Each agent has a set of allowed skills and
--- optional prompt context injected into the orchestrator.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS agents (
-    id                              TEXT PRIMARY KEY,
-    name                            TEXT NOT NULL,
-    emoji                           TEXT NOT NULL DEFAULT '🤖',
-    description                     TEXT NOT NULL DEFAULT '',
-    allowed_skill_ids               TEXT[] NOT NULL DEFAULT '{}',
-    skill_selector_context          TEXT NOT NULL DEFAULT '',
-    final_output_formatting_context TEXT NOT NULL DEFAULT '',
-    created_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-DROP TRIGGER IF EXISTS trg_agents_updated_at ON agents;
-CREATE TRIGGER trg_agents_updated_at
-    BEFORE UPDATE ON agents
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE agents IS
-    'Research agent definitions: skill allowlist, orchestrator prompt context.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- products
--- Claw products shown to onboarding users. These are NOT runtime chat agents.
--- Each product maps directly to onboarding outcome/domain/task selections.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS products (
-    id              TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    emoji           TEXT NOT NULL DEFAULT '🧩',
-    description     TEXT NOT NULL DEFAULT '',
-    color           TEXT NOT NULL DEFAULT '#857BFF',
-    outcome         TEXT NOT NULL,
-    domain          TEXT NOT NULL,
-    task            TEXT NOT NULL,
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-    sort_order      INTEGER NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-DROP TRIGGER IF EXISTS trg_products_updated_at ON products;
-CREATE TRIGGER trg_products_updated_at
-    BEFORE UPDATE ON products
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE INDEX IF NOT EXISTS idx_products_active_sort
-    ON products (is_active, sort_order, updated_at DESC);
-
-COMMENT ON TABLE products IS
-    'Onboarding product catalog (Claw products). Maps clicks to outcome/domain/task.';
-
-INSERT INTO products (id, name, emoji, description, color, outcome, domain, task, is_active, sort_order)
-VALUES
-    ('seo-claw', 'SEO Claw', '🔎', 'Rank higher on Google', '#857BFF', 'lead-generation', 'SEO & Organic Visibility', 'Get more leads from Google & website (SEO)', TRUE, 10),
-    ('conversion-claw', 'Conversion Claw', '📈', 'Fix your funnel leaks', '#1D9E75', 'sales-retention', 'Lead Management & Conversion', 'Automate lead qualification & scoring (AI SDR)', TRUE, 20),
-    ('competitor-intel-claw', 'Competitor Intel Claw', '🕵️', 'Spy on what''s working', '#BF69A2', 'business-strategy', 'Market Strategy & Innovation', 'Track competitor pricing & promotional strategies', TRUE, 30),
-    ('copy-claw', 'Copy Claw', '✍️', 'Write in customer language', '#EF9F27', 'lead-generation', 'Content & Social Media', 'Generate social media posts captions & hooks', TRUE, 40),
-    ('pricing-claw', 'Pricing Claw', '💰', 'Optimize your price points', '#378ADD', 'business-strategy', 'Market Strategy & Innovation', 'Track competitor pricing & promotional strategies', TRUE, 50),
-    ('churn-claw', 'Churn Claw', '🛡️', 'Predict & prevent churn', '#857BFF', 'sales-retention', 'Customer Success & Reputation', 'Predict churn risk & alert success teams', TRUE, 60),
-    ('lead-magnet-claw', 'Lead Magnet Claw', '🧲', 'Build irresistible offers', '#1D9E75', 'lead-generation', 'Content & Social Media', 'Spot trending topics & viral content ideas', TRUE, 70),
-    ('brand-health-claw', 'Brand Health Claw', '🧭', 'Track brand sentiment', '#BF69A2', 'sales-retention', 'Customer Success & Reputation', 'Automate review collection & smart responses', TRUE, 80),
-    ('cta-claw', 'CTA Claw', '🎯', 'Restructure page flow', '#EF9F27', 'sales-retention', 'Lead Management & Conversion', 'Run automated nurture & recovery sequences', TRUE, 90),
-    ('google-business-claw', 'Google Business Claw', '📍', 'Dominate local search', '#378ADD', 'lead-generation', 'SEO & Organic Visibility', 'Google Business Profile visibility', TRUE, 100),
-    ('trust-audit-claw', 'Trust Audit Claw', '✅', 'Build buyer confidence', '#857BFF', 'sales-retention', 'Customer Success & Reputation', 'Automate review collection & smart responses', TRUE, 110),
-    ('ai-readiness-claw', 'AI Readiness Claw', '🤖', 'Plan your AI adoption', '#1D9E75', 'save-time', 'Personal & Team Productivity', 'Automate repetitive admin workflows', TRUE, 120)
-ON CONFLICT (id) DO UPDATE SET
-    name = EXCLUDED.name,
-    emoji = EXCLUDED.emoji,
-    description = EXCLUDED.description,
-    color = EXCLUDED.color,
-    outcome = EXCLUDED.outcome,
-    domain = EXCLUDED.domain,
-    task = EXCLUDED.task,
-    is_active = EXCLUDED.is_active,
-    sort_order = EXCLUDED.sort_order,
-    updated_at = NOW();
-
--- ─────────────────────────────────────────────────────────────────────────────
--- agent_config_versions
--- Versioned snapshots of agent configs/prompts for rollback/audit.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS agent_config_versions (
-    id                      BIGSERIAL PRIMARY KEY,
-    agent_id                TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    version                 INTEGER NOT NULL,
-    config_snapshot         JSONB NOT NULL DEFAULT '{}'::jsonb,
-    notes                   TEXT NOT NULL DEFAULT '',
-    created_by_session_id   TEXT,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (agent_id, version)
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_config_versions_agent
-    ON agent_config_versions (agent_id, version DESC);
-
-COMMENT ON TABLE agent_config_versions IS
-    'Version history for agent settings/prompts (for traceability and rollback).';
-
--- Seed default agent (upsert so re-runs are safe)
-INSERT INTO agents (
-    id, name, emoji, description,
-    allowed_skill_ids, skill_selector_context, final_output_formatting_context
-) VALUES (
-    'research-orchestrator',
-    'Business Research',
-    '🕵️',
-    'Agentic research using website scrapers, social and sentiment skills',
-    ARRAY[
-        'scrape-bs4',
-        'scrape-playwright',
-        'scrape-googlebusiness',
-        'instagram-sentiment',
-        'youtube-sentiment',
-        'playstore-sentiment',
-        'quora-search',
-        'find-platform-handles'
-    ],
-    '',
-    ''
-)
-ON CONFLICT (id) DO NOTHING;
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- conversations
--- One row per chat session. Linked to an agent. Stores last pipeline outputs
--- so the frontend can resume where it left off.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS conversations (
-    id                  TEXT PRIMARY KEY,
-    agent_id            TEXT NOT NULL,
-    session_id          TEXT,
-    onboarding_id       TEXT,
-    user_id             TEXT,
-    title               TEXT,
-    last_stage_outputs  JSONB NOT NULL DEFAULT '{}'::JSONB,
-    last_output_file    TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-ALTER TABLE conversations
-    ADD COLUMN IF NOT EXISTS session_id TEXT;
-
-ALTER TABLE conversations
-    ADD COLUMN IF NOT EXISTS user_id TEXT;
-
-ALTER TABLE conversations
-    ADD COLUMN IF NOT EXISTS onboarding_id TEXT;
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'conversations_agent_id_fkey'
-          AND conrelid = 'conversations'::regclass
-    ) THEN
-        ALTER TABLE conversations
-            DROP CONSTRAINT conversations_agent_id_fkey;
-    END IF;
-
-    ALTER TABLE conversations
-        ADD CONSTRAINT conversations_agent_id_fkey
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE RESTRICT;
-EXCEPTION
-    WHEN undefined_table THEN
-        NULL;
-    WHEN duplicate_object THEN
-        NULL;
-END;
-$$;
-
-CREATE INDEX IF NOT EXISTS idx_conversations_agent_id
-    ON conversations (agent_id);
-
-CREATE INDEX IF NOT EXISTS idx_conversations_session_id
-    ON conversations (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_conversations_onboarding_id
-    ON conversations (onboarding_id);
-
-CREATE INDEX IF NOT EXISTS idx_conversations_user_id
-    ON conversations (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
-    ON conversations (updated_at DESC);
-
-DROP TRIGGER IF EXISTS trg_conversations_updated_at ON conversations;
-CREATE TRIGGER trg_conversations_updated_at
-    BEFORE UPDATE ON conversations
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE conversations IS
-    'Chat sessions. Each conversation belongs to one agent and stores ordered messages.';
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- messages
--- Ordered messages inside a conversation. message_index enforces order and is
--- assigned atomically with an advisory lock to avoid gaps.
--- The `message` JSONB column is the full payload (messageId, skillsCount, etc.).
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS messages (
-    conversation_id TEXT        NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-    message_index   INTEGER     NOT NULL,
-    role            TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
-    content         TEXT        NOT NULL DEFAULT '',
-    output_file     TEXT,
-    -- Full message payload including messageId, skillsCount, kind, planId
-    message         JSONB       NOT NULL DEFAULT '{}'::JSONB,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    PRIMARY KEY (conversation_id, message_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_conversation_id
-    ON messages (conversation_id, message_index ASC);
-
--- JSON index for messageId lookups (used by update_message_content)
-CREATE INDEX IF NOT EXISTS idx_messages_message_id_json
-    ON messages ((message->>'messageId'));
-
-COMMENT ON TABLE messages IS
-    'Ordered messages within a conversation. message_index is monotonically increasing per conversation.';
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- skill_calls
--- Tracks every individual skill subprocess invocation: inputs, streaming
--- output events, final state, and duration.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS skill_calls (
-    id              BIGSERIAL   PRIMARY KEY,
-    conversation_id TEXT        REFERENCES conversations (id) ON DELETE CASCADE,
-    message_id      TEXT,
-    onboarding_session_id TEXT,
-    skill_id        TEXT        NOT NULL,
-    run_id          TEXT        NOT NULL,
-    input           JSONB       NOT NULL DEFAULT '{}'::JSONB,
-    streamed_text   TEXT        NOT NULL DEFAULT '',
-    state           TEXT        NOT NULL DEFAULT 'running'
-                                CHECK (state IN ('running', 'done', 'error')),
-    -- Array of output event objects: {type, event?, payload?, text?, data?, at}
-    output          JSONB       NOT NULL DEFAULT '[]'::JSONB,
-    error           TEXT,
-    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ended_at        TIMESTAMPTZ,
-    duration_ms     INTEGER,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- Exactly one context must be set (conversation or onboarding)
-    CONSTRAINT skill_calls_context_check CHECK (
-        (conversation_id IS NOT NULL AND onboarding_session_id IS NULL) OR
-        (conversation_id IS NULL     AND onboarding_session_id IS NOT NULL)
-    )
-);
-
-ALTER TABLE skill_calls
-    ADD COLUMN IF NOT EXISTS streamed_text TEXT NOT NULL DEFAULT '';
-
-ALTER TABLE skill_calls
-    ADD COLUMN IF NOT EXISTS onboarding_session_id TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_skill_calls_message_id
-    ON skill_calls (message_id);
-
-CREATE INDEX IF NOT EXISTS idx_skill_calls_conversation_id
-    ON skill_calls (conversation_id);
-
-CREATE INDEX IF NOT EXISTS idx_skill_calls_onboarding_session_id
-    ON skill_calls (onboarding_session_id)
-    WHERE onboarding_session_id IS NOT NULL;
-
-DROP TRIGGER IF EXISTS trg_skill_calls_updated_at ON skill_calls;
-CREATE TRIGGER trg_skill_calls_updated_at
-    BEFORE UPDATE ON skill_calls
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE skill_calls IS
-    'Individual skill subprocess invocations: inputs, streaming events, result state, and timing.';
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- scraped_pages
--- Stores one row per crawled page so large multi-page scrape results from
--- skills like scrape-playwright are not crammed into a single skill_calls row.
--- Mandatory: url, raw (original HTML / text), markdown (LLM-converted).
--- Optional links: skill_call_id, onboarding_id, user_id, message_id,
---                 conversation_id (any subset may be set).
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS scraped_pages (
-    id                  BIGSERIAL   PRIMARY KEY,
-
-    -- Core content (all mandatory)
-    url                 TEXT        NOT NULL,
-    raw                 TEXT        NOT NULL,
-    markdown            TEXT        NOT NULL,
-
-    -- Optional provenance links
-    skill_call_id       BIGINT      REFERENCES skill_calls(id) ON DELETE SET NULL,
-    conversation_id     TEXT        REFERENCES conversations(id) ON DELETE SET NULL,
-    onboarding_id       TEXT,
-    user_id             TEXT,
-    message_id          TEXT,
-
-    -- Page-level metadata
-    page_title          TEXT,
-    status_code         INTEGER,
-    crawl_depth         INTEGER,
-    content_type        TEXT,
-
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_scraped_pages_skill_call_id
-    ON scraped_pages (skill_call_id)
-    WHERE skill_call_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_scraped_pages_conversation_id
-    ON scraped_pages (conversation_id)
-    WHERE conversation_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_scraped_pages_onboarding_id
-    ON scraped_pages (onboarding_id)
-    WHERE onboarding_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_scraped_pages_user_id
-    ON scraped_pages (user_id)
-    WHERE user_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_scraped_pages_url
-    ON scraped_pages (url);
-
-DROP TRIGGER IF EXISTS trg_scraped_pages_updated_at ON scraped_pages;
-CREATE TRIGGER trg_scraped_pages_updated_at
-    BEFORE UPDATE ON scraped_pages
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE scraped_pages IS
-    'One row per crawled page. Stores raw HTML/text and LLM-generated markdown. '
-    'Links back to the skill_call that produced it; onboarding_id / user_id / message_id are optional.';
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- plan_runs
--- Two-phase planning: the user approves a plan before the agent executes it.
--- Stores both the markdown shown to the user and the structured JSON steps.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS plan_runs (
-    id              TEXT        PRIMARY KEY,
-    conversation_id TEXT        NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-    user_message_id TEXT        NOT NULL,
-    plan_message_id TEXT        NOT NULL,
-    execution_message_id TEXT,
-    status          TEXT        NOT NULL DEFAULT 'draft'
-                                CHECK (status IN ('draft', 'approved', 'running', 'executing', 'done', 'error', 'cancelled', 'interrupted')),
-    plan_markdown   TEXT        NOT NULL DEFAULT '',
-    -- {steps: [{id, title, skillId, description, status}]}
-    plan_json       JSONB       NOT NULL DEFAULT '{"steps":[]}'::JSONB,
-    error_message   TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_plan_runs_conversation_id
-    ON plan_runs (conversation_id);
-
-DROP TRIGGER IF EXISTS trg_plan_runs_updated_at ON plan_runs;
-CREATE TRIGGER trg_plan_runs_updated_at
-    BEFORE UPDATE ON plan_runs
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE plan_runs IS
-    'Two-phase plan execution: user sees and approves a markdown plan before the agent runs it.';
-
-
--- ─────────────────────────────────────────────────────────────────────────────
--- token_usage
--- Per-message LLM token accounting across all models (OpenAI, Claude, Gemini).
--- Multiple rows per message (one per LLM call).
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS token_usage (
-    id              BIGSERIAL   PRIMARY KEY,
-    message_id      TEXT        NOT NULL,
-    session_id      TEXT,
-    conversation_id TEXT,
-    user_id         TEXT,
-    model           TEXT        NOT NULL DEFAULT '',
-    stage           TEXT        NOT NULL DEFAULT '',
-    provider        TEXT        NOT NULL DEFAULT '',
-    model_name      TEXT        NOT NULL DEFAULT '',
-    input_tokens    INTEGER     NOT NULL DEFAULT 0,
-    output_tokens   INTEGER     NOT NULL DEFAULT 0,
-    cost_usd        NUMERIC(12,6),
-    cost_inr        NUMERIC(12,2),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS session_id TEXT;
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS conversation_id TEXT;
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS user_id TEXT;
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT '';
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT '';
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS cost_usd NUMERIC(12,6);
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS cost_inr NUMERIC(12,2);
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS success BOOLEAN;
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS error_msg TEXT;
-ALTER TABLE token_usage
-    ADD COLUMN IF NOT EXISTS raw_output TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_token_usage_message_id
-    ON token_usage (message_id);
-
-CREATE INDEX IF NOT EXISTS idx_token_usage_session_id
-    ON token_usage (session_id);
-CREATE INDEX IF NOT EXISTS idx_token_usage_user_id_created_at
-    ON token_usage (user_id, created_at DESC)
-    WHERE user_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_token_usage_conversation_id_created_at
-    ON token_usage (conversation_id, created_at DESC)
-    WHERE conversation_id IS NOT NULL;
-
-COMMENT ON TABLE token_usage IS
-    'LLM token usage per assistant message, one row per model call.';
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Guest chat tables (pre-auth flow)
--- Keep unauthenticated records separated so promotion can be audited.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS guest_conversations (
-    id                  TEXT PRIMARY KEY,
-    session_id          TEXT NOT NULL,
-    title               TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    promoted_to_user_id TEXT,
-    promoted_at         TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_guest_conversations_session_id
-    ON guest_conversations (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_guest_conversations_updated_at
-    ON guest_conversations (updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS guest_messages (
-    guest_conversation_id TEXT        NOT NULL REFERENCES guest_conversations (id) ON DELETE CASCADE,
-    message_index         INTEGER     NOT NULL,
-    role                  TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
-    content               TEXT        NOT NULL DEFAULT '',
-    message               JSONB       NOT NULL DEFAULT '{}'::JSONB,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (guest_conversation_id, message_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_guest_messages_conversation_id
-    ON guest_messages (guest_conversation_id, message_index ASC);
-
-CREATE TABLE IF NOT EXISTS guest_llm_calls (
-    id                    BIGSERIAL   PRIMARY KEY,
-    guest_conversation_id TEXT        NOT NULL REFERENCES guest_conversations (id) ON DELETE CASCADE,
-    message_id            TEXT        NOT NULL,
-    model                 TEXT        NOT NULL DEFAULT '',
-    input_tokens          INTEGER     NOT NULL DEFAULT 0,
-    output_tokens         INTEGER     NOT NULL DEFAULT 0,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_guest_llm_calls_conversation_id
-    ON guest_llm_calls (guest_conversation_id);
-
-CREATE INDEX IF NOT EXISTS idx_guest_llm_calls_message_id
-    ON guest_llm_calls (message_id);
-
-CREATE TABLE IF NOT EXISTS session_user_links (
-    id          BIGSERIAL PRIMARY KEY,
-    session_id  TEXT NOT NULL,
-    user_id     TEXT NOT NULL,
-    linked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (session_id, user_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_user_links_session
-    ON session_user_links (session_id);
-
-CREATE INDEX IF NOT EXISTS idx_session_user_links_user
-    ON session_user_links (user_id);
-
--- ─────────────────────────────────────────────────────────────────────────────
--- users / system_config / otp_provider_logs (independent auth runtime)
--- ─────────────────────────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS users (
-    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    phone_number          TEXT UNIQUE,
-    email                 TEXT UNIQUE,
-    name                  TEXT NOT NULL DEFAULT '',
-    auth_provider         TEXT NOT NULL DEFAULT 'otp',
-    onboarding_session_id TEXT,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_login_at         TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_onboarding_session_id
-    ON users (onboarding_session_id);
-
-DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
-CREATE TRIGGER trg_users_updated_at
-    BEFORE UPDATE ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
--- ── Payment checkout + entitlements (JWT user id; not onboarding session_id) ──
-CREATE TABLE IF NOT EXISTS payment_checkout_context (
-    order_id                TEXT PRIMARY KEY,
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_id                 UUID NOT NULL REFERENCES plans(id),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_payment_checkout_context_user
-    ON payment_checkout_context (user_id);
-
-COMMENT ON TABLE payment_checkout_context IS
-    'Binds JusPay order_id to users.id + plan at checkout; consumed when payment completes.';
-
-CREATE TABLE IF NOT EXISTS user_plan_grants (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_id                 UUID NOT NULL REFERENCES plans(id),
-    order_id                TEXT NOT NULL,
-    credits_remaining       INTEGER NULL,
-    granted_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT user_plan_grants_order_id_unique UNIQUE (order_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_plan_grants_user
-    ON user_plan_grants (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_user_plan_grants_plan
-    ON user_plan_grants (plan_id);
-
-COMMENT ON TABLE user_plan_grants IS
-    'Plan purchases per authenticated user; credits_remaining NULL = unlimited.';
-
-CREATE TABLE IF NOT EXISTS system_config (
-    key         TEXT PRIMARY KEY,
-    value       TEXT NOT NULL DEFAULT '',
-    type        TEXT NOT NULL DEFAULT 'string' CHECK (type IN ('string', 'number', 'boolean', 'json', 'markdown')),
-    description TEXT NOT NULL DEFAULT '',
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Add type column if not exists (for existing databases)
-ALTER TABLE system_config ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'string';
-
--- Add check constraint for type if not exists
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'system_config_type_check'
-          AND conrelid = 'public.system_config'::regclass
-    ) THEN
-        ALTER TABLE system_config ADD CONSTRAINT system_config_type_check
-            CHECK (type IN ('string', 'number', 'boolean', 'json', 'markdown'));
-    END IF;
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END $$;
-
-DROP TRIGGER IF EXISTS trg_system_config_updated_at ON system_config;
-CREATE TRIGGER trg_system_config_updated_at
-    BEFORE UPDATE ON system_config
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-INSERT INTO system_config (key, value, type, description)
-VALUES
-    ('auth.otp_expiry_seconds', '300', 'number', 'OTP expiry in seconds'),
-    ('auth.otp_bypass_code', '000000', 'string', 'Fixed OTP code used when bypass mode is enabled'),
-    ('auth.otp_bypass_enabled', 'false', 'boolean', 'Enable OTP bypass for local/dev testing'),
-    ('auth.otp_send_sms_enabled', 'true', 'boolean', 'If false, OTP is generated and stored but SMS send is skipped'),
-    ('auth.super_admin_emails', '[]', 'json', 'JSON array of super admin emails. Only these emails may access admin UI and admin management APIs.'),
-    ('auth.admin_emails', '[]', 'json', 'JSON array of admin emails. (Admin UI features can optionally use this.)'),
-    ('auth.super_admin_phones', '[]', 'json', 'JSON array of super admin phone numbers (10 digits). Only these phones may access admin UI and admin management APIs.'),
-    ('auth.admin_phones', '[]', 'json', 'JSON array of admin phone numbers (10 digits). (Admin UI features can optionally use this.)'),
-    ('sms.report_link_enabled', 'false', 'boolean', 'Send deep-analysis report link via SMS after completion'),
-    ('sms.report_link_sender_id', '', 'string', '2Factor sender id for report link SMS'),
-    ('sms.report_link_template_name', '', 'string', '2Factor template name for report link SMS')
-ON CONFLICT (key) DO NOTHING;
-
-CREATE TABLE IF NOT EXISTS report_link_sms_logs (
-    id BIGSERIAL PRIMARY KEY,
-    conversation_id TEXT NOT NULL UNIQUE,
-    user_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    provider_message_id TEXT NOT NULL DEFAULT '',
-    error TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_report_link_sms_logs_user_id
-    ON report_link_sms_logs (user_id, created_at DESC);
-
-DROP TRIGGER IF EXISTS trg_report_link_sms_logs_updated_at ON report_link_sms_logs;
-CREATE TRIGGER trg_report_link_sms_logs_updated_at
-    BEFORE UPDATE ON report_link_sms_logs
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TABLE IF NOT EXISTS otp_provider_logs (
-    id                   BIGSERIAL PRIMARY KEY,
-    action               TEXT NOT NULL,
-    provider             TEXT NOT NULL DEFAULT '2factor',
-    phone_masked         TEXT NOT NULL DEFAULT '',
-    request_url          TEXT NOT NULL DEFAULT '',
-    response_payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
-    provider_session_id  TEXT NOT NULL DEFAULT '',
-    success              BOOLEAN NOT NULL DEFAULT FALSE,
-    error                TEXT NOT NULL DEFAULT '',
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_otp_provider_logs_created_at
-    ON otp_provider_logs (created_at DESC);
-
--- ── Task stream (Postgres backend; TASKSTREAM_BACKEND=postgres) ───────────────
-CREATE TABLE IF NOT EXISTS task_stream_streams (
-    stream_id       TEXT PRIMARY KEY,
-    task_type       TEXT NOT NULL,
-    session_id      TEXT NOT NULL DEFAULT '',
-    user_id         TEXT NOT NULL DEFAULT '',
-    status          TEXT NOT NULL DEFAULT 'running',
-    last_seq        INTEGER NOT NULL DEFAULT 0,
-    last_event_id   BIGINT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at      TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_task_stream_streams_expires_at
-    ON task_stream_streams (expires_at);
-
-CREATE TABLE IF NOT EXISTS task_stream_events (
-    id              BIGSERIAL PRIMARY KEY,
-    stream_id       TEXT NOT NULL REFERENCES task_stream_streams(stream_id) ON DELETE CASCADE,
-    seq             INTEGER NOT NULL,
-    event           JSONB NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_task_stream_events_stream_id_id
-    ON task_stream_events (stream_id, id);
-
-CREATE TABLE IF NOT EXISTS task_stream_maps (
-    id              BIGSERIAL PRIMARY KEY,
-    task_type       TEXT NOT NULL,
-    map_kind        TEXT NOT NULL CHECK (map_kind IN ('session', 'user')),
-    map_key         TEXT NOT NULL,
-    stream_id       TEXT NOT NULL REFERENCES task_stream_streams(stream_id) ON DELETE CASCADE,
-    expires_at      TIMESTAMPTZ NOT NULL,
-    UNIQUE (task_type, map_kind, map_key)
-);
-CREATE INDEX IF NOT EXISTS idx_task_stream_maps_expires_at
-    ON task_stream_maps (expires_at);
-
-CREATE TABLE IF NOT EXISTS task_stream_spawn_locks (
-    lock_key        TEXT PRIMARY KEY,
-    expires_at      TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_task_stream_spawn_locks_expires_at
-    ON task_stream_spawn_locks (expires_at);
-
--- OTP sessions (Postgres fallback when REDIS_URL is not set)
-CREATE TABLE IF NOT EXISTS otp_sessions (
-    phone_number    TEXT PRIMARY KEY,
-    payload         JSONB NOT NULL,
-    expires_at      TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_otp_sessions_expires_at
-    ON otp_sessions (expires_at);
-
--- ── Admin Subscription Grants ──────────────────────────────────────────────────
--- Allows admins to grant full subscription access to team members.
--- Tracks who granted access (for audit purposes).
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS admin_subscription_grants (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    granted_by_user_id      UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    reason                  TEXT NOT NULL DEFAULT '',
-    is_active               BOOLEAN NOT NULL DEFAULT TRUE,
-    granted_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    revoked_at              TIMESTAMPTZ NULL,
-    revoked_by_user_id      UUID NULL REFERENCES users(id) ON DELETE SET NULL,
-    CONSTRAINT admin_subscription_grants_user_unique UNIQUE (user_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_user
-    ON admin_subscription_grants (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_granted_by
-    ON admin_subscription_grants (granted_by_user_id);
-
-CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_active
-    ON admin_subscription_grants (is_active) WHERE is_active = TRUE;
-
-COMMENT ON TABLE admin_subscription_grants IS
-    'Admin-granted full subscription access for team members. Tracks audit trail of who granted/revoked access.';
-
--- Audit log for admin subscription grant actions
-CREATE TABLE IF NOT EXISTS admin_subscription_grant_logs (
-    id                      BIGSERIAL PRIMARY KEY,
-    target_user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    action                  TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
-    admin_user_id           UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    reason                  TEXT NOT NULL DEFAULT '',
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_admin_subscription_grant_logs_target
-    ON admin_subscription_grant_logs (target_user_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_admin_subscription_grant_logs_admin
-    ON admin_subscription_grant_logs (admin_user_id, created_at DESC);
-
-COMMENT ON TABLE admin_subscription_grant_logs IS
-    'Audit log for all admin subscription grant/revoke actions.';
-
-
--- ═══════════════════════════════════════════════════════════════════════════════
--- PROMPTS TABLE
--- ═══════════════════════════════════════════════════════════════════════════════
-
-CREATE TABLE IF NOT EXISTS prompts (
-    slug            TEXT PRIMARY KEY,
-    name            TEXT NOT NULL DEFAULT '',
-    content         TEXT NOT NULL DEFAULT '',
-    description     TEXT NOT NULL DEFAULT '',
-    category        TEXT NOT NULL DEFAULT 'general',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-DROP TRIGGER IF EXISTS trg_prompts_updated_at ON prompts;
-CREATE TRIGGER trg_prompts_updated_at
-    BEFORE UPDATE ON prompts
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts (category);
-
-COMMENT ON TABLE prompts IS
-    'System prompts used across backend services. Managed via admin UI.';
-
--- ═══════════════════════════════════════════════════════════════════════════════
--- END OF SETUP
--- ═══════════════════════════════════════════════════════════════════════════════
