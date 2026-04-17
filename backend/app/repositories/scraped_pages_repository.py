@@ -106,8 +106,8 @@ async def insert_one(
     message_id: str | None = None,
     crawl_status: str = "done",
     error: str | None = None,
-) -> bool:
-    """Insert a single scraped page row. Returns True if inserted, False if skipped."""
+) -> int | None:
+    """Insert a single scraped page row. Returns the inserted ID, or None if skipped."""
     q = _build_page_row(
         entry,
         skill_call_id=skill_call_id,
@@ -119,9 +119,10 @@ async def insert_one(
         error=error,
     )
     if q is None:
-        return False
-    await conn.execute(q.sql, *q.params)
-    return True
+        return None
+    # Add RETURNING id to get the inserted page ID
+    result = await conn.fetchval(q.sql + " RETURNING id", *q.params)
+    return int(result) if result is not None else None
 
 
 async def bulk_insert(
@@ -134,14 +135,14 @@ async def bulk_insert(
     user_id: str | None = None,
     message_id: str | None = None,
     crawl_status: str = "done",
-) -> int:
-    """Insert one row per scraped page.  Returns number of rows inserted."""
+) -> list[int]:
+    """Insert one row per scraped page. Returns list of inserted page IDs."""
     if not page_entries:
-        return 0
+        return []
 
-    count = 0
+    page_ids: list[int] = []
     for entry in page_entries:
-        inserted = await insert_one(
+        page_id = await insert_one(
             conn, entry,
             skill_call_id=skill_call_id,
             conversation_id=conversation_id,
@@ -150,10 +151,10 @@ async def bulk_insert(
             message_id=message_id,
             crawl_status=crawl_status,
         )
-        if inserted:
-            count += 1
+        if page_id is not None:
+            page_ids.append(page_id)
 
-    return count
+    return page_ids
 
 
 async def find_by_base_url(conn, base_url: str, *, limit: int = 500) -> list[Any]:
@@ -283,4 +284,23 @@ async def fetch_by_user_id(
         offset,
     )
     return list(rows), int(total or 0)
+
+
+async def fetch_by_ids(conn, page_ids: list[int]) -> list[Any]:
+    """
+    Fetch scraped pages by an array of IDs.
+    Used with onboarding.scraped_page_ids array.
+    """
+    if not page_ids:
+        return []
+    rows = await conn.fetch(
+        "SELECT id, url, raw, markdown, page_title, status_code, "
+        "crawl_depth, content_type, created_at "
+        "FROM scraped_pages "
+        "WHERE id = ANY($1) "
+        "ORDER BY created_at ASC",
+        page_ids,
+    )
+    return list(rows)
+
 

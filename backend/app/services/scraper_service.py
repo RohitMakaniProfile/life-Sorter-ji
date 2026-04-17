@@ -110,6 +110,7 @@ async def run_scraper(
     # ── Callbacks ─────────────────────────────────────────────────────────────
     progress_events: list[dict[str, Any]] = []
     page_count = 0
+    scraped_page_ids: list[int] = []  # Collect page IDs to link to onboarding
 
     async def _skill_progress(event: dict[str, Any]) -> None:
         meta: dict[str, Any] = event.get("meta") or {}
@@ -179,7 +180,7 @@ async def run_scraper(
                     pass
 
         async with pool.acquire() as conn:
-            await pages_repo.insert_one(
+            page_id = await pages_repo.insert_one(
                 conn,
                 {"url": page.get("url"), "raw": page, "text": markdown},
                 skill_call_id=skill_call_id,
@@ -187,6 +188,16 @@ async def run_scraper(
                 onboarding_id=onboarding_id,
                 user_id=user_id,
                 message_id=message_id,
+                crawl_status=page_status,
+                error=page_error,
+            )
+            # Collect the page ID to link to onboarding later
+            if page_id is not None:
+                scraped_page_ids.append(page_id)
+                logger.info("scraper_page_inserted",
+                           page_id=page_id,
+                           page_number=page_count,
+                           url=page_url)
                 crawl_status=page_status,
                 error=page_error,
             )
@@ -200,7 +211,7 @@ async def run_scraper(
     # ── Run the skill ─────────────────────────────────────────────────────────
     logger.info("run_scraper_executing_skill", url=url)
 
-    result = await run_skill(
+    result, reused_page_ids = await run_skill(
         "scrape-playwright",
         message=f"Scrape this website: {url}",
         args=args,
@@ -279,5 +290,27 @@ async def run_scraper(
                     conn, skill_call_id, "done", None,
                     datetime.now(timezone.utc), duration_ms, output_json,
                 )
+
+    # ── Link scraped pages to onboarding ──────────────────────────────────────
+    if onboarding_id and scraped_page_ids:
+        # Include both newly scraped pages and reused pages
+        all_page_ids = list(set(scraped_page_ids + reused_page_ids))
+        logger.info("linking_pages_to_onboarding",
+                   onboarding_id=onboarding_id,
+                   new_page_ids=len(scraped_page_ids),
+                   reused_page_ids=len(reused_page_ids),
+                   total_page_ids=len(all_page_ids))
+        try:
+            from app.repositories import onboarding_repository as onboarding_repo
+            async with pool.acquire() as conn:
+                await onboarding_repo.add_scraped_page_ids(conn, onboarding_id, all_page_ids)
+            logger.info("pages_linked_to_onboarding",
+                       onboarding_id=onboarding_id,
+                       page_count=len(all_page_ids))
+        except Exception as exc:
+            logger.error("failed_to_link_pages_to_onboarding",
+                        onboarding_id=onboarding_id,
+                        error=str(exc),
+                        error_type=type(exc).__name__)
 
     return result

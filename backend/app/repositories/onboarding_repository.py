@@ -582,3 +582,43 @@ async def find_website_scale_by_user(conn, user_id: str) -> Any:
     )
     return await conn.fetchrow(q.sql, *q.params)
 
+
+async def add_scraped_page_ids(conn, onboarding_id: str, page_ids: list[int]) -> None:
+    """
+    Add scraped page IDs to the onboarding.scraped_page_ids array.
+    Appends new IDs and removes duplicates.
+    """
+    if not page_ids:
+        return
+    await conn.execute(
+        """
+        UPDATE onboarding
+        SET
+            scraped_page_ids = (
+                SELECT array_agg(DISTINCT id ORDER BY id)
+                FROM unnest(COALESCE(scraped_page_ids, '{}') || $1::INTEGER[]) AS id
+            ),
+            updated_at = NOW()
+        WHERE id = $2::uuid
+        """,
+        page_ids,
+        onboarding_id,
+    )
+
+
+async def set_scraped_page_ids(conn, onboarding_id: str, page_ids: list[int]) -> None:
+    """
+    Set (replace) the scraped_page_ids array for an onboarding.
+    """
+    await conn.execute(
+        """
+        UPDATE onboarding
+        SET
+            scraped_page_ids = $1::INTEGER[],
+            updated_at = NOW()
+        WHERE id = $2::uuid
+        """,
+        page_ids,
+        onboarding_id,
+    )
+

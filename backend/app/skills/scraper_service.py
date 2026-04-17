@@ -34,10 +34,11 @@ def _is_homepage_scrape(args: dict[str, Any] | None) -> bool:
     return int(args.get("maxPages") or 0) <= 1
 
 
-async def _load_existing_pages(base_url: str) -> list[dict[str, Any]]:
+async def _load_existing_pages(base_url: str) -> tuple[list[dict[str, Any]], list[int]]:
     """
     Return pages previously stored in scraped_pages for this origin so they
     can be merged with new results and skipped during crawling.
+    Returns (pages_data, page_ids) tuple.
     """
     from urllib.parse import urlparse
     try:
@@ -46,13 +47,14 @@ async def _load_existing_pages(base_url: str) -> list[dict[str, Any]]:
     except Exception:
         origin = ""
     if not origin:
-        return []
+        return [], []
 
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await pages_repo.find_by_base_url(conn, origin)
 
     pages: list[dict[str, Any]] = []
+    page_ids: list[int] = []
     seen: set[str] = set()
     for row in rows:
         url = str(row["url"] or "").strip().rstrip("/")
@@ -71,7 +73,10 @@ async def _load_existing_pages(base_url: str) -> list[dict[str, Any]]:
             "text": row["markdown"] or "",
             "title": row["page_title"] or "",
         })
-    return pages
+        # Also collect the page ID
+        if row.get("id") is not None:
+            page_ids.append(int(row["id"]))
+    return pages, page_ids
 
 
 
@@ -311,7 +316,7 @@ async def run_playwright_skill(
 
     # ── 1. Cache hit for homepage-only scrapes ──────────────────────────────
     if url and _is_homepage_scrape(args):
-        existing = await _load_existing_pages(url)
+        existing, existing_ids = await _load_existing_pages(url)
         if existing:
             await _emit(on_progress, {
                 "stage": "running", "type": "info",
@@ -333,7 +338,7 @@ async def run_playwright_skill(
             return SkillRunResult(status="ok", text="", error=None, data=cached_data, duration_ms=0)
 
     # ── 2. Load previously scraped pages for skip-list / merge ─────────────
-    existing_pages = await _load_existing_pages(url) if url else []
+    existing_pages, existing_page_ids = await _load_existing_pages(url) if url else ([], [])
 
     # ── 3. Call remote scraper ───────────────────────────────────────────────
     return await _run_remote(
@@ -341,6 +346,6 @@ async def run_playwright_skill(
         on_progress=on_progress,
         existing_pages=existing_pages,
         on_page=on_page,
-    )
+    ), existing_page_ids
 
 
