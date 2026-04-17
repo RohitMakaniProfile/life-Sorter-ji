@@ -308,7 +308,6 @@ export function useOnboardingHandlers({
       const sid = await ensureSession();
       const res = await rcaNextQuestion({ onboarding_id: sid, answer });
       if (res?.status === 'complete') {
-        setShowDiagnostic(false);
         handleStartPlaybook();
         return;
       }
