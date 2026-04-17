@@ -520,52 +520,56 @@ export default function AdminUserDetailPage() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 sm:p-8">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <button
-            type="button"
-            onClick={() => navigate('/admin/users')}
-            className="text-slate-400 hover:text-slate-100 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-800 transition-colors text-lg"
-          >
-            ←
-          </button>
-          <div>
-            <h1 className="text-xl font-bold text-slate-100">
-              {user?.email || user?.phone_number || userId}
-            </h1>
-            {user?.name && <p className="text-sm text-slate-400">{user.name}</p>}
-            <p className="text-xs text-slate-600 font-mono mt-0.5">{userId}</p>
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-6 sm:p-8">
+          <div className="max-w-4xl mx-auto">
+            {/* Header */}
+            <div className="flex items-center gap-3 mb-6">
+              <button
+                type="button"
+                onClick={() => navigate('/admin/users')}
+                className="text-slate-400 hover:text-slate-100 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-800 transition-colors text-lg"
+              >
+                ←
+              </button>
+              <div>
+                <h1 className="text-xl font-bold text-slate-100">
+                  {user?.email || user?.phone_number || userId}
+                </h1>
+                {user?.name && <p className="text-sm text-slate-400">{user.name}</p>}
+                <p className="text-xs text-slate-600 font-mono mt-0.5">{userId}</p>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex gap-1 mb-6 border-b border-slate-800">
+              {(['onboarding', 'messages', 'crawl'] as Tab[]).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+                    activeTab === tab
+                      ? 'border-violet-500 text-violet-300'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {TAB_LABELS[tab]}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            {activeTab === 'onboarding' ? (
+              <OnboardingTab userId={userId} />
+            ) : activeTab === 'messages' ? (
+              <MessagesTab userId={userId} />
+            ) : (
+              <CrawlDataTab userId={userId} />
+            )}
           </div>
         </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 mb-6 border-b border-slate-800">
-          {(['onboarding', 'messages', 'crawl'] as Tab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-                activeTab === tab
-                  ? 'border-violet-500 text-violet-300'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {TAB_LABELS[tab]}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab content */}
-        {activeTab === 'onboarding' ? (
-          <OnboardingTab userId={userId} />
-        ) : activeTab === 'messages' ? (
-          <MessagesTab userId={userId} />
-        ) : (
-          <CrawlDataTab userId={userId} />
-        )}
       </div>
     </div>
   );

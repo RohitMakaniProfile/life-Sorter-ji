@@ -247,7 +247,7 @@ async def fetch_by_onboarding_id(
         onboarding_id,
     )
     rows = await conn.fetch(
-        "SELECT id, onboarding_id, user_id, url, markdown, "
+        "SELECT id, onboarding_id, user_id, url, raw, markdown, "
         "page_title, status_code, crawl_depth, crawl_status, error, created_at "
         "FROM scraped_pages "
         "WHERE onboarding_id = $1 "
@@ -272,7 +272,7 @@ async def fetch_by_user_id(
         user_id,
     )
     rows = await conn.fetch(
-        "SELECT id, onboarding_id, user_id, url, markdown, "
+        "SELECT id, onboarding_id, user_id, url, raw, markdown, "
         "page_title, status_code, crawl_depth, crawl_status, error, created_at "
         "FROM scraped_pages "
         "WHERE user_id = $1 "
