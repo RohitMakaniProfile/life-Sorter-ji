@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/services/taskStream';
-import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError } from '../../../api/services/taskStreamMonitor';
+import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError, extractErrorMessage } from '../../../api/services/taskStreamMonitor';
 
 const TASK_TYPE_CRAWL = 'crawl';
 const STORAGE_CRAWL_STEP_REACHED = 'doable-claw-crawl-step-reached';
@@ -197,7 +197,8 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
             setCrawlStage('error');
             setCrawlLabel('Error');
             setCrawlResult(null);
-            setError?.(e?.message || 'Crawl failed');
+            const errMsg = extractErrorMessage(e);
+            setError?.(errMsg);
             monitorTaskStreamError({ taskType: TASK_TYPE_CRAWL, streamId: e?.stream_id, onboardingId, event: e });
           },
         },
@@ -208,7 +209,7 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
         setCrawlDone(false);
         setCrawlStage('error');
         setCrawlLabel('Disconnected');
-        setError?.('Crawl stream disconnected.');
+        setError?.('Crawl stream disconnected unexpectedly.');
       }
     },
     [ensureSession, setError],

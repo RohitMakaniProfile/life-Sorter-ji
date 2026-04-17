@@ -389,3 +389,25 @@ export interface AdminOnboardingInfo {
   task: string;
   website_url: string;
 }
+
+export interface AdminCrawlPage {
+  id: string;
+  onboarding_id: string;
+  url: string;
+  raw_html?: string;
+  markdown?: string;
+  status: string; // 'done' | 'error' | 'skipped'
+  error?: string;
+  crawled_at?: string;
+  created_at: string;
+}
+
+export interface AdminCrawlLog {
+  id: string;
+  onboarding_id: string;
+  level: string; // 'info' | 'warn' | 'error'
+  source: string;
+  message: string;
+  raw?: unknown;
+  created_at: string;
+}

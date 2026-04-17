@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getOnboardingTokenUsage } from '../api';
-import type { AdminOnboardingTokenUsageCall, AdminOnboardingTokenUsageSummary, AdminOnboardingInfo } from '../api/types';
+import { getOnboardingTokenUsage, getOnboardingCrawlPages } from '../api';
+import type { AdminOnboardingTokenUsageCall, AdminOnboardingTokenUsageSummary, AdminOnboardingInfo, AdminCrawlPage, AdminCrawlLog } from '../api/types';
 
 const PAGE_SIZE = 100;
 
@@ -27,6 +27,23 @@ function StageBadge({ stage }: { stage: string }) {
   );
 }
 
+function CrawlStatusBadge({ status }: { status: string }) {
+  const s = status || '';
+  const cls =
+    s === 'done'
+      ? 'bg-emerald-500/20 text-emerald-300'
+      : s === 'error'
+      ? 'bg-red-500/20 text-red-300'
+      : s === 'skipped'
+      ? 'bg-slate-500/20 text-slate-400'
+      : 'bg-amber-500/20 text-amber-300';
+  return (
+    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
+      {s ? s.toUpperCase() : 'UNKNOWN'}
+    </span>
+  );
+}
+
 export default function AdminOnboardingTokenUsagePage() {
   const { onboardingId } = useParams<{ onboardingId: string }>();
   const navigate = useNavigate();
@@ -38,6 +55,18 @@ export default function AdminOnboardingTokenUsagePage() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  // Crawl pages state
+  const [crawlPages, setCrawlPages] = useState<AdminCrawlPage[]>([]);
+  const [crawlLogs, setCrawlLogs] = useState<AdminCrawlLog[]>([]);
+  const [crawlTotal, setCrawlTotal] = useState(0);
+  const [crawlOffset, setCrawlOffset] = useState(0);
+  const [crawlLoading, setCrawlLoading] = useState(true);
+  const [crawlErr, setCrawlErr] = useState<string | null>(null);
+  const [crawlApiErr, setCrawlApiErr] = useState<string | null>(null); // error from backend response body
+  const [expandedCrawlPage, setExpandedCrawlPage] = useState<string | null>(null);
+  const [crawlPageView, setCrawlPageView] = useState<Record<string, 'markdown' | 'raw'>>({});
+  const [showLogs, setShowLogs] = useState(false);
 
   const load = useCallback(async (off: number) => {
     if (!onboardingId) return;
@@ -61,11 +90,41 @@ export default function AdminOnboardingTokenUsagePage() {
     }
   }, [onboardingId]);
 
+  const loadCrawlPages = useCallback(async (off: number) => {
+    if (!onboardingId) return;
+    setCrawlLoading(true);
+    setCrawlErr(null);
+    try {
+      const res = await getOnboardingCrawlPages(onboardingId, 50, off);
+      if (off === 0) {
+        setCrawlPages(res.pages ?? []);
+        setCrawlLogs(res.logs ?? []);
+      } else {
+        setCrawlPages((prev) => [...prev, ...(res.pages ?? [])]);
+      }
+      setCrawlTotal(res.total ?? 0);
+      setCrawlOffset(off + (res.pages?.length ?? 0));
+      if (res.error) setCrawlApiErr(res.error);
+    } catch (e) {
+      setCrawlErr(e instanceof Error ? e.message : 'Failed to load crawl data');
+    } finally {
+      setCrawlLoading(false);
+    }
+  }, [onboardingId]);
+
   useEffect(() => {
     setOffset(0);
     setCalls([]);
     load(0);
   }, [load]);
+
+  useEffect(() => {
+    setCrawlOffset(0);
+    setCrawlPages([]);
+    setCrawlLogs([]);
+    setCrawlApiErr(null);
+    loadCrawlPages(0);
+  }, [loadCrawlPages]);
 
   const hasMore = calls.length < total;
 
@@ -227,6 +286,159 @@ export default function AdminOnboardingTokenUsagePage() {
               </button>
             ) : calls.length > 0 ? (
               <p className="text-center text-xs text-slate-600">All {total} records loaded</p>
+            ) : null}
+          </div>
+        </div>
+
+        {/* ── Crawl Pages Section ──────────────────────────────────────────── */}
+        <div className="mt-8 rounded-xl border border-slate-800 overflow-hidden">
+          <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-100">
+              Scraped Pages {crawlTotal > 0 ? `(${crawlTotal})` : ''}
+            </h2>
+            {crawlLogs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowLogs((v) => !v)}
+                className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 transition-colors"
+              >
+                {showLogs ? 'Hide Logs' : `Show Logs (${crawlLogs.length})`}
+              </button>
+            )}
+          </div>
+
+          {/* Crawl error from backend */}
+          {crawlApiErr && (
+            <div className="px-4 py-3 bg-red-500/10 border-b border-red-500/30 text-red-300 text-xs font-mono whitespace-pre-wrap">
+              <span className="font-semibold text-red-400">Crawl error: </span>{crawlApiErr}
+            </div>
+          )}
+
+          {/* Crawl fetch error */}
+          {crawlErr && (
+            <div className="px-4 py-3 bg-red-500/10 border-b border-red-500/30 text-red-300 text-xs font-mono whitespace-pre-wrap">
+              {crawlErr}
+            </div>
+          )}
+
+          {/* Logs panel */}
+          {showLogs && crawlLogs.length > 0 && (
+            <div className="border-b border-slate-800 bg-slate-950 max-h-64 overflow-y-auto">
+              {crawlLogs.map((log, i) => {
+                const levelCls =
+                  log.level === 'error'
+                    ? 'text-red-400'
+                    : log.level === 'warn'
+                    ? 'text-amber-400'
+                    : 'text-slate-400';
+                return (
+                  <div key={i} className="px-4 py-1.5 border-b border-slate-800/60 flex items-start gap-3 text-[11px] font-mono">
+                    <span className={`flex-shrink-0 font-semibold uppercase ${levelCls}`}>{log.level}</span>
+                    <span className="text-slate-500 flex-shrink-0">{log.source}</span>
+                    <span className="text-slate-300 flex-1 break-all">{log.message}</span>
+                    {log.created_at && (
+                      <span className="text-slate-600 flex-shrink-0 whitespace-nowrap">
+                        {new Date(log.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!crawlLoading && crawlPages.length === 0 && !crawlErr && (
+            <div className="px-4 py-10 text-center text-slate-500 text-sm">
+              {crawlApiErr ? 'Crawl failed — no pages were scraped.' : 'No scraped pages found for this onboarding.'}
+            </div>
+          )}
+
+          {/* Pages list */}
+          <div className="divide-y divide-slate-800 bg-slate-950">
+            {crawlPages.map((page) => {
+              const isExpanded = expandedCrawlPage === page.id;
+              const hasContent = !!(page.markdown || page.raw_html);
+              const view = crawlPageView[page.id] || 'markdown';
+
+              return (
+                <div key={page.id}>
+                  <button
+                    type="button"
+                    onClick={() => hasContent && setExpandedCrawlPage(isExpanded ? null : page.id)}
+                    className={`w-full text-left px-4 py-3 transition-colors flex items-start justify-between gap-3 ${hasContent ? 'hover:bg-slate-900/50 cursor-pointer' : 'cursor-default'}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <CrawlStatusBadge status={page.status} />
+                        {page.crawled_at && (
+                          <span className="text-[10px] text-slate-600">
+                            {new Date(page.crawled_at).toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-300 font-mono truncate" title={page.url}>
+                        {page.url}
+                      </p>
+                      {page.error && (
+                        <p className="text-[11px] text-red-400 mt-1 font-mono break-all" title={page.error}>
+                          {page.error}
+                        </p>
+                      )}
+                    </div>
+                    {hasContent && (
+                      <span className="text-slate-500 text-xs flex-shrink-0 mt-1">{isExpanded ? '▲' : '▼'}</span>
+                    )}
+                  </button>
+
+                  {isExpanded && hasContent && (
+                    <div className="border-t border-slate-800 bg-black/30">
+                      <div className="flex gap-1 px-4 pt-3 pb-2">
+                        {page.markdown && (
+                          <button
+                            type="button"
+                            onClick={() => setCrawlPageView((prev) => ({ ...prev, [page.id]: 'markdown' }))}
+                            className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'markdown' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+                          >
+                            Markdown
+                          </button>
+                        )}
+                        {page.raw_html && (
+                          <button
+                            type="button"
+                            onClick={() => setCrawlPageView((prev) => ({ ...prev, [page.id]: 'raw' }))}
+                            className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'raw' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+                          >
+                            Raw HTML
+                          </button>
+                        )}
+                      </div>
+                      <pre className="px-4 pb-4 text-[11px] text-slate-300 font-mono overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
+                        {view === 'markdown' ? (page.markdown || '') : (page.raw_html || '')}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Crawl pages load more */}
+          <div className="px-4 py-3 border-t border-slate-800 bg-slate-900/50">
+            {crawlLoading ? (
+              <div className="flex justify-center py-2">
+                <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : crawlPages.length < crawlTotal ? (
+              <button
+                type="button"
+                onClick={() => loadCrawlPages(crawlOffset)}
+                className="w-full py-2 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Load more
+              </button>
+            ) : crawlPages.length > 0 ? (
+              <p className="text-center text-xs text-slate-600">All {crawlTotal} pages loaded</p>
             ) : null}
           </div>
         </div>

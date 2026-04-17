@@ -38,6 +38,20 @@ export const API_ROUTES = {
         const qs = params.toString();
         return `/api/v1/admin/onboardings/${encodeURIComponent(onboardingId)}/token-usage${qs ? `?${qs}` : ''}`;
       },
+      onboardingCrawlPages: (onboardingId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/onboardings/${encodeURIComponent(onboardingId)}/crawl-pages${qs ? `?${qs}` : ''}`;
+      },
+      userCrawlPages: (userId: string, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/users/${encodeURIComponent(userId)}/crawl-pages${qs ? `?${qs}` : ''}`;
+      },
       skillCallDetail: (id: string) => `/api/v1/admin/skill-calls/${encodeURIComponent(id)}`,
       users: (q?: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();

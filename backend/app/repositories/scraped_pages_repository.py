@@ -31,6 +31,8 @@ def _build_page_row(
     onboarding_id: str | None,
     user_id: str | None,
     message_id: str | None,
+    crawl_status: str = "done",
+    error: str | None = None,
 ) -> tuple[str, Any] | None:
     """
     Extract and validate fields from a page dict.
@@ -72,18 +74,22 @@ def _build_page_row(
             scraped_pages_t.status_code,
             scraped_pages_t.crawl_depth,
             scraped_pages_t.content_type,
+            scraped_pages_t.crawl_status,
+            scraped_pages_t.error,
         )
         .insert(
             Parameter("%s"), Parameter("%s"), Parameter("%s"),
             Parameter("%s"), Parameter("%s"), Parameter("%s"),
             Parameter("%s"), Parameter("%s"), Parameter("%s"),
             Parameter("%s"), Parameter("%s"), Parameter("%s"),
+            Parameter("%s"), Parameter("%s"),
         ),
         [
             url, raw_text, markdown_text,
             skill_call_id, conversation_id, onboarding_id,
             user_id, message_id,
             page_title, status_code, crawl_depth, content_type,
+            crawl_status or "done", error,
         ],
     )
     return q
@@ -98,6 +104,8 @@ async def insert_one(
     onboarding_id: str | None = None,
     user_id: str | None = None,
     message_id: str | None = None,
+    crawl_status: str = "done",
+    error: str | None = None,
 ) -> bool:
     """Insert a single scraped page row. Returns True if inserted, False if skipped."""
     q = _build_page_row(
@@ -107,6 +115,8 @@ async def insert_one(
         onboarding_id=onboarding_id,
         user_id=user_id,
         message_id=message_id,
+        crawl_status=crawl_status,
+        error=error,
     )
     if q is None:
         return False
@@ -123,6 +133,7 @@ async def bulk_insert(
     onboarding_id: str | None = None,
     user_id: str | None = None,
     message_id: str | None = None,
+    crawl_status: str = "done",
 ) -> int:
     """Insert one row per scraped page.  Returns number of rows inserted."""
     if not page_entries:
@@ -137,6 +148,7 @@ async def bulk_insert(
             onboarding_id=onboarding_id,
             user_id=user_id,
             message_id=message_id,
+            crawl_status=crawl_status,
         )
         if inserted:
             count += 1
@@ -221,4 +233,54 @@ async def find_by_skill_call_id(conn, skill_call_id: int) -> list[Any]:
         [skill_call_id],
     )
     return list(await conn.fetch(q.sql, *q.params))
+
+
+async def fetch_by_onboarding_id(
+    conn,
+    onboarding_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[Any], int]:
+    """Return (rows, total_count) for a given onboarding_id, ordered by created_at ASC."""
+    total = await conn.fetchval(
+        "SELECT COUNT(*) FROM scraped_pages WHERE onboarding_id = $1",
+        onboarding_id,
+    )
+    rows = await conn.fetch(
+        "SELECT id, onboarding_id, user_id, url, markdown, "
+        "page_title, status_code, crawl_depth, crawl_status, error, created_at "
+        "FROM scraped_pages "
+        "WHERE onboarding_id = $1 "
+        "ORDER BY created_at ASC "
+        "LIMIT $2 OFFSET $3",
+        onboarding_id,
+        limit,
+        offset,
+    )
+    return list(rows), int(total or 0)
+
+
+async def fetch_by_user_id(
+    conn,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[Any], int]:
+    """Return (rows, total_count) for a given user_id, ordered by created_at DESC."""
+    total = await conn.fetchval(
+        "SELECT COUNT(*) FROM scraped_pages WHERE user_id = $1",
+        user_id,
+    )
+    rows = await conn.fetch(
+        "SELECT id, onboarding_id, user_id, url, markdown, "
+        "page_title, status_code, crawl_depth, crawl_status, error, created_at "
+        "FROM scraped_pages "
+        "WHERE user_id = $1 "
+        "ORDER BY created_at DESC "
+        "LIMIT $2 OFFSET $3",
+        user_id,
+        limit,
+        offset,
+    )
+    return list(rows), int(total or 0)
 
