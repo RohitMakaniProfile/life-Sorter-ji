@@ -199,7 +199,6 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 url=website_url,
                 max_pages=5,
                 parallel=True,
-                max_parallel_pages=5,
                 skip_urls=[
                     f"{_origin_home(website_url)}/privacy",
                     f"{_origin_home(website_url)}/terms",

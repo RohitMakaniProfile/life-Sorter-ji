@@ -35,7 +35,6 @@ async def run_scraper(
     max_pages: int = 5,
     max_depth: int | None = None,
     parallel: bool = True,
-    max_parallel_pages: int = 5,
     skip_urls: list[str] | None = None,
     # Optional context — all may be None
     onboarding_id: str | None = None,
@@ -63,7 +62,6 @@ async def run_scraper(
         "url": url,
         "maxPages": max_pages,
         "parallel": parallel,
-        "maxParallelPages": max_parallel_pages,
     }
     if max_depth is not None:
         args["maxDepth"] = max_depth
