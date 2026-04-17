@@ -25,6 +25,8 @@ from app.repositories import playbook_runs_repository as playbook_repo
 from app.repositories import session_links_repository as session_links_repo
 from app.repositories import system_config_repository as config_repo
 from app.repositories import token_usage_repository as token_usage_repo
+from app.repositories import scraped_pages_repository as scraped_pages_repo
+from app.repositories import crawl_logs_repository as crawl_logs_repo
 
 
 class AdminApiEntry(BaseModel):
@@ -363,6 +365,113 @@ async def get_onboarding_token_usage(request: Request, onboarding_id: str, limit
             "calls_count": int(summary.get("calls_count") or 0) if summary else 0,
         },
         "calls": calls,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/onboardings/{onboarding_id}/crawl-pages", response_model=dict[str, Any])
+async def get_onboarding_crawl_pages(
+    request: Request,
+    onboarding_id: str,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Get scraped pages and crawl logs for an onboarding session."""
+    require_super_admin(request)
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    oid = (onboarding_id or "").strip()
+    if not oid:
+        raise HTTPException(status_code=400, detail="onboarding_id is required")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows, total = await scraped_pages_repo.fetch_by_onboarding_id(conn, oid, limit, offset)
+        log_rows = await crawl_logs_repo.fetch_by_onboarding_id(conn, oid)
+
+    pages = []
+    for r in rows:
+        created_at = r.get("created_at")
+        pages.append({
+            "id": str(r.get("id") or ""),
+            "onboarding_id": str(r.get("onboarding_id") or ""),
+            "url": str(r.get("url") or ""),
+            "markdown": r.get("markdown") or None,
+            "page_title": str(r.get("page_title") or ""),
+            "status_code": r.get("status_code"),
+            "crawl_status": str(r.get("crawl_status") or "done"),
+            "error": r.get("error") or None,
+            "created_at": created_at.isoformat() if created_at else "",
+        })
+
+    logs = []
+    for r in log_rows:
+        created_at = r.get("created_at")
+        logs.append({
+            "id": str(r.get("id") or ""),
+            "onboarding_id": str(r.get("onboarding_id") or ""),
+            "level": str(r.get("level") or "info"),
+            "source": str(r.get("source") or ""),
+            "message": str(r.get("message") or ""),
+            "raw": r.get("raw"),
+            "created_at": created_at.isoformat() if created_at else "",
+        })
+
+    # Derive overall crawl error: if no pages at all and logs exist, surface latest error
+    crawl_error: str | None = None
+    if total == 0 and logs:
+        error_logs = [lg for lg in logs if lg["level"] == "error"]
+        if error_logs:
+            crawl_error = error_logs[-1]["message"]
+
+    return {
+        "pages": pages,
+        "logs": logs,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "error": crawl_error,
+    }
+
+
+@router.get("/users/{user_id}/crawl-pages", response_model=dict[str, Any])
+async def get_user_crawl_pages(
+    request: Request,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Get all scraped pages across a user's onboardings."""
+    require_super_admin(request)
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    uid = (user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows, total = await scraped_pages_repo.fetch_by_user_id(conn, uid, limit, offset)
+
+    pages = []
+    for r in rows:
+        created_at = r.get("created_at")
+        pages.append({
+            "id": str(r.get("id") or ""),
+            "onboarding_id": str(r.get("onboarding_id") or ""),
+            "url": str(r.get("url") or ""),
+            "markdown": r.get("markdown") or None,
+            "page_title": str(r.get("page_title") or ""),
+            "status_code": r.get("status_code"),
+            "crawl_status": str(r.get("crawl_status") or "done"),
+            "error": r.get("error") or None,
+            "created_at": created_at.isoformat() if created_at else "",
+        })
+
+    return {
+        "pages": pages,
         "total": total,
         "limit": limit,
         "offset": offset,

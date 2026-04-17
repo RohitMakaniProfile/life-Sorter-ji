@@ -19,6 +19,8 @@ import type {
   AdminOnboardingTokenUsageCall,
   AdminOnboardingTokenUsageSummary,
   AdminOnboardingInfo,
+  AdminCrawlPage,
+  AdminCrawlLog,
   Product,
 } from '../types';
 
@@ -218,6 +220,32 @@ export async function getOnboardingTokenUsage(
   offset: number;
 }> {
   return apiGet(API_ROUTES.admin.management.onboardingTokenUsage(onboardingId, limit, offset));
+}
+
+// Onboarding Crawl Pages API
+export async function getOnboardingCrawlPages(
+  onboardingId: string,
+  limit?: number,
+  offset?: number,
+): Promise<{
+  pages: AdminCrawlPage[];
+  logs: AdminCrawlLog[];
+  total: number;
+  error?: string;
+}> {
+  return apiGet(API_ROUTES.admin.management.onboardingCrawlPages(onboardingId, limit, offset));
+}
+
+// User Crawl Pages API (all crawl pages across a user's onboardings)
+export async function getUserCrawlPages(
+  userId: string,
+  limit?: number,
+  offset?: number,
+): Promise<{
+  pages: AdminCrawlPage[];
+  total: number;
+}> {
+  return apiGet(API_ROUTES.admin.management.userCrawlPages(userId, limit, offset));
 }
 
 export async function listAdminProducts(): Promise<{ products: Product[] }> {

@@ -82,7 +82,7 @@ def _has_onboarding_markers(messages: list[dict[str, Any]]) -> bool:
         mid = str(msg.get("messageId") or "")
         if step in (JOURNEY_STEP_OUTCOME, JOURNEY_STEP_DOMAIN, JOURNEY_STEP_TASK,
                     JOURNEY_STEP_URL, JOURNEY_STEP_SCALE, JOURNEY_STEP_DIAGNOSTIC,
-                    JOURNEY_STEP_PRECISION, JOURNEY_STEP_GAP, JOURNEY_STEP_PLAYBOOK):
+                    JOURNEY_STEP_GAP, JOURNEY_STEP_PLAYBOOK):
             return True
         if mid.startswith("onboarding:"):
             return True

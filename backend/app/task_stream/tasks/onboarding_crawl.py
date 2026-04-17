@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from app.db import get_pool
 from app.repositories import scraped_pages_repository as pages_repo
+from app.repositories import crawl_logs_repository as crawl_logs_repo
 from app.task_stream.registry import register_task_stream
 from app.utils.url_sanitize import sanitize_http_url
 from app.services.scraper_service import run_scraper
@@ -177,9 +178,29 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 on_progress=_on_gmaps_progress,
             )
         except Exception as exc:
-            scrape_error = str(exc)
+            scrape_error = crawl_logs_repo.extract_error_message(exc)
             page_data = {"url": website_url, "title": "", "meta_description": "",
                          "elements": [], "tech_stack": {}}
+            import structlog
+            structlog.get_logger().error("onboarding_crawl_gmaps_failed",
+                                         url=website_url,
+                                         onboarding_id=onboarding_id,
+                                         error=scrape_error,
+                                         error_type=type(exc).__name__)
+            if onboarding_id:
+                try:
+                    pool = get_pool()
+                    async with pool.acquire() as conn:
+                        await crawl_logs_repo.insert_log(
+                            conn,
+                            onboarding_id=onboarding_id,
+                            level="error",
+                            source="crawl_task",
+                            message=f"Google Maps scrape failed for {website_url}: {scrape_error}",
+                            raw={"url": website_url, "error": scrape_error, "error_type": type(exc).__name__},
+                        )
+                except Exception:
+                    pass
 
         if skill_call_id is not None:
             await finish_onboarding_skill_call(
@@ -209,13 +230,27 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
         except Exception as exc:
             import structlog
             logger = structlog.get_logger()
-            scrape_error = str(exc)
+            scrape_error = crawl_logs_repo.extract_error_message(exc)
             logger.error("onboarding_crawl_scraper_failed",
                         url=website_url,
                         onboarding_id=onboarding_id,
                         error=scrape_error,
                         error_type=type(exc).__name__,
                         error_repr=repr(exc))
+            if onboarding_id:
+                try:
+                    pool = get_pool()
+                    async with pool.acquire() as conn:
+                        await crawl_logs_repo.insert_log(
+                            conn,
+                            onboarding_id=onboarding_id,
+                            level="error",
+                            source="crawl_task",
+                            message=f"Playwright scrape failed for {website_url}: {scrape_error}",
+                            raw={"url": website_url, "error": scrape_error, "error_type": type(exc).__name__},
+                        )
+                except Exception:
+                    pass
 
         # Fetch recent rows and pick summary pages:
         # homepage + non-legal content pages first.

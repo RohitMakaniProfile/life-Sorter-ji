@@ -24,6 +24,7 @@ from typing import Any
 from app.db import get_pool
 from app.repositories import scraped_pages_repository as pages_repo
 from app.repositories import skill_calls_repository as skill_calls_repo
+from app.repositories import crawl_logs_repository as crawl_logs_repo
 from app.skills.service import run_skill, SkillRunResult
 from app.skills.summarizer import _summarize_one_page
 
@@ -138,35 +139,63 @@ async def run_scraper(
                    url=page_url,
                    onboarding_id=onboarding_id)
 
-        markdown = await _summarize_one_page(
-            "scrape-playwright",
-            page,
-            content_field="body_text",
-            url_field="url",
-            on_progress=_skill_progress,
-        )
+        page_error: str | None = None
+        page_status: str = "done"
+        markdown: str = ""
 
-        logger.info("scraper_page_summarized",
-                   page_number=page_count,
-                   url=page_url,
-                   markdown_length=len(markdown))
+        try:
+            markdown = await _summarize_one_page(
+                "scrape-playwright",
+                page,
+                content_field="body_text",
+                url_field="url",
+                on_progress=_skill_progress,
+            )
+            logger.info("scraper_page_summarized",
+                       page_number=page_count,
+                       url=page_url,
+                       markdown_length=len(markdown))
+        except Exception as exc:
+            page_error = crawl_logs_repo.extract_error_message(exc)
+            page_status = "error"
+            logger.error("scraper_page_summarize_failed",
+                        page_number=page_count,
+                        url=page_url,
+                        error=page_error,
+                        error_type=type(exc).__name__)
+            if onboarding_id:
+                try:
+                    async with pool.acquire() as conn:
+                        await crawl_logs_repo.insert_log(
+                            conn,
+                            onboarding_id=onboarding_id,
+                            user_id=user_id,
+                            level="error",
+                            source="summarizer",
+                            message=f"Failed to summarize page {page_url}: {page_error}",
+                            raw={"url": page_url, "error": page_error, "error_type": type(exc).__name__},
+                        )
+                except Exception:
+                    pass
 
         async with pool.acquire() as conn:
             await pages_repo.insert_one(
                 conn,
-                # raw = full page dict; text = LLM markdown
                 {"url": page.get("url"), "raw": page, "text": markdown},
                 skill_call_id=skill_call_id,
                 conversation_id=conversation_id,
                 onboarding_id=onboarding_id,
                 user_id=user_id,
                 message_id=message_id,
+                crawl_status=page_status,
+                error=page_error,
             )
 
         logger.info("scraper_page_stored",
                    page_number=page_count,
                    url=page_url,
-                   skill_call_id=skill_call_id)
+                   skill_call_id=skill_call_id,
+                   status=page_status)
 
     # ── Run the skill ─────────────────────────────────────────────────────────
     logger.info("run_scraper_executing_skill", url=url)
@@ -191,12 +220,8 @@ async def run_scraper(
     output_json = json.dumps(progress_events, ensure_ascii=False)
 
     if result.status != "ok":
-        # Log the full error details before converting to string
-        import structlog
-        logger = structlog.get_logger()
-
         error_detail = result.error
-        error_str = str(error_detail or "scrape-playwright failed")
+        error_str = crawl_logs_repo.extract_error_message(error_detail) or "scrape-playwright failed"
 
         logger.error("scraper_skill_failed",
                     skill_id="scrape-playwright",
@@ -207,6 +232,26 @@ async def run_scraper(
                     result_status=result.status,
                     result_data=str(result.data)[:500] if result.data else None,
                     skill_call_id=skill_call_id)
+
+        if onboarding_id:
+            try:
+                async with pool.acquire() as conn:
+                    await crawl_logs_repo.insert_log(
+                        conn,
+                        onboarding_id=onboarding_id,
+                        user_id=user_id,
+                        level="error",
+                        source="scraper",
+                        message=f"Scraper failed for {url}: {error_str}",
+                        raw={
+                            "url": url,
+                            "error": error_str,
+                            "result_status": result.status,
+                            "result_data": str(result.data)[:500] if result.data else None,
+                        },
+                    )
+            except Exception:
+                pass
 
         if skill_call_id is not None:
             async with pool.acquire() as conn:
