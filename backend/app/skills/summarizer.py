@@ -207,7 +207,7 @@ async def _summarize_one_page(
     Returns the markdown string (or the raw body text if the LLM fails).
     """
     page_url = str(item.get(url_field) or "")
-    page_content = _extract_page_content(item, content_field)[:14_000]
+    page_content = _build_page_content(item, content_field)[:14_000]
     if not page_content:
         return ""
 

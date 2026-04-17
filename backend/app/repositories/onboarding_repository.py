@@ -547,16 +547,26 @@ async def save_web_summary(conn, onboarding_id: str, web_summary: str) -> None:
 
 
 async def update_crawl_outputs(conn, onboarding_id: str, web_summary: str, business_profile: str) -> None:
-    """Persist web_summary and business_profile from crawl."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.web_summary, Parameter("%s"))
-        .set(onboarding_t.business_profile, Parameter("%s"))
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [web_summary, business_profile, onboarding_id],
+    """Persist web_summary and business_profile from crawl.
+    Never overwrites a longer existing web_summary with a shorter/empty one."""
+    await conn.execute(
+        """
+        UPDATE onboarding
+        SET
+            web_summary = CASE
+                WHEN $1 = '' THEN web_summary
+                WHEN length($1) >= length(COALESCE(web_summary, '')) THEN $1
+                ELSE web_summary
+            END,
+            business_profile = CASE
+                WHEN $2 = '' THEN business_profile
+                ELSE $2
+            END,
+            updated_at = NOW()
+        WHERE id = $3::uuid
+        """,
+        web_summary, business_profile, onboarding_id,
     )
-    await conn.execute(q.sql, *q.params)
 
 
 async def find_website_scale_by_user(conn, user_id: str) -> Any:

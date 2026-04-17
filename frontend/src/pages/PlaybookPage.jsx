@@ -343,6 +343,13 @@ export default function PlaybookPage() {
       return m ? m[1].trim() : null;
     })();
 
+    // Derive domain: use saved value, or reverse-lookup from DOMAIN_TASKS by task
+    const effectiveDomain = completedDomain || (() => {
+      if (!completedTask) return '';
+      const entry = Object.entries(DOMAIN_TASKS).find(([, tasks]) => tasks.includes(completedTask));
+      return entry ? entry[0] : '';
+    })();
+
     return wrapPage(
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* ── Task header bar ── */}
@@ -391,19 +398,19 @@ export default function PlaybookPage() {
             </div>
 
             {/* ── Other tasks in this domain ── */}
-            {completedDomain && DOMAIN_TASKS[completedDomain]?.length > 0 && (
+            {effectiveDomain && DOMAIN_TASKS[effectiveDomain]?.length > 0 && (
               <div className="mt-6">
                 <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: '#475569', marginBottom: 10 }}>
-                  Other {completedDomain} tasks
+                  Other {effectiveDomain} tasks
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                  {DOMAIN_TASKS[completedDomain]
+                  {DOMAIN_TASKS[effectiveDomain]
                     .filter((t) => t !== completedTask)
                     .map((t) => (
                       <button
                         key={t}
                         type="button"
-                        onClick={() => { window.location.href = `/?task=${encodeURIComponent(t)}&domain=${encodeURIComponent(completedDomain)}`; }}
+                        onClick={() => { window.location.href = `/?task=${encodeURIComponent(t)}&domain=${encodeURIComponent(effectiveDomain)}`; }}
                         style={{
                           cursor: 'pointer',
                           border: '1px solid rgba(255,255,255,0.10)',
