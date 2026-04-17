@@ -175,6 +175,7 @@ async def run_skill(
     text = stdout_text.strip()
     err: str | None = None
     data: Any = None
+    parsed: dict[str, Any] | None = None
 
     parse_target = result_line or stdout_text.strip()
     if parse_target:
@@ -192,6 +193,19 @@ async def run_skill(
 
     if exit_code != 0 and not err:
         err = stderr_text or f"Skill exited with code {exit_code}"
+
+    # Log detailed error information for debugging
+    if err or exit_code != 0:
+        import structlog
+        logger = structlog.get_logger()
+        logger.error("skill_subprocess_failed",
+                    skill_id=skill_id,
+                    exit_code=exit_code,
+                    error=err,
+                    stderr=stderr_text[:1000] if stderr_text else None,
+                    stdout_preview=stdout_text[:500] if stdout_text else None,
+                    result_line=result_line[:500] if result_line else None,
+                    parsed_error=parsed.get("error") if parsed and isinstance(parsed, dict) else None)
 
     status = "error" if err else "ok"
     if not text and err:

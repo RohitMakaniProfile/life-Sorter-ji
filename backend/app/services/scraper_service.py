@@ -144,20 +144,37 @@ async def run_scraper(
     output_json = json.dumps(progress_events, ensure_ascii=False)
 
     if result.status != "ok":
+        # Log the full error details before converting to string
+        import structlog
+        logger = structlog.get_logger()
+
+        error_detail = result.error
+        error_str = str(error_detail or "scrape-playwright failed")
+
+        logger.error("scraper_skill_failed",
+                    skill_id="scrape-playwright",
+                    url=url,
+                    error=error_str,
+                    error_type=type(error_detail).__name__ if error_detail else None,
+                    error_repr=repr(error_detail) if error_detail else None,
+                    result_status=result.status,
+                    result_data=str(result.data)[:500] if result.data else None,
+                    skill_call_id=skill_call_id)
+
         if skill_call_id is not None:
             async with pool.acquire() as conn:
                 if onboarding_id:
                     await skill_calls_repo.finish_onboarding_skill_call(
                         conn, skill_call_id, "error", output_json,
-                        str(result.error or "scrape-playwright failed"), duration_ms,
+                        error_str, duration_ms,
                     )
                 else:
                     await skill_calls_repo.update_result(
                         conn, skill_call_id, "error",
-                        str(result.error or "scrape-playwright failed"),
+                        error_str,
                         datetime.now(timezone.utc), duration_ms, output_json,
                     )
-        raise RuntimeError(str(result.error or "scrape-playwright failed"))
+        raise RuntimeError(error_str)
 
     if skill_call_id is not None:
         async with pool.acquire() as conn:
