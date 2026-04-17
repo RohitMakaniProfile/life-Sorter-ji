@@ -129,10 +129,11 @@ export default function AdminOnboardingTokenUsagePage() {
   const hasMore = calls.length < total;
 
   return (
-    <div className="min-h-screen bg-slate-950 p-6 sm:p-8">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center gap-4 mb-6">
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex-1 overflow-y-auto bg-slate-950 p-6 sm:p-8">
+        <div className="max-w-6xl mx-auto">
+          {/* Header */}
+          <div className="flex items-center gap-4 mb-6">
           <button
             type="button"
             onClick={() => navigate(-1)}
@@ -443,6 +444,7 @@ export default function AdminOnboardingTokenUsagePage() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }
