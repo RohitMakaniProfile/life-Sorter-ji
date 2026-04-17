@@ -8,7 +8,10 @@
       "Bash(grep -rn \"stream.*crawl\\\\|crawl.*stream\\\\|startTask.*crawl\\\\|task.*crawl\" /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji --include=*.tsx --include=*.ts --include=*.js --include=*.py)",
       "Bash(grep -rn --include=*.py --include=*.js --include=*.jsx --include=*.ts --include=*.tsx --include=*.sql -i precision /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/frontend /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/backend)",
       "Bash(grep -rn --include=*.py -i precision /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/backend/app)",
-      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/frontend/src -name PaymentModal*)"
+      "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/frontend/src -name PaymentModal*)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(grep -l \"skill_calls\\\\|SkillCall\" /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/backend/app/services/*.py)",
+      "Bash(grep:*)"
     ]
   }
 }

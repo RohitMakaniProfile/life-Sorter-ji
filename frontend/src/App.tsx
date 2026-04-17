@@ -22,6 +22,7 @@ import AdminSystemConfigPage from './pages/AdminSystemConfigPage';
 import AdminObservabilityPage from './pages/AdminObservabilityPage';
 import AdminSubscriptionGrantsPage from './pages/AdminSubscriptionGrantsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import AdminUserDetailPage from './pages/AdminUserDetailPage';
 import AdminSkillCallDetailPage from './pages/AdminSkillCallDetailPage';
 import AdminPromptsPage from './pages/AdminPromptsPage';
 import AdminTokenUsagePage from './pages/AdminTokenUsagePage';
@@ -96,6 +97,7 @@ function App() {
               <Route path="admin" element={<RequireSuperAdmin />}>
                 <Route index element={<Navigate to="/admin/observability" replace />} />
                 <Route path="users" element={<AdminUsersPage />} />
+                <Route path="users/:userId" element={<AdminUserDetailPage />} />
                 <Route path="skill-calls/:skillCallId" element={<AdminSkillCallDetailPage />} />
                 <Route path="onboarding/:onboardingId/token-usage" element={<AdminOnboardingTokenUsagePage />} />
                 <Route path="observability" element={<AdminObservabilityPage />} />

@@ -1,149 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listAdminUsers, deleteAdminUser, listUserOnboardings } from '../api';
-import type { AdminUser, AdminUserOnboarding } from '../api/types';
+import { listAdminUsers, deleteAdminUser } from '../api';
+import type { AdminUser } from '../api/types';
 
 const PAGE_SIZE = 50;
-const ONBOARDINGS_PAGE = 10;
-
-// ── Playbook status badge ───────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: string }) {
-  const s = status || '';
-  const cls =
-    s === 'complete'
-      ? 'bg-emerald-500/20 text-emerald-300'
-      : s === 'error'
-      ? 'bg-red-500/20 text-red-300'
-      : s === 'generating'
-      ? 'bg-blue-500/20 text-blue-300'
-      : 'bg-amber-500/20 text-amber-300';
-  return (
-    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {s ? s.toUpperCase() : 'NOT STARTED'}
-    </span>
-  );
-}
-
-// ── User onboardings panel ──────────────────────────────────────────────────
-
-function UserOnboardingsPanel({ user, onClose }: { user: AdminUser; onClose: () => void }) {
-  const navigate = useNavigate();
-  const [onboardings, setOnboardings] = useState<AdminUserOnboarding[]>([]);
-  const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = useCallback(async (off: number) => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const res = await listUserOnboardings(user.id, ONBOARDINGS_PAGE, off);
-      if (off === 0) {
-        setOnboardings(res.onboardings);
-      } else {
-        setOnboardings((prev) => [...prev, ...res.onboardings]);
-      }
-      setTotal(res.total);
-      setOffset(off + res.onboardings.length);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Failed to load');
-    } finally {
-      setLoading(false);
-    }
-  }, [user.id]);
-
-  useEffect(() => {
-    setOffset(0);
-    setOnboardings([]);
-    load(0);
-  }, [load]);
-
-  const hasMore = onboardings.length < total;
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 flex-shrink-0">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-slate-100 truncate">
-            {user.email || user.phone_number || 'User'}
-          </p>
-          <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">{user.id}</p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-slate-400 hover:text-slate-100 flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800"
-        >
-          ✕
-        </button>
-      </div>
-
-      <div className="px-4 py-2 border-b border-slate-800 flex-shrink-0">
-        <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold">
-          Onboarding Sessions {total > 0 ? `(${total})` : ''}
-        </p>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        {err && (
-          <div className="m-4 px-3 py-2 rounded-lg bg-red-500/15 text-red-300 text-xs border border-red-500/30">
-            {err}
-          </div>
-        )}
-
-        {!loading && onboardings.length === 0 && !err && (
-          <div className="py-12 text-center text-slate-500 text-sm">No onboarding sessions found.</div>
-        )}
-
-        <div className="divide-y divide-slate-800">
-          {onboardings.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => navigate(`/admin/onboarding/${o.id}/token-usage`)}
-              className="w-full text-left px-4 py-3 hover:bg-slate-800/60 transition-colors"
-            >
-              <div className="flex items-start justify-between gap-2 mb-1.5">
-                <span className="text-xs font-semibold text-slate-100 truncate flex-1">
-                  {o.task || o.domain || o.outcome || 'Onboarding'}
-                </span>
-                <StatusBadge status={o.playbook_status} />
-              </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
-                <span title="Onboarding ID">ID: {o.id.slice(0, 12)}…</span>
-                {o.outcome && <span>🎯 {o.outcome}</span>}
-                {o.created_at && <span>{new Date(o.created_at).toLocaleDateString()}</span>}
-              </div>
-              {o.website_url && (
-                <p className="text-[10px] text-slate-600 truncate mt-1">🌐 {o.website_url}</p>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div className="px-4 py-3">
-          {loading ? (
-            <div className="flex justify-center py-4">
-              <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
-            </div>
-          ) : hasMore ? (
-            <button
-              type="button"
-              onClick={() => load(offset)}
-              className="w-full py-2 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
-            >
-              Load more
-            </button>
-          ) : onboardings.length > 0 ? (
-            <p className="text-center text-xs text-slate-600">All {total} sessions loaded</p>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── Main page ────────────────────────────────────────────────────────────────
 
@@ -156,8 +16,6 @@ export default function AdminUsersPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
@@ -211,7 +69,6 @@ export default function AdminUsersPage() {
     setDeleteErr(null);
     try {
       await deleteAdminUser(deleteTarget.id);
-      if (selectedUser?.id === deleteTarget.id) setSelectedUser(null);
       setDeleteTarget(null);
       setDeleteConfirmText('');
       await load(debouncedQuery, offset);
@@ -228,9 +85,8 @@ export default function AdminUsersPage() {
   const deleteConfirmReady = deleteConfirmText.trim() === 'DELETE';
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Main table */}
-      <div className="flex-1 overflow-y-auto p-6 sm:p-8 min-w-0">
+    <div className="h-full overflow-hidden">
+      <div className="overflow-y-auto h-full p-6 sm:p-8">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
@@ -284,12 +140,8 @@ export default function AdminUsersPage() {
                   users.map((u) => (
                     <tr
                       key={u.id}
-                      onClick={() => setSelectedUser((prev) => prev?.id === u.id ? null : u)}
-                      className={`cursor-pointer transition-colors ${
-                        selectedUser?.id === u.id
-                          ? 'bg-violet-500/10 border-l-2 border-l-violet-500'
-                          : 'hover:bg-slate-900/60'
-                      }`}
+                      onClick={() => navigate(`/admin/users/${u.id}`, { state: { user: u } })}
+                      className="cursor-pointer transition-colors hover:bg-slate-900/60"
                     >
                       <td className="px-4 py-3">
                         <div>
@@ -356,17 +208,6 @@ export default function AdminUsersPage() {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Slide-in onboardings panel */}
-      <div
-        className={`flex-shrink-0 border-l border-slate-800 bg-slate-900 transition-all duration-300 overflow-hidden ${
-          selectedUser ? 'w-96' : 'w-0'
-        }`}
-      >
-        {selectedUser && (
-          <UserOnboardingsPanel user={selectedUser} onClose={() => setSelectedUser(null)} />
-        )}
       </div>
 
       {/* Delete confirmation modal */}
