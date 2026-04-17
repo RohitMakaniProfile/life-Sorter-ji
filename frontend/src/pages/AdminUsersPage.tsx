@@ -8,6 +8,7 @@ const PAGE_SIZE = 50;
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function AdminUsersPage() {
+  const navigate = useNavigate();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
