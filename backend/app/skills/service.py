@@ -153,6 +153,11 @@ async def run_skill(
     if skill_id == "platform-scout":
         return await run_platform_scout(message, args, on_progress)
 
+    # ── Scrape-playwright (HTTP call to scraper microservice) ─────────────
+    if skill_id == "scrape-playwright":
+        from .scraper_service import run_playwright_skill
+        return await run_playwright_skill(message, args or {}, on_progress, on_page)
+
     # ── Generic subprocess skill ──────────────────────────────────────────
     script_path = manifest.directory / manifest.entry
     if not script_path.exists():
