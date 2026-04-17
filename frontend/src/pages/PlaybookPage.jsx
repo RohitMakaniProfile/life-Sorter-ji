@@ -7,6 +7,7 @@ import PlaybookStage from '../components/onboarding/stages/PlaybookStage';
 import { getPlaybookStatus, coreApi } from '../api/index';
 import { runResumableTaskStream } from '../api/index';
 import { DOMAIN_TASKS } from '../components/onboarding/onboardingJourneyData';
+import { useDeepAnalysis } from '../components/onboarding/hooks/useDeepAnalysis';
 
 const TASK_TYPE_PLAYBOOK_GENERATE = 'playbook/onboarding-generate';
 
@@ -100,6 +101,12 @@ export default function PlaybookPage() {
   const [completedContent, setCompletedContent] = useState(null);
   const [completedTask, setCompletedTask] = useState('');
   const [completedDomain, setCompletedDomain] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
+
+  const { handleDeepAnalysis } = useDeepAnalysis({
+    getWebsiteUrl: useCallback(() => websiteUrl, [websiteUrl]),
+    setError: setPageError,
+  });
 
   // ── Gap questions ─────────────────────────────────────────────────────────
   const [gapQuestions, setGapQuestions] = useState([]);
@@ -143,6 +150,7 @@ export default function PlaybookPage() {
         if (data.domain) setCompletedDomain(data.domain);
         if (data.task) setCompletedTask(data.task);
         else if (data.domain) setCompletedTask(data.domain);
+        if (data.website_url) setWebsiteUrl(data.website_url);
 
         // Already complete with content
         if (data.playbook_status === 'complete' && data.content?.playbook) {
@@ -426,6 +434,13 @@ export default function PlaybookPage() {
                 className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
               >
                 Start New Journey
+              </button>
+              <button
+                type="button"
+                onClick={handleDeepAnalysis}
+                className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] py-2.5 px-8 text-[14px] font-bold text-white shadow-lg shadow-violet-500/20 transition hover:shadow-violet-500/35"
+              >
+                Do Deep Analysis
               </button>
             </div>
           </div>

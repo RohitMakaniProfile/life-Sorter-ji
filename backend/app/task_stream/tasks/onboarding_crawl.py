@@ -199,7 +199,6 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 url=website_url,
                 max_pages=5,
                 parallel=True,
-                max_parallel_pages=5,
                 skip_urls=[
                     f"{_origin_home(website_url)}/privacy",
                     f"{_origin_home(website_url)}/terms",
@@ -208,7 +207,15 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 onboarding_id=onboarding_id,
             )
         except RuntimeError as exc:
+            import structlog
+            logger = structlog.get_logger()
             scrape_error = str(exc)
+            logger.error("onboarding_crawl_scraper_failed",
+                        url=website_url,
+                        onboarding_id=onboarding_id,
+                        error=scrape_error,
+                        error_type=type(exc).__name__,
+                        error_repr=repr(exc))
 
         # Fetch recent rows and pick summary pages:
         # homepage + non-legal content pages first.

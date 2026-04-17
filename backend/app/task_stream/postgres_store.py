@@ -43,14 +43,28 @@ class PostgresTaskStreamStore:
     """
 
     async def try_acquire_spawn_lock(self, lock_key: str) -> bool:
+        import structlog
+        logger = structlog.get_logger()
+
         pool = get_pool()
-        async with pool.acquire() as conn:
-            await ts_repo.delete_expired_spawn_locks(conn)
-            try:
-                await ts_repo.insert_spawn_lock(conn, lock_key, datetime.utcnow() + timedelta(seconds=10))
-                return True
-            except UniqueViolationError:
-                return False
+        try:
+            async with pool.acquire() as conn:
+                logger.info("postgres_store_deleting_expired_locks")
+                await ts_repo.delete_expired_spawn_locks(conn)
+                try:
+                    logger.info("postgres_store_inserting_spawn_lock", lock_key=lock_key)
+                    await ts_repo.insert_spawn_lock(conn, lock_key, datetime.utcnow() + timedelta(seconds=10))
+                    logger.info("postgres_store_spawn_lock_acquired", lock_key=lock_key)
+                    return True
+                except UniqueViolationError:
+                    logger.info("postgres_store_spawn_lock_already_exists", lock_key=lock_key)
+                    return False
+        except Exception as e:
+            logger.error("postgres_store_spawn_lock_error",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        lock_key=lock_key)
+            raise
 
     async def release_spawn_lock(self, lock_key: str) -> None:
         pool = get_pool()
@@ -89,18 +103,35 @@ class PostgresTaskStreamStore:
         user_id: Optional[str],
         status: str = "running",
     ) -> None:
+        import structlog
+        logger = structlog.get_logger()
+
         exp = _expires_at()
         pool = get_pool()
-        async with pool.acquire() as conn:
-            await ts_repo.create_stream(
-                conn,
-                stream_id=stream_id,
-                task_type=task_type,
-                session_id=(onboarding_id or "").strip(),
-                user_id=(user_id or "").strip(),
-                status=status,
-                expires_at=exp,
-            )
+        try:
+            async with pool.acquire() as conn:
+                logger.info("postgres_store_creating_stream",
+                           stream_id=stream_id,
+                           task_type=task_type,
+                           session_id=onboarding_id,
+                           user_id=user_id,
+                           status=status)
+                await ts_repo.create_stream(
+                    conn,
+                    stream_id=stream_id,
+                    task_type=task_type,
+                    session_id=(onboarding_id or "").strip(),
+                    user_id=(user_id or "").strip(),
+                    status=status,
+                    expires_at=exp,
+                )
+                logger.info("postgres_store_stream_created", stream_id=stream_id)
+        except Exception as e:
+            logger.error("postgres_store_create_stream_error",
+                        stream_id=stream_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
+            raise
 
     async def set_status(self, stream_id: str, status: str) -> None:
         pool = get_pool()

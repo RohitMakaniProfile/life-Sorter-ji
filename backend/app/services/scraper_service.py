@@ -35,7 +35,6 @@ async def run_scraper(
     max_pages: int = 5,
     max_depth: int | None = None,
     parallel: bool = True,
-    max_parallel_pages: int = 5,
     skip_urls: list[str] | None = None,
     # Optional context — all may be None
     onboarding_id: str | None = None,
@@ -55,6 +54,9 @@ async def run_scraper(
 
     Raises RuntimeError if the skill returns a non-ok status.
     """
+    import structlog
+    logger = structlog.get_logger()
+
     pool = get_pool()
     run_id = f"scrape-playwright-{int(time.time() * 1000)}"
     started_at = datetime.now(timezone.utc)
@@ -63,12 +65,20 @@ async def run_scraper(
         "url": url,
         "maxPages": max_pages,
         "parallel": parallel,
-        "maxParallelPages": max_parallel_pages,
     }
     if max_depth is not None:
         args["maxDepth"] = max_depth
     if skip_urls:
         args["skipUrls"] = [str(u).strip() for u in skip_urls if str(u).strip()]
+
+    logger.info("run_scraper_starting",
+               url=url,
+               max_pages=max_pages,
+               parallel=parallel,
+               max_depth=max_depth,
+               skip_urls_count=len(skip_urls) if skip_urls else 0,
+               onboarding_id=onboarding_id,
+               args=args)
 
     input_json = json.dumps({"url": url, "args": args}, ensure_ascii=False)
 
@@ -98,19 +108,36 @@ async def run_scraper(
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
     progress_events: list[dict[str, Any]] = []
+    page_count = 0
 
     async def _skill_progress(event: dict[str, Any]) -> None:
         meta: dict[str, Any] = event.get("meta") or {}
+        event_type = meta.get("event", "info")
         progress_events.append({
             "type": event.get("type", "info"),
-            "event": meta.get("event", "info"),
+            "event": event_type,
             "message": event.get("message", ""),
             "meta": meta,
             "at": datetime.now(timezone.utc).isoformat(),
         })
+        # Log important events
+        if event_type in ["page_data", "discovered", "started", "checkpoint"]:
+            logger.info("scraper_progress_event",
+                       event_type=event_type,
+                       url=meta.get("url"),
+                       message=event.get("message", "")[:200])
 
     async def _on_page(page: dict[str, Any]) -> None:
         """Called once per page as it arrives. LLM-summarises then stores immediately."""
+        nonlocal page_count
+        page_count += 1
+        page_url = page.get("url", "unknown")
+
+        logger.info("scraper_page_callback",
+                   page_number=page_count,
+                   url=page_url,
+                   onboarding_id=onboarding_id)
+
         markdown = await _summarize_one_page(
             "scrape-playwright",
             page,
@@ -118,6 +145,12 @@ async def run_scraper(
             url_field="url",
             on_progress=_skill_progress,
         )
+
+        logger.info("scraper_page_summarized",
+                   page_number=page_count,
+                   url=page_url,
+                   markdown_length=len(markdown))
+
         async with pool.acquire() as conn:
             await pages_repo.insert_one(
                 conn,
@@ -130,7 +163,14 @@ async def run_scraper(
                 message_id=message_id,
             )
 
+        logger.info("scraper_page_stored",
+                   page_number=page_count,
+                   url=page_url,
+                   skill_call_id=skill_call_id)
+
     # ── Run the skill ─────────────────────────────────────────────────────────
+    logger.info("run_scraper_executing_skill", url=url)
+
     result = await run_skill(
         "scrape-playwright",
         message=f"Scrape this website: {url}",
@@ -139,25 +179,49 @@ async def run_scraper(
         on_page=_on_page,
     )
 
+    logger.info("run_scraper_skill_completed",
+               url=url,
+               status=result.status,
+               page_count=page_count,
+               progress_events_count=len(progress_events),
+               result_data_keys=list(result.data.keys()) if isinstance(result.data, dict) else None)
+
     # ── Finalize skill_call ───────────────────────────────────────────────────
     duration_ms = int((time.time() - started_at.timestamp()) * 1000)
     output_json = json.dumps(progress_events, ensure_ascii=False)
 
     if result.status != "ok":
+        # Log the full error details before converting to string
+        import structlog
+        logger = structlog.get_logger()
+
+        error_detail = result.error
+        error_str = str(error_detail or "scrape-playwright failed")
+
+        logger.error("scraper_skill_failed",
+                    skill_id="scrape-playwright",
+                    url=url,
+                    error=error_str,
+                    error_type=type(error_detail).__name__ if error_detail else None,
+                    error_repr=repr(error_detail) if error_detail else None,
+                    result_status=result.status,
+                    result_data=str(result.data)[:500] if result.data else None,
+                    skill_call_id=skill_call_id)
+
         if skill_call_id is not None:
             async with pool.acquire() as conn:
                 if onboarding_id:
                     await skill_calls_repo.finish_onboarding_skill_call(
                         conn, skill_call_id, "error", output_json,
-                        str(result.error or "scrape-playwright failed"), duration_ms,
+                        error_str, duration_ms,
                     )
                 else:
                     await skill_calls_repo.update_result(
                         conn, skill_call_id, "error",
-                        str(result.error or "scrape-playwright failed"),
+                        error_str,
                         datetime.now(timezone.utc), duration_ms, output_json,
                     )
-        raise RuntimeError(str(result.error or "scrape-playwright failed"))
+        raise RuntimeError(error_str)
 
     if skill_call_id is not None:
         async with pool.acquire() as conn:

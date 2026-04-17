@@ -79,12 +79,27 @@ async def _stream_skill_subprocess_stdout(
                 raw_json = t[len("PROGRESS:"):].strip()
                 meta = _parse_progress_meta(raw_json)
                 meta["streamKind"] = _progress_stream_kind(meta)
+
+                # Log page_data events for debugging
+                if meta.get("event") == "page_data":
+                    import structlog
+                    logger = structlog.get_logger()
+                    logger.info("skill_subprocess_page_data_received",
+                               url=meta.get("url"),
+                               has_on_page_callback=on_page is not None,
+                               stream_kind=meta.get("streamKind"))
+
                 if on_page is not None and meta.get("streamKind") == "data":
                     try:
                         await on_page(meta)
-                    except Exception:
+                    except Exception as e:
                         # Never break stream processing due to page callback failures.
-                        pass
+                        import structlog
+                        logger = structlog.get_logger()
+                        logger.error("skill_on_page_callback_failed",
+                                   url=meta.get("url"),
+                                   error=str(e),
+                                   error_type=type(e).__name__)
                 event_name = str(meta.get("event", "info"))
                 message_text = str(meta.get("url") or meta.get("message") or event_name)
                 await _emit(on_progress, {
@@ -175,6 +190,7 @@ async def run_skill(
     text = stdout_text.strip()
     err: str | None = None
     data: Any = None
+    parsed: dict[str, Any] | None = None
 
     parse_target = result_line or stdout_text.strip()
     if parse_target:
@@ -192,6 +208,19 @@ async def run_skill(
 
     if exit_code != 0 and not err:
         err = stderr_text or f"Skill exited with code {exit_code}"
+
+    # Log detailed error information for debugging
+    if err or exit_code != 0:
+        import structlog
+        logger = structlog.get_logger()
+        logger.error("skill_subprocess_failed",
+                    skill_id=skill_id,
+                    exit_code=exit_code,
+                    error=err,
+                    stderr=stderr_text[:1000] if stderr_text else None,
+                    stdout_preview=stdout_text[:500] if stdout_text else None,
+                    result_line=result_line[:500] if result_line else None,
+                    parsed_error=parsed.get("error") if parsed and isinstance(parsed, dict) else None)
 
     status = "error" if err else "ok"
     if not text and err:
