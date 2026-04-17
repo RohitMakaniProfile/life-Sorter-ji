@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useLayoutEffect } from 'react';
 import { runResumableTaskStream, getStoredTaskStreamId } from '../../../api/services/taskStream';
 import { monitorTaskStreamStart, monitorTaskStreamEvent, monitorTaskStreamDone, monitorTaskStreamError, extractErrorMessage } from '../../../api/services/taskStreamMonitor';
 
@@ -36,6 +36,15 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
   const runIdRef = useRef(0);
   const autoResumeTriggeredRef = useRef(false);
+
+  // Refs that always hold the latest state — used inside setInterval callbacks
+  // to avoid stale closures in waitForCrawlDone / waitForCrawl.
+  const crawlDoneRef = useRef(false);
+  const crawlStageRef = useRef('');
+  const crawlStreamingRef = useRef(false);
+  useLayoutEffect(() => { crawlDoneRef.current = crawlDone; }, [crawlDone]);
+  useLayoutEffect(() => { crawlStageRef.current = crawlStage; }, [crawlStage]);
+  useLayoutEffect(() => { crawlStreamingRef.current = crawlStreaming; }, [crawlStreaming]);
 
   const startForSession = useCallback(
     async (sid, { websiteUrl, forceFresh = false } = {}) => {
@@ -217,45 +226,46 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
   // Wait until crawl completes (done=true) or errors/times-out (done=false).
   // Resolves immediately on error so callers don't wait the full timeout.
+  // Uses refs so the setInterval callback always reads current state, not a stale closure.
   const waitForCrawlDone = useCallback(
     (timeoutMs = 60000) =>
       new Promise((resolve) => {
-        if (crawlDone) { resolve(true); return; }
-        if (crawlStage === 'error') { resolve(false); return; }
+        if (crawlDoneRef.current) { resolve(true); return; }
+        if (crawlStageRef.current === 'error') { resolve(false); return; }
         const deadline = setTimeout(() => resolve(false), timeoutMs);
         const t = window.setInterval(() => {
-          if (crawlDone) {
+          if (crawlDoneRef.current) {
             window.clearInterval(t);
             clearTimeout(deadline);
             resolve(true);
-          } else if (crawlStage === 'error') {
+          } else if (crawlStageRef.current === 'error') {
             window.clearInterval(t);
             clearTimeout(deadline);
             resolve(false);
           }
         }, 300);
       }),
-    [crawlDone, crawlStage],
+    [], // stable — reads live values via refs
   );
 
   // Legacy alias — resolves as soon as streaming stops (done or error).
   const waitForCrawl = useCallback(
     (timeoutMs = 8000) =>
       new Promise((resolve) => {
-        if (!crawlStreaming) {
+        if (!crawlStreamingRef.current) {
           resolve();
           return;
         }
         const deadline = setTimeout(resolve, timeoutMs);
         const t = window.setInterval(() => {
-          if (!crawlStreaming) {
+          if (!crawlStreamingRef.current) {
             window.clearInterval(t);
             clearTimeout(deadline);
             resolve();
           }
         }, 250);
       }),
-    [crawlStreaming],
+    [], // stable — reads live values via refs
   );
 
   // Auto-resume after refresh if the user already triggered crawl.
