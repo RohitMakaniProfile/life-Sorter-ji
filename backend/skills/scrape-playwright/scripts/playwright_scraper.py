@@ -914,6 +914,10 @@ async def _crawl_parallel_async(
     robots_parser,
     t_start: float,
     headless: bool,
+    *,
+    resume: dict | None = None,
+    skip_urls: set[str] | None = None,
+    max_parallel_pages: int = 1,
 ) -> dict:
     """
     Two async tasks (same thread):
@@ -1061,8 +1065,9 @@ async def _crawl_parallel_async(
                         failed_list.append({"url": url, "error": "scrape_failed"})
                 await asyncio.sleep(0.2)
 
+        scraper_coros = [scraper_coro() for _ in range(max(1, max_parallel_pages))]
         await asyncio.wait_for(
-            asyncio.gather(discovery_coro(), scraper_coro()),
+            asyncio.gather(discovery_coro(), *scraper_coros),
             timeout=3600,
         )
 
@@ -1093,6 +1098,10 @@ def _crawl_parallel(
     robots_parser,
     t_start: float,
     headless: bool,
+    *,
+    resume: dict | None = None,
+    skip_urls: set[str] | None = None,
+    max_parallel_pages: int = 1,
 ) -> dict:
     """Run the async parallel crawl from sync context."""
     if async_playwright is None:
@@ -1100,12 +1109,16 @@ def _crawl_parallel(
     return asyncio.run(_crawl_parallel_async(
         base_url, base_domain, max_pages, max_depth,
         respect_robots, robots_parser, t_start, headless,
+        resume=resume,
+        skip_urls=skip_urls,
+        max_parallel_pages=max_parallel_pages,
     ))
 
 
 def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
                           respect_robots: bool, headless: bool, deep: bool = False,
-                          parallel: bool = False) -> dict:
+                          parallel: bool = False, resume_checkpoint: dict | None = None,
+                          skip_urls: list[str] | None = None, max_parallel_pages: int = 1) -> dict:
     t_start = time.time()
 
     if not base_url.startswith(("http://", "https://")):
@@ -1129,6 +1142,8 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
             robots_parser = None
             robots_txt = ""
 
+    skip_set = {norm_crawl_url(u) for u in (skip_urls or []) if norm_crawl_url(u)}
+
     scraped_urls: list[str] = []
     # Only collect full page data for small crawls (<=5 pages) to avoid memory issues
     collect_pages = max_pages <= 5
@@ -1143,6 +1158,9 @@ def crawl_with_playwright(base_url: str, max_pages: int, max_depth: int,
         return _crawl_parallel(
             base_url, base_domain, max_pages, max_depth,
             respect_robots, robots_parser, t_start, headless,
+            resume=resume_checkpoint,
+            skip_urls=skip_set,
+            max_parallel_pages=max_parallel_pages,
         )
 
     with sync_playwright() as pw:
