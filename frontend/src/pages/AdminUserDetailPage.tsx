@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { listUserOnboardings, listUserSkillCalls, getUserCrawlPages } from '../api';
-import type { AdminUser, AdminUserOnboarding, AdminSkillCallSummary, AdminCrawlPage } from '../api/types';
+import { listUserOnboardings, listUserSkillCalls } from '../api';
+import type { AdminUser, AdminUserOnboarding, AdminSkillCallSummary } from '../api/types';
 
 const ONBOARDINGS_PAGE = 10;
 const SKILL_CALLS_PAGE = 20;
@@ -322,50 +322,30 @@ function MessagesTab({ userId }: { userId: string }) {
   );
 }
 
-// ── Crawl Data Tab ───────────────────────────────────────────────────────────
+// ── Skill Calls Tab (was Crawl Data) ────────────────────────────────────────
 
-const CRAWL_PAGES_PAGE = 20;
-
-function CrawlStatusBadge({ status }: { status: string }) {
-  const s = status || '';
-  const cls =
-    s === 'done'
-      ? 'bg-emerald-500/20 text-emerald-300'
-      : s === 'error'
-      ? 'bg-red-500/20 text-red-300'
-      : s === 'skipped'
-      ? 'bg-slate-500/20 text-slate-400'
-      : 'bg-amber-500/20 text-amber-300';
-  return (
-    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {s ? s.toUpperCase() : 'UNKNOWN'}
-    </span>
-  );
-}
-
-function CrawlDataTab({ userId }: { userId: string }) {
-  const [pages, setPages] = useState<AdminCrawlPage[]>([]);
+function SkillCallsTab({ userId }: { userId: string }) {
+  const navigate = useNavigate();
+  const [calls, setCalls] = useState<AdminSkillCallSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [expandedPage, setExpandedPage] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<Record<string, 'markdown' | 'raw'>>({});
 
   const load = useCallback(async (off: number) => {
     setLoading(true);
     setErr(null);
     try {
-      const res = await getUserCrawlPages(userId, CRAWL_PAGES_PAGE, off);
+      const res = await listUserSkillCalls(userId, SKILL_CALLS_PAGE, off);
       if (off === 0) {
-        setPages(res.pages);
+        setCalls(res.calls);
       } else {
-        setPages((prev) => [...prev, ...res.pages]);
+        setCalls((prev) => [...prev, ...res.calls]);
       }
       setTotal(res.total);
-      setOffset(off + res.pages.length);
+      setOffset(off + res.calls.length);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Failed to load crawl data');
+      setErr(e instanceof Error ? e.message : 'Failed to load skill calls');
     } finally {
       setLoading(false);
     }
@@ -373,108 +353,75 @@ function CrawlDataTab({ userId }: { userId: string }) {
 
   useEffect(() => {
     setOffset(0);
-    setPages([]);
+    setCalls([]);
     load(0);
   }, [load]);
 
-  const hasMore = pages.length < total;
-
-  const togglePage = (id: string) => {
-    setExpandedPage((prev) => (prev === id ? null : id));
-  };
-
-  const getView = (id: string) => activeView[id] || 'markdown';
-  const setView = (id: string, v: 'markdown' | 'raw') =>
-    setActiveView((prev) => ({ ...prev, [id]: v }));
+  const hasMore = calls.length < total;
 
   return (
     <div>
       <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold mb-4">
-        Crawled Pages {total > 0 ? `(${total})` : ''}
+        All Skill Calls {total > 0 ? `(${total})` : ''}
       </p>
 
       {err && (
-        <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 text-red-300 text-xs border border-red-500/30 font-mono whitespace-pre-wrap">
+        <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 text-red-300 text-xs border border-red-500/30">
           {err}
         </div>
       )}
 
-      {!loading && pages.length === 0 && !err && (
-        <div className="py-12 text-center text-slate-500 text-sm">No crawled pages found for this user.</div>
+      {!loading && calls.length === 0 && !err && (
+        <div className="py-12 text-center text-slate-500 text-sm">No skill calls found for this user.</div>
       )}
 
       <div className="space-y-2">
-        {pages.map((page) => {
-          const isExpanded = expandedPage === page.id;
-          const view = getView(page.id);
-          const hasContent = !!(page.markdown || page.raw_html);
-
-          return (
-            <div key={page.id} className="rounded-xl border border-slate-800 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => hasContent && togglePage(page.id)}
-                className={`w-full text-left px-4 py-3 bg-slate-900 transition-colors flex items-start justify-between gap-3 ${hasContent ? 'hover:bg-slate-800/70 cursor-pointer' : 'cursor-default'}`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <CrawlStatusBadge status={page.status} />
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      {page.onboarding_id?.slice(0, 10)}…
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-300 font-mono truncate" title={page.url}>
-                    {page.url}
+        {calls.map((call) => (
+          <button
+            key={call.id}
+            type="button"
+            onClick={() => navigate(`/admin/skill-calls/${call.id}`)}
+            className="w-full text-left px-4 py-3 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800/70 transition-colors"
+          >
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="text-xs font-mono text-violet-300 truncate">
+                    {call.skill_id}
+                  </span>
+                  <StatusBadge status={call.state} />
+                </div>
+                <p className="text-[10px] text-slate-600 font-mono mb-1">
+                  Call ID: {String(call.id).slice(0, 12)}…
+                </p>
+                <p className="text-[10px] text-slate-600 font-mono">
+                  Message: {call.message_id ? call.message_id.slice(0, 20) + '…' : 'N/A'}
+                </p>
+                <p className="text-[10px] text-slate-600 font-mono">
+                  Conversation: {call.conversation_id ? call.conversation_id.slice(0, 20) + '…' : 'N/A'}
+                </p>
+              </div>
+              <div className="flex-shrink-0 text-right">
+                {call.duration_ms != null && (
+                  <p className="text-[11px] text-slate-400 font-semibold mb-1">{call.duration_ms}ms</p>
+                )}
+                {call.started_at && (
+                  <p className="text-[10px] text-slate-600 whitespace-nowrap">
+                    {new Date(call.started_at).toLocaleString()}
                   </p>
-                  {page.error && (
-                    <p className="text-[11px] text-red-400 mt-1 truncate font-mono" title={page.error}>
-                      Error: {page.error}
-                    </p>
-                  )}
-                </div>
-                <div className="flex-shrink-0 text-right">
-                  {page.crawled_at && (
-                    <p className="text-[10px] text-slate-600 whitespace-nowrap">
-                      {new Date(page.crawled_at).toLocaleString()}
-                    </p>
-                  )}
-                  {hasContent && (
-                    <span className="text-slate-500 text-xs ml-2">{isExpanded ? '▲' : '▼'}</span>
-                  )}
-                </div>
-              </button>
-
-              {isExpanded && hasContent && (
-                <div className="bg-slate-950 border-t border-slate-800">
-                  {/* View toggle */}
-                  <div className="flex gap-1 px-4 pt-3 pb-2">
-                    {page.markdown && (
-                      <button
-                        type="button"
-                        onClick={() => setView(page.id, 'markdown')}
-                        className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'markdown' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
-                      >
-                        Markdown
-                      </button>
-                    )}
-                    {page.raw_html && (
-                      <button
-                        type="button"
-                        onClick={() => setView(page.id, 'raw')}
-                        className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'raw' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
-                      >
-                        Raw HTML
-                      </button>
-                    )}
-                  </div>
-                  <pre className="px-4 pb-4 text-[11px] text-slate-300 font-mono overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
-                    {view === 'markdown' ? (page.markdown || '') : (page.raw_html || '')}
-                  </pre>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          );
-        })}
+            {call.input && Object.keys(call.input).length > 0 && (
+              <div className="mt-2 pt-2 border-t border-slate-800">
+                <p className="text-[10px] text-slate-500 mb-1">Input:</p>
+                <pre className="text-[10px] text-slate-400 font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-20 overflow-y-auto">
+                  {JSON.stringify(call.input, null, 2)}
+                </pre>
+              </div>
+            )}
+          </button>
+        ))}
       </div>
 
       <div className="mt-3">
@@ -490,8 +437,8 @@ function CrawlDataTab({ userId }: { userId: string }) {
           >
             Load more
           </button>
-        ) : pages.length > 0 ? (
-          <p className="text-center text-xs text-slate-600">All {total} pages loaded</p>
+        ) : calls.length > 0 ? (
+          <p className="text-center text-xs text-slate-600">All {total} skill calls loaded</p>
         ) : null}
       </div>
     </div>
@@ -500,14 +447,14 @@ function CrawlDataTab({ userId }: { userId: string }) {
 
 // ── Main page ────────────────────────────────────────────────────────────────
 
-type Tab = 'onboarding' | 'messages' | 'crawl';
+type Tab = 'onboarding' | 'messages' | 'skills';
 
 export default function AdminUserDetailPage() {
   const { userId } = useParams<{ userId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('onboarding');
-  const TAB_LABELS: Record<Tab, string> = { onboarding: 'Onboarding', messages: 'Messages', crawl: 'Crawl Data' };
+  const TAB_LABELS: Record<Tab, string> = { onboarding: 'Onboarding', messages: 'Messages', skills: 'Skill Calls' };
 
   const user = (location.state as { user?: AdminUser } | null)?.user;
 
@@ -544,7 +491,7 @@ export default function AdminUserDetailPage() {
 
             {/* Tabs */}
             <div className="flex gap-1 mb-6 border-b border-slate-800">
-              {(['onboarding', 'messages', 'crawl'] as Tab[]).map((tab) => (
+              {(['onboarding', 'messages', 'skills'] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -566,7 +513,7 @@ export default function AdminUserDetailPage() {
             ) : activeTab === 'messages' ? (
               <MessagesTab userId={userId} />
             ) : (
-              <CrawlDataTab userId={userId} />
+              <SkillCallsTab userId={userId} />
             )}
           </div>
         </div>
