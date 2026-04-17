@@ -1422,6 +1422,46 @@ Every claim = evidence. Every evidence = specific crawl element.
 """
 
 
+async def _persist_website_audit_log(
+    *,
+    onboarding_id: str | None,
+    model: str,
+    system_prompt: str,
+    user_payload: dict,
+    output: str,
+    success: bool,
+    error_msg: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int,
+) -> None:
+    """Fire-and-forget: write one row to website_audit_logs. Never raises."""
+    try:
+        from app.db import get_pool
+        from app.repositories import website_audit_logs_repository as audit_log_repo
+
+        input_payload = {
+            "system_prompt": system_prompt,
+            "user_payload": user_payload,
+        }
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            await audit_log_repo.insert_log(
+                conn,
+                onboarding_id=onboarding_id,
+                model=model,
+                input_payload=input_payload,
+                output=output,
+                success=success,
+                error_msg=error_msg,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+            )
+    except Exception as _log_err:
+        logger.warning("website_audit_log_persist_failed", error=str(_log_err))
+
+
 async def generate_website_audit(
     *,
     outcome: str,
@@ -1456,6 +1496,9 @@ async def generate_website_audit(
     input_tokens = 0
     output_tokens = 0
     content = ""
+    latency_ms = 0
+    system_prompt = ""
+    user_payload: dict = {}
 
     try:
         from app.services.prompts_service import get_prompt
@@ -1520,6 +1563,20 @@ async def generate_website_audit(
                 success=True,
             )
 
+        # Log call for admin inspection
+        await _persist_website_audit_log(
+            onboarding_id=onboarding_id,
+            model=model,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            output=content,
+            success=True,
+            error_msg=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+        )
+
         return content or None
 
     except Exception as e:
@@ -1535,6 +1592,21 @@ async def generate_website_audit(
                 error_msg=str(e),
                 raw_output=content,
             )
+
+        # Log failed call for admin inspection
+        await _persist_website_audit_log(
+            onboarding_id=onboarding_id,
+            model=model,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            output=content,
+            success=False,
+            error_msg=str(e),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+        )
+
         return None
     """
     Generate a website audit using the 'website-audit' DB prompt.

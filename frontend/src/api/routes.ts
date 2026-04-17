@@ -53,6 +53,15 @@ export const API_ROUTES = {
         return `/api/v1/admin/users/${encodeURIComponent(userId)}/crawl-pages${qs ? `?${qs}` : ''}`;
       },
       skillCallDetail: (id: string) => `/api/v1/admin/skill-calls/${encodeURIComponent(id)}`,
+      websiteAuditLogs: (onboardingId?: string | null, limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (onboardingId) params.set('onboarding_id', onboardingId);
+        if (limit != null) params.set('limit', String(limit));
+        if (offset != null) params.set('offset', String(offset));
+        const qs = params.toString();
+        return `/api/v1/admin/website-audit-logs${qs ? `?${qs}` : ''}`;
+      },
+      websiteAuditLogDetail: (id: number) => `/api/v1/admin/website-audit-logs/${id}`,
       users: (q?: string, limit?: number, offset?: number) => {
         const params = new URLSearchParams();
         if (q) params.set('q', q);

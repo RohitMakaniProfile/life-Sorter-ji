@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getOnboardingTokenUsage, getOnboardingCrawlPages } from '../api';
-import type { AdminOnboardingTokenUsageCall, AdminOnboardingTokenUsageSummary, AdminOnboardingInfo, AdminCrawlPage, AdminCrawlLog } from '../api/types';
+import { getOnboardingTokenUsage, getOnboardingCrawlPages, listWebsiteAuditLogs, getWebsiteAuditLogDetail } from '../api';
+import type { AdminOnboardingTokenUsageCall, AdminOnboardingTokenUsageSummary, AdminOnboardingInfo, AdminCrawlPage, AdminCrawlLog, AdminWebsiteAuditLog, AdminWebsiteAuditLogDetail } from '../api/types';
 
 const PAGE_SIZE = 100;
 
@@ -68,6 +68,14 @@ export default function AdminOnboardingTokenUsagePage() {
   const [crawlPageView, setCrawlPageView] = useState<Record<string, 'markdown' | 'raw'>>({});
   const [showLogs, setShowLogs] = useState(false);
 
+  // Website audit logs state
+  const [auditLogs, setAuditLogs] = useState<AdminWebsiteAuditLog[]>([]);
+  const [auditLoading, setAuditLoading] = useState(true);
+  const [auditErr, setAuditErr] = useState<string | null>(null);
+  const [expandedAuditId, setExpandedAuditId] = useState<number | null>(null);
+  const [auditDetail, setAuditDetail] = useState<Record<number, AdminWebsiteAuditLogDetail>>({});
+  const [auditDetailLoading, setAuditDetailLoading] = useState<Record<number, boolean>>({});
+
   const load = useCallback(async (off: number) => {
     if (!onboardingId) return;
     setLoading(true);
@@ -125,6 +133,42 @@ export default function AdminOnboardingTokenUsagePage() {
     setCrawlApiErr(null);
     loadCrawlPages(0);
   }, [loadCrawlPages]);
+
+  const loadAuditLogs = useCallback(async () => {
+    if (!onboardingId) return;
+    setAuditLoading(true);
+    setAuditErr(null);
+    try {
+      const res = await listWebsiteAuditLogs(onboardingId, 50, 0);
+      setAuditLogs(res.logs);
+    } catch (e) {
+      setAuditErr(e instanceof Error ? e.message : 'Failed to load audit logs');
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [onboardingId]);
+
+  useEffect(() => {
+    loadAuditLogs();
+  }, [loadAuditLogs]);
+
+  async function toggleAuditDetail(id: number) {
+    if (expandedAuditId === id) {
+      setExpandedAuditId(null);
+      return;
+    }
+    setExpandedAuditId(id);
+    if (auditDetail[id]) return; // already loaded
+    setAuditDetailLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const res = await getWebsiteAuditLogDetail(id);
+      setAuditDetail((prev) => ({ ...prev, [id]: res.log }));
+    } catch {
+      // ignore — show partial info
+    } finally {
+      setAuditDetailLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }
 
   const hasMore = calls.length < total;
 
@@ -448,6 +492,122 @@ export default function AdminOnboardingTokenUsagePage() {
             ) : null}
           </div>
         </div>
+        {/* ── Website Audit Logs Section ──────────────────────────────────── */}
+        <div className="mt-8 rounded-xl border border-slate-800 overflow-hidden">
+          <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-100">
+              Website Audit Calls {auditLogs.length > 0 ? `(${auditLogs.length})` : ''}
+            </h2>
+            <button
+              type="button"
+              onClick={() => loadAuditLogs()}
+              disabled={auditLoading}
+              className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-50 transition-colors"
+            >
+              {auditLoading ? 'Loading…' : 'Refresh'}
+            </button>
+          </div>
+
+          {auditErr && (
+            <div className="px-4 py-3 bg-red-500/10 border-b border-red-500/30 text-red-300 text-xs font-mono">
+              {auditErr}
+            </div>
+          )}
+
+          {!auditLoading && auditLogs.length === 0 && !auditErr && (
+            <div className="px-4 py-10 text-center text-slate-500 text-sm">
+              No website audit calls found for this onboarding.
+            </div>
+          )}
+
+          {auditLoading && auditLogs.length === 0 && (
+            <div className="flex justify-center py-8">
+              <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+
+          <div className="divide-y divide-slate-800 bg-slate-950">
+            {auditLogs.map((log) => {
+              const isExpanded = expandedAuditId === log.id;
+              const detail = auditDetail[log.id];
+              const detailLoading = auditDetailLoading[log.id];
+
+              return (
+                <div key={log.id}>
+                  {/* Row header — click to expand */}
+                  <button
+                    type="button"
+                    onClick={() => void toggleAuditDetail(log.id)}
+                    className="w-full text-left px-4 py-3 hover:bg-slate-900/50 transition-colors flex items-center gap-3"
+                  >
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${log.success ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>
+                      {log.success ? 'OK' : 'FAILED'}
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono flex-shrink-0">#{log.id}</span>
+                    <span className="text-xs text-slate-300 truncate flex-1">{log.model || '—'}</span>
+                    <span className="text-xs text-slate-500 flex-shrink-0">{log.input_tokens} in / {log.output_tokens} out</span>
+                    <span className="text-xs text-slate-600 flex-shrink-0">{log.latency_ms} ms</span>
+                    <span className="text-xs text-slate-600 flex-shrink-0 whitespace-nowrap">
+                      {log.created_at ? new Date(log.created_at).toLocaleString() : '—'}
+                    </span>
+                    <span className="text-slate-500 text-xs flex-shrink-0">{isExpanded ? '▲' : '▼'}</span>
+                  </button>
+
+                  {/* Expanded detail */}
+                  {isExpanded && (
+                    <div className="border-t border-slate-800 bg-black/30 px-4 py-4 space-y-4">
+                      {detailLoading && (
+                        <div className="flex justify-center py-4">
+                          <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+                        </div>
+                      )}
+
+                      {!detailLoading && detail && (
+                        <>
+                          {detail.error_msg && (
+                            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
+                              <p className="text-xs text-red-400 mb-1 font-semibold">Error</p>
+                              <p className="text-xs text-red-300 font-mono break-all">{detail.error_msg}</p>
+                            </div>
+                          )}
+
+                          {/* System prompt */}
+                          {detail.input_payload?.system_prompt && (
+                            <div className="rounded-lg border border-slate-800 overflow-hidden">
+                              <div className="px-3 py-2 bg-slate-900 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">System Prompt</div>
+                              <pre className="px-3 py-3 bg-slate-950 text-[11px] text-slate-300 whitespace-pre-wrap break-all overflow-x-auto max-h-56 overflow-y-auto leading-relaxed font-mono">
+                                {detail.input_payload.system_prompt}
+                              </pre>
+                            </div>
+                          )}
+
+                          {/* User payload */}
+                          {detail.input_payload?.user_payload && (
+                            <div className="rounded-lg border border-slate-800 overflow-hidden">
+                              <div className="px-3 py-2 bg-slate-900 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">User Payload (Input)</div>
+                              <pre className="px-3 py-3 bg-slate-950 text-[11px] text-slate-300 whitespace-pre-wrap break-all overflow-x-auto max-h-64 overflow-y-auto leading-relaxed font-mono">
+                                {JSON.stringify(detail.input_payload.user_payload, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+
+                          {/* Output */}
+                          <div className="rounded-lg border border-slate-800 overflow-hidden">
+                            <div className="px-3 py-2 bg-slate-900 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Output</div>
+                            <pre className="px-3 py-3 bg-slate-950 text-[11px] text-slate-300 whitespace-pre-wrap break-all overflow-x-auto max-h-96 overflow-y-auto leading-relaxed font-mono">
+                              {detail.output || <span className="text-slate-600">(empty)</span>}
+                            </pre>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
       </div>
     </div>
     </div>

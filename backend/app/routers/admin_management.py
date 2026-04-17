@@ -851,3 +851,82 @@ async def delete_prompt(request: Request, slug: str):
     return {"deleted": True, "slug": slug}
 
 
+# ---------------------------------------------------------------------------
+# Website Audit Logs
+# ---------------------------------------------------------------------------
+
+@router.get("/website-audit-logs", response_model=dict[str, Any])
+async def list_website_audit_logs(
+    request: Request,
+    onboarding_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List website audit LLM call logs, newest first. Optionally filter by onboarding_id."""
+    require_super_admin(request)
+    from app.repositories import website_audit_logs_repository as audit_log_repo
+
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await audit_log_repo.list_logs(
+            conn,
+            onboarding_id=onboarding_id or None,
+            limit=limit,
+            offset=offset,
+        )
+        total = await audit_log_repo.count_logs(conn, onboarding_id=onboarding_id or None)
+
+    def _fmt(r: dict) -> dict:
+        return {
+            "id": r["id"],
+            "onboarding_id": str(r["onboarding_id"]) if r.get("onboarding_id") else None,
+            "model": r.get("model") or "",
+            "success": bool(r.get("success")),
+            "error_msg": r.get("error_msg") or None,
+            "input_tokens": r.get("input_tokens") or 0,
+            "output_tokens": r.get("output_tokens") or 0,
+            "latency_ms": r.get("latency_ms") or 0,
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+        }
+
+    return {
+        "logs": [_fmt(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/website-audit-logs/{log_id}", response_model=dict[str, Any])
+async def get_website_audit_log(request: Request, log_id: int):
+    """Get full detail for a single website audit log entry (includes input + output)."""
+    require_super_admin(request)
+    from app.repositories import website_audit_logs_repository as audit_log_repo
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await audit_log_repo.get_by_id(conn, log_id)
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Website audit log not found")
+
+    return {
+        "log": {
+            "id": row["id"],
+            "onboarding_id": str(row["onboarding_id"]) if row.get("onboarding_id") else None,
+            "model": row.get("model") or "",
+            "input_payload": row.get("input_payload") or {},
+            "output": row.get("output") or "",
+            "success": bool(row.get("success")),
+            "error_msg": row.get("error_msg") or None,
+            "input_tokens": row.get("input_tokens") or 0,
+            "output_tokens": row.get("output_tokens") or 0,
+            "latency_ms": row.get("latency_ms") or 0,
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        }
+    }
+
+

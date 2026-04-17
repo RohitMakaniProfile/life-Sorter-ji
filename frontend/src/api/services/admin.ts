@@ -22,6 +22,8 @@ import type {
   AdminCrawlPage,
   AdminCrawlLog,
   Product,
+  AdminWebsiteAuditLog,
+  AdminWebsiteAuditLogDetail,
 } from '../types';
 
 export async function getObservabilitySnapshot(): Promise<ObservabilitySnapshot> {
@@ -285,3 +287,18 @@ export async function deleteAdminProduct(id: string): Promise<void> {
   }
 }
 
+
+
+export async function listWebsiteAuditLogs(
+  onboardingId?: string | null,
+  limit = 50,
+  offset = 0,
+): Promise<{ logs: AdminWebsiteAuditLog[]; total: number; limit: number; offset: number }> {
+  return apiGet(API_ROUTES.admin.management.websiteAuditLogs(onboardingId, limit, offset));
+}
+
+export async function getWebsiteAuditLogDetail(
+  id: number,
+): Promise<{ log: AdminWebsiteAuditLogDetail }> {
+  return apiGet(API_ROUTES.admin.management.websiteAuditLogDetail(id));
+}

@@ -412,3 +412,23 @@ export interface AdminCrawlLog {
   raw?: unknown;
   created_at: string;
 }
+
+export interface AdminWebsiteAuditLog {
+  id: number;
+  onboarding_id: string | null;
+  model: string;
+  success: boolean;
+  error_msg: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface AdminWebsiteAuditLogDetail extends AdminWebsiteAuditLog {
+  input_payload: {
+    system_prompt?: string;
+    user_payload?: Record<string, unknown>;
+  };
+  output: string;
+}

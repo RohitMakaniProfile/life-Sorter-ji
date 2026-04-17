@@ -28,6 +28,7 @@ import AdminPromptsPage from './pages/AdminPromptsPage';
 import AdminTokenUsagePage from './pages/AdminTokenUsagePage';
 import AdminOnboardingTokenUsagePage from './pages/AdminOnboardingTokenUsagePage';
 import AdminProductsPage from './pages/AdminProductsPage';
+import AdminWebsiteAuditLogsPage from './pages/AdminWebsiteAuditLogsPage';
 import PlaybookPage from './pages/PlaybookPage';
 
 function ChatWithId() {
@@ -106,6 +107,7 @@ function App() {
                 <Route path="token-usage" element={<AdminTokenUsagePage />} />
                 <Route path="subscription-grants" element={<AdminSubscriptionGrantsPage />} />
                 <Route path="products" element={<AdminProductsPage />} />
+                <Route path="website-audit-logs" element={<AdminWebsiteAuditLogsPage />} />
                 <Route path="agents" element={<AgentsPage />} />
                 <Route path="agents/:agentId/contexts" element={<AgentContextsPage />} />
               </Route>
