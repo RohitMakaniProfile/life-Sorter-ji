@@ -943,13 +943,14 @@ async def _crawl_parallel_async(
 
     # Seed discovery (skip blog URLs so we don't spend time on thousands of blog links)
     to_visit.append(base_url)
-    for u in _fetch_sitemap_urls(base_url, base_domain)[:500]:
+    sitemap_urls = _fetch_sitemap_urls(base_url, base_domain)[:500]
+    for u in sitemap_urls:
         u = (u.rstrip("/") or u)
         if u not in discovered and not should_skip_url(u) and not _is_blog_url(u):
             if not respect_robots or not robots_parser or robots_parser.can_fetch("*", u):
                 to_visit.append(u)
 
-    _progress({"event": "started", "parallel": True})
+    _progress({"event": "started", "parallel": True, "to_visit_count": len(to_visit), "base_url": base_url, "sitemap_urls_found": len(sitemap_urls)})
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -970,10 +971,12 @@ async def _crawl_parallel_async(
 
         async def discovery_coro():
             nonlocal discovery_idle_count
+            _progress({"event": "discovery_started", "to_visit_initial": len(to_visit)})
             while not stop_flag.is_set():
                 url = None
                 async with lock:
                     if len(discovered) >= max_pages * 2:
+                        _progress({"event": "discovery_max_reached", "discovered": len(discovered), "max": max_pages * 2})
                         return
                     if to_visit:
                         url = to_visit.popleft()
@@ -983,7 +986,18 @@ async def _crawl_parallel_async(
                             url = None
                 if url is None:
                     discovery_idle_count += 1
+                    async with lock:
+                        disc_count = len(discovered)
+                        scraped_count = len(scraped_urls)
+                        to_visit_count = len(to_visit)
+                    _progress({"event": "discovery_idle",
+                              "idle_count": discovery_idle_count,
+                              "scraper_idle": scraper_idle_count,
+                              "discovered": disc_count,
+                              "scraped": scraped_count,
+                              "to_visit": to_visit_count})
                     if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= IDLE_THRESHOLD:
+                        _progress({"event": "stopping", "reason": "both_idle"})
                         stop_flag.set()
                         return
                     await asyncio.sleep(0.3)
@@ -1019,9 +1033,11 @@ async def _crawl_parallel_async(
 
         async def scraper_coro():
             nonlocal scraped_urls, failed_list, scraper_idle_count
+            _progress({"event": "scraper_started", "max_pages": max_pages})
             while not stop_flag.is_set():
                 async with lock:
                     if len(scraped_urls) >= max_pages:
+                        _progress({"event": "scraper_max_reached", "scraped": len(scraped_urls)})
                         stop_flag.set()
                         return
                     to_scrape = [
@@ -1033,14 +1049,23 @@ async def _crawl_parallel_async(
                     else:
                         url = to_scrape[0]
                         scraped.add(url)
+                    discovered_count = len(discovered)
+                    scraped_count = len(scraped_urls)
                 if url is None:
                     scraper_idle_count += 1
+                    _progress({"event": "scraper_idle",
+                              "idle_count": scraper_idle_count,
+                              "discovery_idle": discovery_idle_count,
+                              "discovered": discovered_count,
+                              "scraped": scraped_count})
                     if discovery_idle_count >= IDLE_THRESHOLD and scraper_idle_count >= IDLE_THRESHOLD:
+                        _progress({"event": "stopping", "reason": "both_idle_from_scraper"})
                         stop_flag.set()
                         return
                     await asyncio.sleep(0.5)
                     continue
                 scraper_idle_count = 0
+                _progress({"event": "scraper_scraping", "url": url, "scraped_so_far": len(scraped_urls)})
                 rec = await _scrape_single_page_async(
                     context_scrape, url, 0, base_domain, robots_parser, respect_robots
                 )

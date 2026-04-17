@@ -54,6 +54,9 @@ async def run_scraper(
 
     Raises RuntimeError if the skill returns a non-ok status.
     """
+    import structlog
+    logger = structlog.get_logger()
+
     pool = get_pool()
     run_id = f"scrape-playwright-{int(time.time() * 1000)}"
     started_at = datetime.now(timezone.utc)
@@ -67,6 +70,15 @@ async def run_scraper(
         args["maxDepth"] = max_depth
     if skip_urls:
         args["skipUrls"] = [str(u).strip() for u in skip_urls if str(u).strip()]
+
+    logger.info("run_scraper_starting",
+               url=url,
+               max_pages=max_pages,
+               parallel=parallel,
+               max_depth=max_depth,
+               skip_urls_count=len(skip_urls) if skip_urls else 0,
+               onboarding_id=onboarding_id,
+               args=args)
 
     input_json = json.dumps({"url": url, "args": args}, ensure_ascii=False)
 
@@ -96,19 +108,36 @@ async def run_scraper(
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
     progress_events: list[dict[str, Any]] = []
+    page_count = 0
 
     async def _skill_progress(event: dict[str, Any]) -> None:
         meta: dict[str, Any] = event.get("meta") or {}
+        event_type = meta.get("event", "info")
         progress_events.append({
             "type": event.get("type", "info"),
-            "event": meta.get("event", "info"),
+            "event": event_type,
             "message": event.get("message", ""),
             "meta": meta,
             "at": datetime.now(timezone.utc).isoformat(),
         })
+        # Log important events
+        if event_type in ["page_data", "discovered", "started", "checkpoint"]:
+            logger.info("scraper_progress_event",
+                       event_type=event_type,
+                       url=meta.get("url"),
+                       message=event.get("message", "")[:200])
 
     async def _on_page(page: dict[str, Any]) -> None:
         """Called once per page as it arrives. LLM-summarises then stores immediately."""
+        nonlocal page_count
+        page_count += 1
+        page_url = page.get("url", "unknown")
+
+        logger.info("scraper_page_callback",
+                   page_number=page_count,
+                   url=page_url,
+                   onboarding_id=onboarding_id)
+
         markdown = await _summarize_one_page(
             "scrape-playwright",
             page,
@@ -116,6 +145,12 @@ async def run_scraper(
             url_field="url",
             on_progress=_skill_progress,
         )
+
+        logger.info("scraper_page_summarized",
+                   page_number=page_count,
+                   url=page_url,
+                   markdown_length=len(markdown))
+
         async with pool.acquire() as conn:
             await pages_repo.insert_one(
                 conn,
@@ -128,7 +163,14 @@ async def run_scraper(
                 message_id=message_id,
             )
 
+        logger.info("scraper_page_stored",
+                   page_number=page_count,
+                   url=page_url,
+                   skill_call_id=skill_call_id)
+
     # ── Run the skill ─────────────────────────────────────────────────────────
+    logger.info("run_scraper_executing_skill", url=url)
+
     result = await run_skill(
         "scrape-playwright",
         message=f"Scrape this website: {url}",
@@ -136,6 +178,13 @@ async def run_scraper(
         on_progress=_skill_progress,
         on_page=_on_page,
     )
+
+    logger.info("run_scraper_skill_completed",
+               url=url,
+               status=result.status,
+               page_count=page_count,
+               progress_events_count=len(progress_events),
+               result_data_keys=list(result.data.keys()) if isinstance(result.data, dict) else None)
 
     # ── Finalize skill_call ───────────────────────────────────────────────────
     duration_ms = int((time.time() - started_at.timestamp()) * 1000)

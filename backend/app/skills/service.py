@@ -79,12 +79,27 @@ async def _stream_skill_subprocess_stdout(
                 raw_json = t[len("PROGRESS:"):].strip()
                 meta = _parse_progress_meta(raw_json)
                 meta["streamKind"] = _progress_stream_kind(meta)
+
+                # Log page_data events for debugging
+                if meta.get("event") == "page_data":
+                    import structlog
+                    logger = structlog.get_logger()
+                    logger.info("skill_subprocess_page_data_received",
+                               url=meta.get("url"),
+                               has_on_page_callback=on_page is not None,
+                               stream_kind=meta.get("streamKind"))
+
                 if on_page is not None and meta.get("streamKind") == "data":
                     try:
                         await on_page(meta)
-                    except Exception:
+                    except Exception as e:
                         # Never break stream processing due to page callback failures.
-                        pass
+                        import structlog
+                        logger = structlog.get_logger()
+                        logger.error("skill_on_page_callback_failed",
+                                   url=meta.get("url"),
+                                   error=str(e),
+                                   error_type=type(e).__name__)
                 event_name = str(meta.get("event", "info"))
                 message_text = str(meta.get("url") or meta.get("message") or event_name)
                 await _emit(on_progress, {
