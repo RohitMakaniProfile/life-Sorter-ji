@@ -198,9 +198,6 @@ async def run_scraper(
                            page_id=page_id,
                            page_number=page_count,
                            url=page_url)
-                crawl_status=page_status,
-                error=page_error,
-            )
 
         logger.info("scraper_page_stored",
                    page_number=page_count,
