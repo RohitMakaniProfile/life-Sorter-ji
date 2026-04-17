@@ -223,6 +223,17 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
         pool = get_pool()
         async with pool.acquire() as conn:
             rows = await pages_repo.find_by_base_url(conn, website_url, limit=30)
+            # Playwright follows redirects — www.example.com may be stored as example.com.
+            # Try the alternate www/non-www variant if we got nothing.
+            if not rows:
+                parsed_wurl = urlparse(website_url)
+                netloc = parsed_wurl.netloc.lower()
+                if netloc.startswith("www."):
+                    alt_netloc = netloc[4:]
+                else:
+                    alt_netloc = "www." + netloc
+                alt_url = f"{parsed_wurl.scheme}://{alt_netloc}"
+                rows = await pages_repo.find_by_base_url(conn, alt_url, limit=30)
 
         selected_rows = _pick_rows_for_summary(rows, website_url, limit=5)
 
