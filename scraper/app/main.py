@@ -166,21 +166,11 @@ async def scrape_playwright_stream(req: Request) -> StreamingResponse:
 
             async def _read_stdout() -> None:
                 # Avoid StreamReader.readline() hard limit crashes on very long lines.
-                pending = ""
                 while True:
                     chunk = await proc.stdout.read(64 * 1024)
                     if not chunk:
                         break
-                    text = pending + chunk.decode("utf-8", errors="replace")
-                    lines = text.splitlines(keepends=True)
-                    pending = ""
-                    for ln in lines:
-                        if ln.endswith("\n") or ln.endswith("\r"):
-                            stdout_lines.append(ln)
-                        else:
-                            pending = ln
-                if pending:
-                    stdout_lines.append(pending)
+                    stdout_chunks.append(chunk)
 
             stdout_task = asyncio.create_task(_read_stdout())
             stderr_buffer = ""
