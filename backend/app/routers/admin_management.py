@@ -390,21 +390,30 @@ async def get_onboarding_crawl_pages(
     async with pool.acquire() as conn:
         rows, total = await scraped_pages_repo.fetch_by_onboarding_id(conn, oid, limit, offset)
         log_rows = await crawl_logs_repo.fetch_by_onboarding_id(conn, oid)
+        scraped_page_ids_row = await conn.fetchrow(
+            "SELECT scraped_page_ids FROM onboarding WHERE id = $1::uuid", oid
+        )
+
+    scraped_page_ids: list[int] = list(scraped_page_ids_row["scraped_page_ids"] or []) if scraped_page_ids_row else []
 
     pages = []
     for r in rows:
         created_at = r.get("created_at")
+        created_at_str = created_at.isoformat() if created_at else ""
+        page_id = r.get("id")
         pages.append({
-            "id": str(r.get("id") or ""),
+            "id": str(page_id or ""),
             "onboarding_id": str(r.get("onboarding_id") or ""),
             "url": str(r.get("url") or ""),
             "markdown": r.get("markdown") or None,
             "raw_html": r.get("raw") or None,
             "page_title": str(r.get("page_title") or ""),
             "status_code": r.get("status_code"),
-            "crawl_status": str(r.get("crawl_status") or "done"),
+            "status": str(r.get("crawl_status") or "done"),   # frontend expects `status`
             "error": r.get("error") or None,
-            "created_at": created_at.isoformat() if created_at else "",
+            "crawled_at": created_at_str,
+            "created_at": created_at_str,
+            "used_for_summary": int(page_id) in scraped_page_ids if page_id is not None else False,
         })
 
     logs = []
@@ -434,6 +443,7 @@ async def get_onboarding_crawl_pages(
         "limit": limit,
         "offset": offset,
         "error": crawl_error,
+        "scraped_page_ids": scraped_page_ids,
     }
 
 
@@ -459,6 +469,7 @@ async def get_user_crawl_pages(
     pages = []
     for r in rows:
         created_at = r.get("created_at")
+        created_at_str = created_at.isoformat() if created_at else ""
         pages.append({
             "id": str(r.get("id") or ""),
             "onboarding_id": str(r.get("onboarding_id") or ""),
@@ -467,9 +478,10 @@ async def get_user_crawl_pages(
             "raw_html": r.get("raw") or None,
             "page_title": str(r.get("page_title") or ""),
             "status_code": r.get("status_code"),
-            "crawl_status": str(r.get("crawl_status") or "done"),
+            "status": str(r.get("crawl_status") or "done"),   # frontend expects `status`
             "error": r.get("error") or None,
-            "created_at": created_at.isoformat() if created_at else "",
+            "crawled_at": created_at_str,
+            "created_at": created_at_str,
         })
 
     return {

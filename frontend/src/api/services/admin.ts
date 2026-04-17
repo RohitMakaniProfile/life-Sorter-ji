@@ -232,6 +232,7 @@ export async function getOnboardingCrawlPages(
   logs: AdminCrawlLog[];
   total: number;
   error?: string;
+  scraped_page_ids?: number[];
 }> {
   return apiGet(API_ROUTES.admin.management.onboardingCrawlPages(onboardingId, limit, offset));
 }

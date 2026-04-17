@@ -219,6 +219,7 @@ _STATE_COLS = (
     onboarding_t.gap_answers,
     onboarding_t.onboarding_completed_at,
     onboarding_t.website_audit,
+    onboarding_t.web_scrap_done,
 )
 
 
@@ -392,7 +393,7 @@ async def find_website_audit_context(conn, onboarding_id: str) -> Any:
             onboarding_t.website_url, onboarding_t.scale_answers,
             onboarding_t.rca_qa, onboarding_t.rca_summary, onboarding_t.rca_handoff,
             onboarding_t.web_summary, onboarding_t.business_profile,
-            onboarding_t.website_audit,
+            onboarding_t.website_audit, onboarding_t.web_scrap_done,
         )
         .where(onboarding_t.id == Parameter("%s")),
         [onboarding_id],
@@ -562,6 +563,7 @@ async def update_crawl_outputs(conn, onboarding_id: str, web_summary: str, busin
                 WHEN $2 = '' THEN business_profile
                 ELSE $2
             END,
+            web_scrap_done = true,
             updated_at = NOW()
         WHERE id = $3::uuid
         """,

@@ -66,7 +66,7 @@ class ToolsByQ1Q2Q3Response(BaseModel):
 class OnboardingStateResponse(BaseModel):
     """Response for GET /onboarding/state - returns the current onboarding state for resumption."""
     onboarding_id: str
-    stage: str = "start"  # start | url | questions | website_audit | diagnostic | playbook | complete
+    stage: str = "start"  # start | url | questions | crawling | website_audit | diagnostic | playbook | complete
     outcome: Optional[str] = None
     domain: Optional[str] = None
     task: Optional[str] = None
@@ -79,6 +79,7 @@ class OnboardingStateResponse(BaseModel):
     playbook_status: Optional[str] = None
     playbook_error: Optional[str] = None
     website_audit: Optional[str] = None
+    web_scrap_done: bool = False
 
 
 def _as_dict(v: Any) -> dict[str, Any]:
@@ -135,6 +136,10 @@ def _determine_onboarding_stage(row: dict[str, Any]) -> str:
     scale_answers = _as_dict(scale_answers_raw) if scale_answers_raw is not None else {}
 
     if scale_answers and len(scale_answers) > 0:
+        # Must wait for crawl to complete before generating audit
+        web_scrap_done = bool(row.get("web_scrap_done"))
+        if not web_scrap_done:
+            return "crawling"
         # Website audit comes before RCA; if audit is done, proceed to diagnostic
         website_audit = str(row.get("website_audit") or "").strip()
         if website_audit:
@@ -230,6 +235,7 @@ async def get_onboarding_state(
             playbook_status=str(row_dict.get("playbook_status") or "") or None,
             playbook_error=str(row_dict.get("playbook_error") or "") or None,
             website_audit=str(row_dict.get("website_audit") or "") or None,
+            web_scrap_done=bool(row_dict.get("web_scrap_done")),
         )
 
 
@@ -677,6 +683,7 @@ async def onboarding_playbook_launch(request: Request, body: LaunchOnboardingPla
 
 class WebsiteAuditRequest(BaseModel):
     onboarding_id: str
+    force_fresh: bool = False
 
 
 @router.post("/website-audit/stream")
@@ -701,6 +708,7 @@ async def stream_website_audit_endpoint(
     from app.repositories import onboarding_repository as onboarding_repo
 
     onboarding_id = body.onboarding_id.strip()
+    force_fresh = body.force_fresh
     if not onboarding_id:
         raise HTTPException(status_code=400, detail="onboarding_id is required")
 
@@ -716,11 +724,23 @@ async def stream_website_audit_endpoint(
 
             row_dict = dict(row)
             existing_audit = str(row_dict.get("website_audit") or "").strip()
+            web_summary_now = str(row_dict.get("web_summary") or "").strip()
 
-        # 2. If audit already saved → return immediately
-        if existing_audit:
+        # 2. Return cached audit only if:
+        #    - not force_fresh, AND
+        #    - we actually had web data when it was generated
+        #      (proxy: web_summary is non-empty now, meaning crawl completed)
+        if existing_audit and not force_fresh and web_summary_now:
             yield f"data: {json.dumps({'type': 'done', 'full_text': existing_audit})}\n\n"
             return
+
+        # If force_fresh or crawl data is now available but audit was stale, clear old audit
+        if existing_audit and (force_fresh or web_summary_now):
+            try:
+                async with pool.acquire() as conn:
+                    await onboarding_repo.save_website_audit(conn, onboarding_id, "")
+            except Exception:
+                pass
 
         # 3. Otherwise stream from LLM
         outcome = str(row_dict.get("outcome") or "").strip()

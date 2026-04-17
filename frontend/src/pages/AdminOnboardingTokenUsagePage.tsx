@@ -372,6 +372,11 @@ export default function AdminOnboardingTokenUsagePage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <CrawlStatusBadge status={page.status} />
+                        {page.used_for_summary && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-500/25 text-violet-300 border border-violet-500/30">
+                            USED FOR SUMMARY
+                          </span>
+                        )}
                         {page.crawled_at && (
                           <span className="text-[10px] text-slate-600">
                             {new Date(page.crawled_at).toLocaleString()}

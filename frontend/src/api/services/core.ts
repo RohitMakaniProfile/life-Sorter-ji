@@ -330,11 +330,12 @@ export interface WebsiteAuditStreamCallbacks {
 export async function streamWebsiteAudit(
   onboardingId: string,
   callbacks: WebsiteAuditStreamCallbacks,
+  opts: { forceFresh?: boolean } = {},
 ): Promise<void> {
   const response = await apiRequest(`${getApiBase()}${API_ROUTES.onboarding.websiteAuditStream}`, {
     method: 'POST',
     credentials: 'include',
-    body: JSON.stringify({ onboarding_id: onboardingId }),
+    body: JSON.stringify({ onboarding_id: onboardingId, force_fresh: opts.forceFresh ?? false }),
   });
   if (!response.ok) throw new Error(await extractApiError(response));
   if (!response.body) throw new Error('No response body');

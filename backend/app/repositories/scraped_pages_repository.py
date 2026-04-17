@@ -267,17 +267,23 @@ async def fetch_by_user_id(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[Any], int]:
-    """Return (rows, total_count) for a given user_id, ordered by created_at DESC."""
+    """
+    Return (rows, total_count) for a given user_id, ordered by created_at DESC.
+    Joins through onboarding because scraped_pages.user_id is not populated.
+    """
     total = await conn.fetchval(
-        "SELECT COUNT(*) FROM scraped_pages WHERE user_id = $1",
+        "SELECT COUNT(*) FROM scraped_pages sp "
+        "JOIN onboarding o ON o.id::text = sp.onboarding_id "
+        "WHERE o.user_id::text = $1",
         user_id,
     )
     rows = await conn.fetch(
-        "SELECT id, onboarding_id, user_id, url, raw, markdown, "
-        "page_title, status_code, crawl_depth, crawl_status, error, created_at "
-        "FROM scraped_pages "
-        "WHERE user_id = $1 "
-        "ORDER BY created_at DESC "
+        "SELECT sp.id, sp.onboarding_id, o.user_id::text AS user_id, sp.url, sp.markdown, "
+        "sp.page_title, sp.status_code, sp.crawl_depth, sp.crawl_status, sp.error, sp.created_at "
+        "FROM scraped_pages sp "
+        "JOIN onboarding o ON o.id::text = sp.onboarding_id "
+        "WHERE o.user_id::text = $1 "
+        "ORDER BY sp.created_at DESC "
         "LIMIT $2 OFFSET $3",
         user_id,
         limit,

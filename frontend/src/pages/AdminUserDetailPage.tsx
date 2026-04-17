@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { listUserOnboardings, listUserSkillCalls } from '../api';
-import type { AdminUser, AdminUserOnboarding, AdminSkillCallSummary } from '../api/types';
+import { listUserOnboardings, listUserSkillCalls, getUserCrawlPages } from '../api';
+import type { AdminUser, AdminUserOnboarding, AdminSkillCallSummary, AdminCrawlPage } from '../api/types';
 
 const ONBOARDINGS_PAGE = 10;
 const SKILL_CALLS_PAGE = 20;
@@ -445,16 +445,151 @@ function SkillCallsTab({ userId }: { userId: string }) {
   );
 }
 
+// ── Crawl Data Tab ───────────────────────────────────────────────────────────
+
+function CrawlDataTab({ userId }: { userId: string }) {
+  const [pages, setPages] = useState<AdminCrawlPage[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<Record<string, 'markdown' | 'raw'>>({});
+
+  const load = useCallback(async (off: number) => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await getUserCrawlPages(userId, 20, off);
+      if (off === 0) setPages(res.pages ?? []);
+      else setPages((prev) => [...prev, ...(res.pages ?? [])]);
+      setTotal(res.total ?? 0);
+      setOffset(off + (res.pages?.length ?? 0));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to load crawl data');
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
+
+  useEffect(() => { setOffset(0); setPages([]); load(0); }, [load]);
+
+  const hasMore = pages.length < total;
+
+  return (
+    <div>
+      <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold mb-4">
+        Crawled Pages {total > 0 ? `(${total})` : ''}
+      </p>
+
+      {err && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 text-red-300 text-xs border border-red-500/30 font-mono whitespace-pre-wrap">
+          {err}
+        </div>
+      )}
+
+      {!loading && pages.length === 0 && !err && (
+        <div className="py-12 text-center text-slate-500 text-sm">No crawled pages found for this user.</div>
+      )}
+
+      <div className="space-y-2">
+        {pages.map((page) => {
+          const isExpanded = expandedId === page.id;
+          const hasContent = !!(page.markdown || page.raw_html);
+          const view = viewMode[page.id] || 'markdown';
+          const statusCls = page.status === 'error'
+            ? 'bg-red-500/20 text-red-300'
+            : page.status === 'skipped'
+            ? 'bg-slate-500/20 text-slate-400'
+            : 'bg-emerald-500/20 text-emerald-300';
+
+          return (
+            <div key={page.id} className="rounded-xl border border-slate-800 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => hasContent && setExpandedId(isExpanded ? null : page.id)}
+                className={`w-full text-left px-4 py-3 bg-slate-900 transition-colors flex items-start justify-between gap-3 ${hasContent ? 'hover:bg-slate-800/70' : ''}`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusCls}`}>
+                      {(page.status || 'done').toUpperCase()}
+                    </span>
+                    <span className="text-[10px] text-slate-600 font-mono truncate">
+                      {page.onboarding_id?.slice(0, 12)}…
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 font-mono truncate" title={page.url}>{page.url}</p>
+                  {page.error && (
+                    <p className="text-[11px] text-red-400 mt-1 font-mono truncate" title={page.error}>
+                      {page.error}
+                    </p>
+                  )}
+                </div>
+                <div className="flex-shrink-0 text-right">
+                  {page.created_at && (
+                    <p className="text-[10px] text-slate-600 whitespace-nowrap">
+                      {new Date(page.created_at).toLocaleString()}
+                    </p>
+                  )}
+                  {hasContent && <span className="text-slate-500 text-xs">{isExpanded ? ' ▲' : ' ▼'}</span>}
+                </div>
+              </button>
+
+              {isExpanded && hasContent && (
+                <div className="border-t border-slate-800 bg-slate-950">
+                  <div className="flex gap-1 px-4 pt-3 pb-2">
+                    {page.markdown && (
+                      <button type="button"
+                        onClick={() => setViewMode((p) => ({ ...p, [page.id]: 'markdown' }))}
+                        className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'markdown' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+                      >Markdown</button>
+                    )}
+                    {page.raw_html && (
+                      <button type="button"
+                        onClick={() => setViewMode((p) => ({ ...p, [page.id]: 'raw' }))}
+                        className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${view === 'raw' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+                      >Raw</button>
+                    )}
+                  </div>
+                  <pre className="px-4 pb-4 text-[11px] text-slate-300 font-mono max-h-80 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
+                    {view === 'markdown' ? (page.markdown || '') : (page.raw_html || '')}
+                  </pre>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3">
+        {loading ? (
+          <div className="flex justify-center py-4">
+            <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : hasMore ? (
+          <button type="button" onClick={() => load(offset)}
+            className="w-full py-2 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800">
+            Load more
+          </button>
+        ) : pages.length > 0 ? (
+          <p className="text-center text-xs text-slate-600">All {total} pages loaded</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
-type Tab = 'onboarding' | 'messages' | 'skills';
+type Tab = 'onboarding' | 'messages' | 'skills' | 'crawl';
 
 export default function AdminUserDetailPage() {
   const { userId } = useParams<{ userId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('onboarding');
-  const TAB_LABELS: Record<Tab, string> = { onboarding: 'Onboarding', messages: 'Messages', skills: 'Skill Calls' };
+  const TAB_LABELS: Record<Tab, string> = { onboarding: 'Onboarding', messages: 'Messages', skills: 'Skill Calls', crawl: 'Crawl Data' };
 
   const user = (location.state as { user?: AdminUser } | null)?.user;
 
@@ -491,7 +626,7 @@ export default function AdminUserDetailPage() {
 
             {/* Tabs */}
             <div className="flex gap-1 mb-6 border-b border-slate-800">
-              {(['onboarding', 'messages', 'skills'] as Tab[]).map((tab) => (
+              {(['onboarding', 'messages', 'skills', 'crawl'] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -512,8 +647,10 @@ export default function AdminUserDetailPage() {
               <OnboardingTab userId={userId} />
             ) : activeTab === 'messages' ? (
               <MessagesTab userId={userId} />
-            ) : (
+            ) : activeTab === 'skills' ? (
               <SkillCallsTab userId={userId} />
+            ) : (
+              <CrawlDataTab userId={userId} />
             )}
           </div>
         </div>

@@ -400,6 +400,7 @@ export interface AdminCrawlPage {
   error?: string;
   crawled_at?: string;
   created_at: string;
+  used_for_summary?: boolean;
 }
 
 export interface AdminCrawlLog {

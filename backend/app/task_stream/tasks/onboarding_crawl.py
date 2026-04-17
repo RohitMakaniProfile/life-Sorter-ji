@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from app.db import get_pool
 from app.repositories import scraped_pages_repository as pages_repo
 from app.repositories import crawl_logs_repository as crawl_logs_repo
+from app.repositories import onboarding_repository as onboarding_repo
 from app.task_stream.registry import register_task_stream
 from app.utils.url_sanitize import sanitize_http_url
 from app.services.scraper_service import run_scraper
@@ -271,6 +272,17 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 rows = await pages_repo.find_by_base_url(conn, alt_url, limit=30)
 
         selected_rows = _pick_rows_for_summary(rows, website_url, limit=5)
+
+        # Persist which page IDs were selected for the summary
+        if onboarding_id and selected_rows:
+            selected_ids = [int(r["id"]) for r in selected_rows if r.get("id") is not None]
+            if selected_ids:
+                try:
+                    pool = get_pool()
+                    async with pool.acquire() as conn:
+                        await onboarding_repo.set_scraped_page_ids(conn, onboarding_id, selected_ids)
+                except Exception:
+                    pass
 
         parts = [
             str(row["markdown"] or "").strip()

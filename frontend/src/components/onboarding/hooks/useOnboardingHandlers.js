@@ -75,6 +75,8 @@ export function useOnboardingHandlers({
   const {
     startForSession: startCrawlForSession,
     waitForCrawlDone,
+    crawlStage,
+    crawlLabel,
   } = crawl;
 
   // Scroll helper
@@ -85,7 +87,7 @@ export function useOnboardingHandlers({
   }, [scrollToEnd]);
 
   // Shared: start streaming the website audit for a session
-  const startWebsiteAuditStream = useCallback((sid) => {
+  const startWebsiteAuditStream = useCallback((sid, { forceFresh = false } = {}) => {
     setShowAnalysisTransition(false);
     setWebsiteAuditText('');
     setWebsiteAuditLoading(true);
@@ -94,7 +96,7 @@ export function useOnboardingHandlers({
       onToken: (token) => setWebsiteAuditText((prev) => prev + token),
       onDone: (full) => { setWebsiteAuditText(full); setWebsiteAuditLoading(false); },
       onError: () => { setWebsiteAuditText(''); setWebsiteAuditLoading(false); },
-    }).catch(() => setWebsiteAuditLoading(false));
+    }, { forceFresh }).catch(() => setWebsiteAuditLoading(false));
   }, [setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit, setShowAnalysisTransition]);
 
   // Start new journey
@@ -288,17 +290,28 @@ export function useOnboardingHandlers({
 
       setShowAnalysisTransition(true);
       setShowDeeperDive(false);
-      await waitForCrawlDone(90000);
+      const crawlSucceeded = await waitForCrawlDone(90000);
 
-      // Website audit comes before RCA — start it now
-      startWebsiteAuditStream(sid);
+      if (!crawlSucceeded) {
+        // Crawl errored or timed out — log it but continue so the audit
+        // can still run (backend will use whatever context it has).
+        const errDetail = crawlStage === 'error'
+          ? (crawlLabel && crawlLabel !== 'Error' ? crawlLabel : 'Could not crawl the website.')
+          : 'Website crawl timed out.';
+        console.warn('[handleScaleSubmit] crawl did not complete:', errDetail);
+      }
+
+      // Start the website audit — backend reads web_summary from DB.
+      // Pass forceFresh=true so the backend re-generates if crawl failed
+      // and a stale/empty audit was previously cached.
+      startWebsiteAuditStream(sid, { forceFresh: !crawlSucceeded });
     } catch {
       setShowAnalysisTransition(false);
       setError('Failed to start analysis.');
     } finally {
       setLoading(false);
     }
-  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, startWebsiteAuditStream, setLoading, setShowAnalysisTransition, setShowDeeperDive, setError]);
+  }, [ensureSession, scaleAnswers, handleOnboardingFieldUpdate, waitForCrawlDone, crawlStage, crawlLabel, startWebsiteAuditStream, setLoading, setShowAnalysisTransition, setShowDeeperDive, setError]);
 
   // Diagnostic handlers
   const handleDiagnosticAnswer = useCallback(async (answer) => {
