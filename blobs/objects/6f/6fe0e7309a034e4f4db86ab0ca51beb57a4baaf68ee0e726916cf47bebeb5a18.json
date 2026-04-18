@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "objectId": "6fe0e7309a034e4f4db86ab0ca51beb57a4baaf68ee0e726916cf47bebeb5a18",
+  "hash": "6fe0e7309a034e4f4db86ab0ca51beb57a4baaf68ee0e726916cf47bebeb5a18",
+  "encryptedAt": "2026-04-18T08:03:45.454Z",
+  "cipher": {
+    "v": 1,
+    "alg": "aes-256-gcm",
+    "kdf": "scrypt",
+    "salt": "jj2DJerBSqWaBiURmPHArQ==",
+    "iv": "gV18HyWwMD/P7mhP",
+    "tag": "xDOAOpZEuhXnKKcXU5jcDg==",
+    "data": "xUFX1NewdJqXOIy5MBShjZR4j/bvy3YCZXs+NYET28z2FXBSw02sGq/vDqwklX8WAHfmAIk43Bw94SxJx1+MTdt0qLDgKJq05SVb2vQi1W0JAkUcSbQ3rO1GHckKO8d5hhMhvDYgs6oAx49R9pPJlmYUaEFKbqxvAFtQrPocaJxj+SQvgrr3IPsvA3ChQHUvUCzwXZ8ejTGFWmcbyupmvHCiEbWidbYA5+r2OSHwPoAKbIcLuh9MsD0f2T0X7yMk7V8h4pkDhvE/cKbxiTRq7s+iBzHV8+mvDWoaYMCJ6MdcBRTuC/vfxch+tsF1amYbIjZlQHgYdrfO4zZLYC9OZURmesWDdILBb0ZjNxK2TkIO7+m4QbgEgi2UKT8m2MDotrgXou4cosYOZA3EjvIQXWwDsnsRz9s6rZWhkPGv4X+YYS6TWdsmBSrBtEGM82mHJ2+YVyej9gXHWNne2MTvERyCjFTx9qShPf4MKvropcrH8wsj/6+2t9clTxkvtywTX6o="
+  }
+}

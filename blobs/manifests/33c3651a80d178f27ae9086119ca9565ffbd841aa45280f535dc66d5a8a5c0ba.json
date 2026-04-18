@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "envcsBranch": "main",
+  "parent": "32852546e6fc77c5ca5fbebe1475eb2cf8395daf7ae6b4502008a2b70cb77b93",
+  "sourceCommit": "de79739423ba5a53364f80be4630d579f18f84b1",
+  "message": "scraper env setup",
+  "createdAt": "2026-04-18T08:03:43.585Z",
+  "files": {
+    "backend/.env": {
+      "objectId": "12652d2ead2c3868361c0f8d5ad7ea88371fd63b267b66643444d241d08710ff",
+      "hash": "12652d2ead2c3868361c0f8d5ad7ea88371fd63b267b66643444d241d08710ff"
+    },
+    "backend/.env.bak": {
+      "objectId": "965ff0159c88f945fbd5065463bb8d5833d40c3aec0626ad4c18cdcd4ee7a404",
+      "hash": "965ff0159c88f945fbd5065463bb8d5833d40c3aec0626ad4c18cdcd4ee7a404"
+    },
+    "frontend/.env": {
+      "objectId": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+      "hash": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    },
+    "scraper/.env": {
+      "objectId": "e6eacbce3f10ea07c9ebad97c684a181eb4d44dac1ea7347a99ae07e7233691c",
+      "hash": "e6eacbce3f10ea07c9ebad97c684a181eb4d44dac1ea7347a99ae07e7233691c"
+    },
+    "scraper/.env.bak": {
+      "objectId": "6fe0e7309a034e4f4db86ab0ca51beb57a4baaf68ee0e726916cf47bebeb5a18",
+      "hash": "6fe0e7309a034e4f4db86ab0ca51beb57a4baaf68ee0e726916cf47bebeb5a18"
+    }
+  },
+  "id": "33c3651a80d178f27ae9086119ca9565ffbd841aa45280f535dc66d5a8a5c0ba"
+}

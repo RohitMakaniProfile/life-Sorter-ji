@@ -1,13 +1,15 @@
 {
   "version": 2,
   "envcsBranch": "main",
-  "headManifestId": "32852546e6fc77c5ca5fbebe1475eb2cf8395daf7ae6b4502008a2b70cb77b93",
-  "sourceCommit": "e19f2d485e5b113ed107d5775f3018eaac1c85c6",
-  "pushedAt": "2026-04-07T13:26:27.277Z",
-  "message": "openrouter local backend added",
+  "headManifestId": "33c3651a80d178f27ae9086119ca9565ffbd841aa45280f535dc66d5a8a5c0ba",
+  "sourceCommit": "de79739423ba5a53364f80be4630d579f18f84b1",
+  "pushedAt": "2026-04-18T08:03:43.599Z",
+  "message": "scraper env setup",
   "fileHashes": {
-    "backend/.env": "c31927bc84e7d84eae65d78abc3a56aa5cf105882eb89dd040ebb15b21d147b3",
-    "backend/.env.bak": "4f2f769262b419c949c433af402f160f4a5bb59a9de20f2ae216a3ed505a662a",
-    "frontend/.env": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41"
+    "backend/.env": "12652d2ead2c3868361c0f8d5ad7ea88371fd63b267b66643444d241d08710ff",
+    "backend/.env.bak": "965ff0159c88f945fbd5065463bb8d5833d40c3aec0626ad4c18cdcd4ee7a404",
+    "frontend/.env": "13c95fa5c0917ddd176a06df6231abd923744da531cf22179af09157a1d3ba41",
+    "scraper/.env": "e6eacbce3f10ea07c9ebad97c684a181eb4d44dac1ea7347a99ae07e7233691c",
+    "scraper/.env.bak": "6fe0e7309a034e4f4db86ab0ca51beb57a4baaf68ee0e726916cf47bebeb5a18"
   }
 }
