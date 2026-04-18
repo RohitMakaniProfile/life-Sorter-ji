@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { apiPost } from '../../../api/http';
 import { API_ROUTES } from '../../../api/routes';
 import { streamWebsiteAudit } from '../../../api/services/core';
@@ -79,6 +79,9 @@ export function useOnboardingHandlers({
     crawlLabel,
   } = crawl;
 
+  const auditRetryCountRef = useRef(0);
+  const auditRetryTimerRef = useRef(null);
+
   // Scroll helper
   const scheduleScrollToEnd = useCallback(() => {
     requestAnimationFrame(() => {
@@ -88,15 +91,36 @@ export function useOnboardingHandlers({
 
   // Shared: start streaming the website audit for a session
   const startWebsiteAuditStream = useCallback((sid, { forceFresh = false } = {}) => {
+    if (!forceFresh) {
+      auditRetryCountRef.current = 0;
+      if (auditRetryTimerRef.current) {
+        clearTimeout(auditRetryTimerRef.current);
+        auditRetryTimerRef.current = null;
+      }
+    }
     setShowAnalysisTransition(false);
     setWebsiteAuditText('');
     setWebsiteAuditLoading(true);
     setShowWebsiteAudit(true);
-    streamWebsiteAudit(sid, {
-      onToken: (token) => setWebsiteAuditText((prev) => prev + token),
-      onDone: (full) => { setWebsiteAuditText(full); setWebsiteAuditLoading(false); },
-      onError: () => { setWebsiteAuditText(''); setWebsiteAuditLoading(false); },
-    }, { forceFresh }).catch(() => setWebsiteAuditLoading(false));
+
+    const doStream = (isForceFresh) => {
+      streamWebsiteAudit(sid, {
+        onToken: (token) => setWebsiteAuditText((prev) => prev + token),
+        onDone: (full) => {
+          if (full.includes('ESTIMATED') && auditRetryCountRef.current < 5) {
+            auditRetryCountRef.current += 1;
+            setWebsiteAuditText('');
+            auditRetryTimerRef.current = setTimeout(() => doStream(true), 30000);
+            return;
+          }
+          setWebsiteAuditText(full);
+          setWebsiteAuditLoading(false);
+        },
+        onError: () => { setWebsiteAuditText(''); setWebsiteAuditLoading(false); },
+      }, { forceFresh: isForceFresh }).catch(() => setWebsiteAuditLoading(false));
+    };
+
+    doStream(forceFresh);
   }, [setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit, setShowAnalysisTransition]);
 
   // Start new journey

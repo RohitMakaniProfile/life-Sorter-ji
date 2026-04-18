@@ -797,8 +797,8 @@ async def stream_website_audit_endpoint(
                     on_token=on_token,
                 )
                 full_text = result or ""
-                # Save to DB
-                if full_text:
+                # Save to DB only if not ESTIMATED (don't cache degraded results)
+                if full_text and "ESTIMATED" not in full_text:
                     async with pool.acquire() as conn:
                         await onboarding_repo.save_website_audit(conn, onboarding_id, full_text)
                 await queue.put(("done", full_text))
