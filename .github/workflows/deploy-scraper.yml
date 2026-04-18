@@ -35,17 +35,33 @@ jobs:
         env:
           _VISION_KEY_DEV: ${{ secrets.SCRAPER_GOOGLE_VISION_API_KEY_DEV }}
           _VISION_KEY_PROD: ${{ secrets.SCRAPER_GOOGLE_VISION_API_KEY_PROD }}
+          _PROXY_HOST_DEV: ${{ secrets.SCRAPER_PROXY_HOST_DEV }}
+          _PROXY_HOST_PROD: ${{ secrets.SCRAPER_PROXY_HOST_PROD }}
+          _PROXY_PORT_DEV: ${{ secrets.SCRAPER_PROXY_PORT_DEV }}
+          _PROXY_PORT_PROD: ${{ secrets.SCRAPER_PROXY_PORT_PROD }}
+          _PROXY_USERNAME_DEV: ${{ secrets.SCRAPER_PROXY_USERNAME_DEV }}
+          _PROXY_USERNAME_PROD: ${{ secrets.SCRAPER_PROXY_USERNAME_PROD }}
+          _PROXY_PASSWORD_DEV: ${{ secrets.SCRAPER_PROXY_PASSWORD_DEV }}
+          _PROXY_PASSWORD_PROD: ${{ secrets.SCRAPER_PROXY_PASSWORD_PROD }}
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
             echo "SERVICE=ikshan-scraper-dev" >> $GITHUB_ENV
             echo "REPO=ikshan-scraper-dev" >> $GITHUB_ENV
             echo "APP_ENV=development" >> $GITHUB_ENV
             printf 'GOOGLE_VISION_API_KEY=%s\n' "$_VISION_KEY_DEV" >> $GITHUB_ENV
+            printf 'PROXY_HOST=%s\n'     "$_PROXY_HOST_DEV"     >> $GITHUB_ENV
+            printf 'PROXY_PORT=%s\n'     "$_PROXY_PORT_DEV"     >> $GITHUB_ENV
+            printf 'PROXY_USERNAME=%s\n' "$_PROXY_USERNAME_DEV" >> $GITHUB_ENV
+            printf 'PROXY_PASSWORD=%s\n' "$_PROXY_PASSWORD_DEV" >> $GITHUB_ENV
           else
             echo "SERVICE=ikshan-scraper-prod" >> $GITHUB_ENV
             echo "REPO=ikshan-scraper-prod" >> $GITHUB_ENV
             echo "APP_ENV=production" >> $GITHUB_ENV
             printf 'GOOGLE_VISION_API_KEY=%s\n' "$_VISION_KEY_PROD" >> $GITHUB_ENV
+            printf 'PROXY_HOST=%s\n'     "$_PROXY_HOST_PROD"     >> $GITHUB_ENV
+            printf 'PROXY_PORT=%s\n'     "$_PROXY_PORT_PROD"     >> $GITHUB_ENV
+            printf 'PROXY_USERNAME=%s\n' "$_PROXY_USERNAME_PROD" >> $GITHUB_ENV
+            printf 'PROXY_PASSWORD=%s\n' "$_PROXY_PASSWORD_PROD" >> $GITHUB_ENV
           fi
 
       - name: Render env-vars file
@@ -53,12 +69,20 @@ jobs:
           python3 - <<'PY'
           import os
 
-          vision_key = os.environ.get("GOOGLE_VISION_API_KEY", "")
-          app_env    = os.environ.get("APP_ENV", "development")
+          vision_key     = os.environ.get("GOOGLE_VISION_API_KEY", "")
+          app_env        = os.environ.get("APP_ENV", "development")
+          proxy_host     = os.environ.get("PROXY_HOST", "")
+          proxy_port     = os.environ.get("PROXY_PORT", "")
+          proxy_username = os.environ.get("PROXY_USERNAME", "")
+          proxy_password = os.environ.get("PROXY_PASSWORD", "")
 
           mapping = {
             "GOOGLE_VISION_API_KEY": vision_key,
             "ENVIRONMENT": app_env,
+            "PROXY_HOST": proxy_host,
+            "PROXY_PORT": proxy_port,
+            "PROXY_USERNAME": proxy_username,
+            "PROXY_PASSWORD": proxy_password,
           }
 
           out_path = "/tmp/scraper-env.yaml"
@@ -71,6 +95,10 @@ jobs:
         env:
           GOOGLE_VISION_API_KEY: ${{ env.GOOGLE_VISION_API_KEY }}
           APP_ENV: ${{ env.APP_ENV }}
+          PROXY_HOST: ${{ env.PROXY_HOST }}
+          PROXY_PORT: ${{ env.PROXY_PORT }}
+          PROXY_USERNAME: ${{ env.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ env.PROXY_PASSWORD }}
 
       - name: Build & Push Docker Image
         run: |

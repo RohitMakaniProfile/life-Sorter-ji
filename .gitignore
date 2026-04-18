@@ -56,3 +56,5 @@ npm-debug.log*
 *.webm
 
 docs/todo-sync.gs
+
+scraper/.env.bak

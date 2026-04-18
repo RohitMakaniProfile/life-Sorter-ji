@@ -27,6 +27,7 @@ except ImportError:
 from html_extractor import extract_content_elements_from_page, extract_text_from_html
 from page_scraper import _scrape_single_page_async
 from progress import _progress
+from proxy_config import get_playwright_proxy
 from url_priority import _get_url_priority
 from url_utils import (
     _fetch_sitemap_urls,
@@ -155,9 +156,16 @@ async def _crawl_parallel_async(
 
     _progress({"event": "started", "parallel": True})
 
+    _proxy = get_playwright_proxy()
+    if _proxy:
+        _progress({"event": "proxy_info", "message": f"Using proxy: {_proxy['server']}"})
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
-        context_scrape = await browser.new_context(viewport={"width": 1280, "height": 900})
+        browser = await p.chromium.launch(headless=headless, proxy=_proxy)
+        context_scrape = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            proxy=_proxy,
+        )
 
         async def discovery_coro():
             nonlocal discovery_idle_count
@@ -374,9 +382,16 @@ def crawl_with_playwright(
     visited: set[str] = set()
     queue: deque = deque([(base_url, 0)])
 
+    _proxy = get_playwright_proxy()
+    if _proxy:
+        _progress({"event": "proxy_info", "message": f"Using proxy: {_proxy['server']}"})
+
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        browser = pw.chromium.launch(headless=headless, proxy=_proxy)
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            proxy=_proxy,
+        )
 
         while queue and len(scraped_urls) < max_pages:
             url, depth = queue.popleft()
