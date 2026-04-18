@@ -110,6 +110,12 @@ async def upsert_onboarding_patch(
             new_url = str(allowed.get("website_url") or "").strip()
             website_url_changed = old_url != new_url
 
+        task_changed = False
+        if "task" in allowed:
+            old_task = str(existing.get("task") or "").strip()
+            new_task = str(allowed.get("task") or "").strip()
+            task_changed = bool(old_task) and old_task != new_task
+
         if existing.get("onboarding_completed_at"):
             logger.info("onboarding row is complete, creating new row", onboarding_id=oid, user_id=uid)
             initial_fields = dict(allowed)
@@ -122,7 +128,11 @@ async def upsert_onboarding_patch(
         else:
             row = await onboarding_repo.update_fields(conn, oid, allowed)
 
-        if website_url_changed:
+        if task_changed:
+            # Task re-selected — wipe all session-specific data so the new task
+            # doesn't inherit the previous task's URL, scale answers, crawl, or RCA.
+            row = await onboarding_repo.reset_task_downstream(conn, oid)
+        elif website_url_changed:
             row = await onboarding_repo.reset_web_summary(conn, oid)
 
     out = _serialize_row(row)

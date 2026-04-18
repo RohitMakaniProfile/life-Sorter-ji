@@ -54,6 +54,23 @@ _SQL_RESET_FULL = (
     "RETURNING " + ", ".join(_RETURNING_COLS)
 )
 
+# Resets all session-specific data when the user changes their task selection,
+# while preserving the newly-set outcome/domain/task values.
+_SQL_RESET_TASK_DOWNSTREAM = (
+    "UPDATE onboarding "
+    "SET website_url = NULL, gbp_url = NULL, "
+    "    scale_answers = '{}'::jsonb, web_scrap_done = false, "
+    "    rca_qa = '[]'::jsonb, rca_summary = '', rca_handoff = '', "
+    "    web_summary = '', business_profile = '', "
+    "    gap_questions = '[]'::jsonb, gap_answers = '', "
+    "    playbook_status = 'not_started', playbook_started_at = NULL, "
+    "    playbook_completed_at = NULL, playbook_error = '', "
+    "    crawl_run_id = NULL, crawl_cache_key = NULL, "
+    "    playbook_run_id = NULL, updated_at = NOW() "
+    "WHERE id = $1 "
+    "RETURNING " + ", ".join(_RETURNING_COLS)
+)
+
 
 async def insert_default(conn) -> Any:
     return await conn.fetchrow(_SQL_INSERT_DEFAULT)
@@ -163,6 +180,11 @@ async def reset_web_summary(conn, onboarding_id: str) -> Any:
 
 async def reset_full(conn, onboarding_id: str) -> Any:
     return await conn.fetchrow(_SQL_RESET_FULL, onboarding_id)
+
+
+async def reset_task_downstream(conn, onboarding_id: str) -> Any:
+    """Clear all session-specific data when the user changes their task selection."""
+    return await conn.fetchrow(_SQL_RESET_TASK_DOWNSTREAM, onboarding_id)
 
 
 async def link_user(conn, user_id: str, onboarding_id: str) -> None:

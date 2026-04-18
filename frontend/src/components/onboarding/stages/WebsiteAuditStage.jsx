@@ -1,3 +1,4 @@
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -389,7 +390,33 @@ const RawAudit = ({ text }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────
-export default function WebsiteAuditStage({ auditText, loading, onContinue }) {
+export default function WebsiteAuditStage({ auditText, loading, onContinue, websiteUrl = '', onReScan }) {
+  const [reScanOpen, setReScanOpen] = React.useState(false);
+  const [reScanUrl, setReScanUrl] = React.useState('');
+  const [reScanLoading, setReScanLoading] = React.useState(false);
+
+  // Detect scrape-failed audit so we can auto-open the re-scan panel
+  const scraped = stripSectionDelimiters(auditText || '');
+  const scrapeWarning = scraped.includes('could not be fully scraped') || scraped.includes('ESTIMATED —');
+
+  const handleOpenReScan = () => {
+    setReScanUrl(websiteUrl);
+    setReScanOpen(true);
+  };
+
+  const handleReScanSubmit = async (e) => {
+    e.preventDefault();
+    const url = reScanUrl.trim();
+    if (!url || !onReScan) return;
+    setReScanLoading(true);
+    try {
+      await onReScan(url);
+    } finally {
+      setReScanLoading(false);
+      setReScanOpen(false);
+    }
+  };
+
   const cleaned = stripSectionDelimiters(auditText || '');
   const sections = cleaned ? parseSections(cleaned) : {};
   const hasStructure = Object.keys(sections).some(k => k !== 'raw');
@@ -477,6 +504,78 @@ export default function WebsiteAuditStage({ auditText, loading, onContinue }) {
             >
               Continue to Diagnosis →
             </button>
+          )}
+
+          {/* ── Re-scan Website ── */}
+          {!loading && onReScan && (
+            <div style={{ marginTop: 10 }}>
+              {!reScanOpen ? (
+                <button
+                  type="button"
+                  onClick={handleOpenReScan}
+                  style={{
+                    width: '100%', padding: '10px 24px',
+                    background: scrapeWarning ? 'rgba(245,158,11,0.08)' : 'transparent',
+                    border: `1px solid ${scrapeWarning ? 'rgba(245,158,11,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                    borderRadius: 12, cursor: 'pointer',
+                    fontSize: 13, fontWeight: 600,
+                    color: scrapeWarning ? '#fbbf24' : 'rgba(255,255,255,0.4)',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {scrapeWarning ? '⚠ Website not scraped — fix URL & re-scan' : 'Re-scan Website'}
+                </button>
+              ) : (
+                <form
+                  onSubmit={handleReScanSubmit}
+                  style={{
+                    padding: '14px 16px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: 12,
+                  }}
+                >
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+                    Update URL &amp; Re-scan
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="url"
+                      value={reScanUrl}
+                      onChange={(e) => setReScanUrl(e.target.value)}
+                      placeholder="https://example.com"
+                      disabled={reScanLoading}
+                      style={{
+                        flex: 1, padding: '9px 12px',
+                        background: 'rgba(255,255,255,0.05)',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        borderRadius: 8, color: '#f1f5f9',
+                        fontSize: 13, fontFamily: 'inherit', outline: 'none',
+                      }}
+                    />
+                    <button
+                      type="submit"
+                      disabled={reScanLoading || !reScanUrl.trim()}
+                      style={{
+                        padding: '9px 16px', flexShrink: 0,
+                        background: reScanLoading || !reScanUrl.trim() ? 'rgba(139,92,246,0.3)' : '#7c3aed',
+                        border: 'none', borderRadius: 8, cursor: reScanLoading ? 'wait' : 'pointer',
+                        fontSize: 13, fontWeight: 700, color: '#fff', fontFamily: 'inherit',
+                      }}
+                    >
+                      {reScanLoading ? 'Scanning…' : 'Re-scan'}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReScanOpen(false)}
+                    style={{ marginTop: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'rgba(255,255,255,0.25)', fontFamily: 'inherit' }}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              )}
+            </div>
           )}
 
         </div>

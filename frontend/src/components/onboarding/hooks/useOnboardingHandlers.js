@@ -337,6 +337,38 @@ export function useOnboardingHandlers({
     }
   }, [loading, ensureSession, handleStartPlaybook, setLoading, setShowDiagnostic, setCurrentQuestion, setQuestionIndex, setError]);
 
+  // Called when user wants to fix the URL and re-scan from the website audit stage
+  const handleReScanWebsite = useCallback(async (newUrl) => {
+    const trimmed = (newUrl || '').trim();
+    if (!trimmed) return;
+
+    // Update local + DB URL
+    setUrlValue(trimmed);
+    try { await handleOnboardingFieldUpdate({ website_url: trimmed }); } catch { /* ignore */ }
+
+    const sid = onboardingIdRef.current || (await ensureSession());
+    if (!sid) return;
+
+    // Reset audit state and show analysis transition while crawl runs
+    setWebsiteAuditText('');
+    setWebsiteAuditLoading(true);
+    setShowWebsiteAudit(true);
+    setShowAnalysisTransition(true);
+
+    // Fresh crawl with the corrected URL
+    startCrawlForSession(sid, { websiteUrl: trimmed, forceFresh: true }).catch(() => {});
+    const crawlSucceeded = await waitForCrawlDone(90000);
+
+    setShowAnalysisTransition(false);
+
+    // Re-generate audit
+    startWebsiteAuditStream(sid, { forceFresh: true });
+  }, [
+    handleOnboardingFieldUpdate, setUrlValue,
+    setWebsiteAuditText, setWebsiteAuditLoading, setShowWebsiteAudit, setShowAnalysisTransition,
+    onboardingIdRef, ensureSession, startCrawlForSession, waitForCrawlDone, startWebsiteAuditStream,
+  ]);
+
   // Called when user clicks Continue on the website audit stage — now starts RCA
   const handleWebsiteAuditContinue = useCallback(async () => {
     setShowWebsiteAudit(false);
@@ -458,6 +490,7 @@ export function useOnboardingHandlers({
     handleGapAnswer,
     handleDiagnosticAnswer,
     handleWebsiteAuditContinue,
+    handleReScanWebsite,
     handleBackToStep1,
     clearError,
     scheduleScrollToEnd,

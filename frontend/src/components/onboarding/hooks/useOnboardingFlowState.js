@@ -97,6 +97,10 @@ export function useOnboardingFlowState() {
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
     setEarlyTools([]);
+    setUrlValue('');
+    setGbpValue('');
+    setScaleAnswers({});
+    setScalePage(0);
   }, []);
 
   const clearError = useCallback(() => setError(null), []);

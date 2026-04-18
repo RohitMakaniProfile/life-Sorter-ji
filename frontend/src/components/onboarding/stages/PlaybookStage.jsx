@@ -19,6 +19,7 @@ export default function PlaybookStage({
   playbookDone,
   playbookResult,
   onGoHome,
+  onDeepAnalysis,
   showRetry,
   onRetry,
   retryLabel = 'Retry',
@@ -169,7 +170,7 @@ export default function PlaybookStage({
           </div>
         )}
 
-        {playbookText && (
+        {(playbookText || (playbookDone && playbookContent)) && (
           <div className="rounded-2xl border border-white/[0.07] bg-[#111318] px-6 py-7">
             {playbookStreaming && !playbookDone && (
               <div className="mb-4 flex items-center gap-2 text-xs text-white/40">
@@ -199,6 +200,15 @@ export default function PlaybookStage({
 
         {playbookDone && (
           <div className="mt-5 flex flex-row gap-4">
+            {onDeepAnalysis && (
+              <button
+                type="button"
+                onClick={onDeepAnalysis}
+                className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-2.5 px-8 text-[14px] font-extrabold text-white"
+              >
+                Deep Analysis
+              </button>
+            )}
             <button
               type="button"
               onClick={onGoHome}

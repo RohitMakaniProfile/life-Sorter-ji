@@ -11,7 +11,8 @@
       "Bash(find /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/frontend/src -name PaymentModal*)",
       "Bash(grep -E \"\\\\.py$\")",
       "Bash(grep -l \"skill_calls\\\\|SkillCall\" /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/backend/app/services/*.py)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(psql:*)"
     ]
   }
 }

@@ -84,6 +84,7 @@ export function OnboardingStageRenderer({
     handleScaleSubmit,
     handleDiagnosticAnswer,
     handleWebsiteAuditContinue,
+    handleReScanWebsite,
     handleUrlSubmit,
     handleUrlSkip,
     handleBackToStep1,
@@ -124,6 +125,7 @@ export function OnboardingStageRenderer({
           playbookDone={playbookDone}
           playbookResult={playbookResult}
           onGoHome={startNewJourney}
+          onDeepAnalysis={handleDeepAnalysis}
           showRetry={!playbookStreaming && !playbookDone && needsManualRetry}
           onRetry={() => handleStartPlaybook()}
           retryLabel="Retry Playbook"
@@ -153,6 +155,8 @@ export function OnboardingStageRenderer({
           auditText={websiteAuditText}
           loading={websiteAuditLoading}
           onContinue={handleWebsiteAuditContinue}
+          websiteUrl={urlValue}
+          onReScan={handleReScanWebsite}
         />
       </StageLayout>
     );
