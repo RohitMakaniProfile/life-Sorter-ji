@@ -295,20 +295,21 @@ async def fetch_by_user_id(
 async def fetch_recent_unique_by_base_url(conn, base_url: str, *, limit: int = 5) -> list[Any]:
     """
     Return the most recent `limit` rows with distinct URLs matching the base_url origin.
-    Uses LIKE for prefix match, deduplicates by URL keeping the most recent row per URL.
+    Strips scheme (http/https) and www prefix so pages stored under either protocol
+    or www variant are all matched. Uses %domain% LIKE pattern.
     """
+    import re
     from urllib.parse import urlparse
     try:
         parsed = urlparse(str(base_url or "").strip())
-        origin_prefix = (
-            f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
-            if parsed.scheme and parsed.netloc
-            else str(base_url or "").strip().rstrip("/")
-        )
+        netloc = parsed.netloc.lower() if parsed.netloc else str(base_url or "").strip()
     except Exception:
-        origin_prefix = str(base_url or "").strip().rstrip("/")
+        netloc = str(base_url or "").strip()
 
-    if not origin_prefix:
+    # Strip leading www.
+    domain = re.sub(r"^www\.", "", netloc)
+
+    if not domain:
         return []
 
     rows = await conn.fetch(
@@ -321,7 +322,7 @@ async def fetch_recent_unique_by_base_url(conn, base_url: str, *, limit: int = 5
           AND markdown <> ''
         ORDER BY url, created_at DESC
         """,
-        origin_prefix + "%",
+        "%" + domain + "%",
     )
     # Sort by created_at DESC and take the most recent `limit` unique URLs
     sorted_rows = sorted(rows, key=lambda r: r["created_at"], reverse=True)

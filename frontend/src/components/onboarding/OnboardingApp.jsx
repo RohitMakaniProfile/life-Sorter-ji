@@ -11,7 +11,6 @@ import {
   useOnboardingJourneyIdleOutcomeDemo,
   useOnboardingCanvasScroll,
   useCrawlTaskStream,
-  usePlaybookTaskStream,
   usePaymentRedirect,
   useDeepAnalysis,
   useClearOnboardingStorage,
@@ -43,19 +42,6 @@ export default function OnboardingApp() {
   // Canvas scroll
   const { canvasRef, scrollToEnd } = useOnboardingCanvasScroll();
 
-  // Playbook streaming
-  const playbook = usePlaybookTaskStream({
-    ensureSession,
-    otpVerified: state.otpVerified,
-    onRequestOtp: () => {
-      const oid = onboardingIdRef.current || '';
-      try { sessionStorage.setItem('pending-playbook-launch', 'true'); } catch { /* ignore */ }
-      window.location.href = `/phone-verify?next=${encodeURIComponent('/')}&oid=${encodeURIComponent(oid)}`;
-    },
-    onShowPlaybook: () => state.setShowPlaybook(true),
-    setError: state.setError,
-  });
-
   // Crawl streaming
   const crawl = useCrawlTaskStream({ ensureSession, setError: state.setError });
 
@@ -73,7 +59,6 @@ export default function OnboardingApp() {
     updateOnboarding,
     clearSession,
     state,
-    playbook,
     crawl,
     scrollToEnd,
     clearOnboardingClientStorage,
@@ -93,19 +78,12 @@ export default function OnboardingApp() {
     setShowUrlForm: state.setShowUrlForm,
     setShowDeeperDive: state.setShowDeeperDive,
     setShowDiagnostic: state.setShowDiagnostic,
-    setShowPrecision: undefined,
-    setShowPlaybook: state.setShowPlaybook,
     setCurrentQuestion: state.setCurrentQuestion,
     setQuestionIndex: state.setQuestionIndex,
     setEarlyTools: state.setEarlyTools,
     setShowWebsiteAudit: state.setShowWebsiteAudit,
     setWebsiteAuditText: state.setWebsiteAuditText,
     startWebsiteAuditStream: handlers.startWebsiteAuditStream,
-    clearResumeArtifacts: playbook.clearResumeArtifacts,
-    clearStepReached: playbook.clearStepReached,
-    prepareStreaming: playbook.prepareStreaming,
-    startForSession: playbook.startForSession,
-    markRetryNeeded: playbook.markRetryNeeded,
   });
 
 
@@ -151,7 +129,6 @@ export default function OnboardingApp() {
   // Try to render a stage
   const stageContent = OnboardingStageRenderer({
     state,
-    playbook,
     crawl,
     onboardingIdRef,
     handlers,

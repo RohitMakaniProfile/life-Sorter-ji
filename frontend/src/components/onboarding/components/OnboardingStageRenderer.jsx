@@ -1,10 +1,8 @@
 import StageLayout from '../components/StageLayout';
-import TransitionMessages from '../components/TransitionMessages';
 import UrlStage from '../stages/UrlStage';
 import DeeperDiveStage from '../stages/DeeperDiveStage';
 import DiagnosticStage from '../stages/DiagnosticStage';
 import WebsiteAuditStage from '../stages/WebsiteAuditStage';
-import PlaybookStage from '../stages/PlaybookStage';
 import HistoryPlaybookStage from '../stages/HistoryPlaybookStage';
 import CompleteStage from '../stages/CompleteStage';
 import PreAuditTransitionMessages from '../components/PreAuditTransitionMessages';
@@ -20,7 +18,6 @@ export function OnboardingStageRenderer({
   // State
   state,
   // Streaming
-  playbook,
   crawl,
   // Session
   onboardingIdRef,
@@ -31,8 +28,6 @@ export function OnboardingStageRenderer({
 }) {
   const {
     viewingRunId, setViewingRunId,
-    showPlaybook,
-    showTransitionMessages,
     showComplete,
     showDiagnostic,
     currentQuestion,
@@ -62,14 +57,6 @@ export function OnboardingStageRenderer({
   } = state;
 
   const {
-    playbookStreaming,
-    playbookText,
-    playbookDone,
-    playbookResult,
-    needsManualRetry,
-  } = playbook;
-
-  const {
     crawlStreaming,
     crawlLabel,
     crawlProgress,
@@ -78,8 +65,6 @@ export function OnboardingStageRenderer({
 
   const {
     startNewJourney,
-    handleTransitionComplete,
-    handleStartPlaybook,
     handleScaleSelect,
     handleScaleSubmit,
     handleDiagnosticAnswer,
@@ -99,38 +84,6 @@ export function OnboardingStageRenderer({
           runId={viewingRunId}
           onBack={() => setViewingRunId(null)}
           onStartNewJourney={() => setViewingRunId(null)}
-        />
-      </StageLayout>
-    );
-  }
-
-  // Playbook stage
-  if (showPlaybook) {
-    if (showTransitionMessages) {
-      return (
-        <StageLayout error={error} onClearError={clearError}>
-          <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
-          <TransitionMessages onComplete={handleTransitionComplete} isComplete={playbookDone} />
-        </StageLayout>
-      );
-    }
-
-    return (
-      <StageLayout error={error} onClearError={clearError}>
-        <DeveloperTaskStreamsPanel onboardingId={onboardingIdRef.current} userId={null} taskTypes={['crawl', 'playbook/onboarding-generate']} />
-        <PlaybookStage
-          task={selectedTask}
-          playbookStreaming={playbookStreaming}
-          playbookText={playbookText}
-          playbookDone={playbookDone}
-          playbookResult={playbookResult}
-          onGoHome={startNewJourney}
-          onDeepAnalysis={handleDeepAnalysis}
-          showRetry={!playbookStreaming && !playbookDone && needsManualRetry}
-          onRetry={() => handleStartPlaybook()}
-          retryLabel="Retry Playbook"
-          onRetryPlaybook={() => handleStartPlaybook()}
-          onCancel={startNewJourney}
         />
       </StageLayout>
     );

@@ -33,13 +33,6 @@ export function useSessionRestore({
   setShowWebsiteAudit,
   setWebsiteAuditText,
   startWebsiteAuditStream,
-
-  // Playbook stream controls
-  clearResumeArtifacts,
-  clearStepReached,
-  prepareStreaming,
-  startForSession,
-  markRetryNeeded,
 }) {
   const sessionRestoredRef = useRef(false);
 
@@ -82,21 +75,11 @@ export function useSessionRestore({
           return;
         }
 
-        // If onboarding is complete, show the completed playbook
+        // If onboarding is complete, redirect to playbook view
         if (state.stage === 'complete') {
-          if (state.outcome) {
-            const outcome = outcomeOptions.find((o) => o.id === state.outcome);
-            if (outcome) setSelectedOutcome(outcome);
-          }
-          if (state.domain) setSelectedDomain(state.domain);
-          if (state.task) setSelectedTask(state.task);
-          setShowPlaybook(true);
-          clearStepReached();
-          prepareStreaming();
           const sid = state.onboarding_id;
           if (sid) {
-            onboardingIdRef.current = sid;
-            startForSession(sid, { fresh: false }).catch(() => {});
+            window.location.href = `/playbook-view/${sid}`;
           }
           return;
         }
@@ -146,13 +129,11 @@ export function useSessionRestore({
         // Restore to the appropriate stage based on backend state
         switch (state.stage) {
           case 'url':
-            clearResumeArtifacts();
             console.log('[Onboarding Restore] Restoring to URL stage', { outcome: state.outcome, domain: state.domain, task: state.task });
             setShowUrlForm(true);
             break;
 
           case 'questions':
-            clearResumeArtifacts();
             if (state.scale_answers && Object.keys(state.scale_answers).length > 0) {
               setScaleQuestions(scaleQuestions);
               if (state.onboarding_id) {
@@ -166,7 +147,6 @@ export function useSessionRestore({
             break;
 
           case 'diagnostic':
-            clearResumeArtifacts();
             setScaleQuestions(scaleQuestions);
             if (state.onboarding_id) {
               onboardingIdRef.current = state.onboarding_id;
@@ -182,7 +162,6 @@ export function useSessionRestore({
             break;
 
           case 'website_audit':
-            clearResumeArtifacts();
             if (state.onboarding_id) onboardingIdRef.current = state.onboarding_id;
             if (state.website_audit) {
               // Audit already in DB — restore it directly
@@ -200,7 +179,6 @@ export function useSessionRestore({
             break;
 
           default:
-            clearResumeArtifacts();
             break;
         }
       } catch (err) {
@@ -210,13 +188,8 @@ export function useSessionRestore({
 
     restoreSession();
   }, [
-    clearResumeArtifacts,
-    clearStepReached,
     getSessionState,
-    markRetryNeeded,
     onboardingIdRef,
-    prepareStreaming,
-    startForSession,
     setSelectedOutcome,
     setSelectedDomain,
     setSelectedTask,
@@ -227,8 +200,6 @@ export function useSessionRestore({
     setShowUrlForm,
     setShowDeeperDive,
     setShowDiagnostic,
-    setShowPrecision,
-    setShowPlaybook,
     setCurrentQuestion,
     setQuestionIndex,
     setEarlyTools,

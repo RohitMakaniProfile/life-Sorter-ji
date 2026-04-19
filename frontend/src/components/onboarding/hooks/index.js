@@ -5,7 +5,6 @@ export { useOnboardingSession } from './useOnboardingSession';
 export { useOnboardingJourneyIdleOutcomeDemo } from './useOnboardingJourneyIdleOutcomeDemo';
 export { useOnboardingCanvasScroll } from './useOnboardingCanvasScroll';
 export { useCrawlTaskStream } from './useCrawlTaskStream';
-export { usePlaybookTaskStream } from './usePlaybookTaskStream';
 export { usePaymentRedirect } from './usePaymentRedirect';
 export { useOnboardingState } from './useOnboardingState';
 export { useSessionRestore } from './useSessionRestore';
