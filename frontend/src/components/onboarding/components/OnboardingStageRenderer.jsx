@@ -110,6 +110,7 @@ export function OnboardingStageRenderer({
           onContinue={handleWebsiteAuditContinue}
           websiteUrl={urlValue}
           onReScan={handleReScanWebsite}
+          onChangeTask={startNewJourney}
         />
       </StageLayout>
     );

@@ -390,7 +390,7 @@ const RawAudit = ({ text }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────
-export default function WebsiteAuditStage({ auditText, loading, onContinue, websiteUrl = '', onReScan }) {
+export default function WebsiteAuditStage({ auditText, loading, onContinue, websiteUrl = '', onReScan, onChangeTask }) {
   const [reScanOpen, setReScanOpen] = React.useState(false);
   const [reScanUrl, setReScanUrl] = React.useState('');
   const [reScanLoading, setReScanLoading] = React.useState(false);
@@ -504,6 +504,27 @@ export default function WebsiteAuditStage({ auditText, loading, onContinue, webs
             >
               Continue to Diagnosis →
             </button>
+          )}
+
+          {/* ── Change task ── */}
+          {!loading && onChangeTask && (
+            <div style={{ marginTop: 6 }}>
+              <button
+                type="button"
+                onClick={onChangeTask}
+                style={{
+                  width: '100%', padding: '10px 24px',
+                  background: 'transparent',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 12, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 600,
+                  color: 'rgba(255,255,255,0.35)',
+                  fontFamily: 'inherit',
+                }}
+              >
+                ← Change task or outcome
+              </button>
+            </div>
           )}
 
           {/* ── Re-scan Website ── */}
