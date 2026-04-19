@@ -224,21 +224,26 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
     [ensureSession, setError],
   );
 
-  // Wait until crawl completes (done=true) or errors/times-out (done=false).
-  // Resolves immediately on error so callers don't wait the full timeout.
-  // Uses refs so the setInterval callback always reads current state, not a stale closure.
+  // Wait until the crawl stream ends for any reason — done, error, or disconnect.
+  // Resolves true if crawl completed successfully, false otherwise.
+  // No fixed timeout: resolves as soon as streaming stops so the caller never
+  // waits longer than the crawl actually takes.
+  // A large absolute safety timeout (10 min) guards against a stuck stream.
   const waitForCrawlDone = useCallback(
-    (timeoutMs = 60000) =>
+    () =>
       new Promise((resolve) => {
+        // Already resolved states
         if (crawlDoneRef.current) { resolve(true); return; }
-        if (crawlStageRef.current === 'error') { resolve(false); return; }
-        const deadline = setTimeout(() => resolve(false), timeoutMs);
+        if (!crawlStreamingRef.current) { resolve(false); return; }
+
+        const deadline = setTimeout(() => resolve(false), 600000); // 10-min absolute safety
         const t = window.setInterval(() => {
           if (crawlDoneRef.current) {
             window.clearInterval(t);
             clearTimeout(deadline);
             resolve(true);
-          } else if (crawlStageRef.current === 'error') {
+          } else if (!crawlStreamingRef.current) {
+            // Stream ended (error / disconnect) without setting done
             window.clearInterval(t);
             clearTimeout(deadline);
             resolve(false);

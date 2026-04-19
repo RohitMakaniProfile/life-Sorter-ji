@@ -284,7 +284,7 @@ export function useOnboardingHandlers({
 
       setShowAnalysisTransition(true);
       setShowDeeperDive(false);
-      const crawlSucceeded = await waitForCrawlDone(90000);
+      const crawlSucceeded = await waitForCrawlDone();
 
       if (!crawlSucceeded) {
         // Crawl errored or timed out — log it but continue so the audit

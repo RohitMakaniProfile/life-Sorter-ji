@@ -743,7 +743,25 @@ async def stream_website_audit_endpoint(
             except Exception:
                 pass
 
-        # 3. Fetch scraped page markdowns
+        # 3. If scraped_page_ids is empty, poll for up to 5 min waiting for the crawl task to finish.
+        #    This handles the case where the frontend called the audit before the crawl task wrote
+        #    scraped_page_ids (e.g., waitForCrawlDone timed out on a slow site).
+        if not scraped_page_ids:
+            import asyncio as _asyncio
+            poll_deadline = 300  # seconds
+            poll_interval = 5    # seconds
+            elapsed = 0
+            while elapsed < poll_deadline:
+                await _asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                async with pool.acquire() as conn:
+                    row2 = await onboarding_repo.find_website_audit_context(conn, onboarding_id)
+                if row2:
+                    scraped_page_ids = list(dict(row2).get("scraped_page_ids") or [])
+                if scraped_page_ids:
+                    break
+
+        # 4. Fetch scraped page markdowns
         pages_markdown: list[dict] = []
         if scraped_page_ids:
             async with pool.acquire() as conn:
@@ -754,7 +772,7 @@ async def stream_website_audit_endpoint(
                 if str(p.get("markdown") or "").strip()
             ]
 
-        # 4. Stream from LLM
+        # 5. Stream from LLM
         outcome = str(row_dict.get("outcome") or "").strip()
         domain = str(row_dict.get("domain") or "").strip()
         task = str(row_dict.get("task") or "").strip()
