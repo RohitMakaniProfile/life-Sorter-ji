@@ -416,6 +416,7 @@ async def find_website_audit_context(conn, onboarding_id: str) -> Any:
             onboarding_t.rca_qa, onboarding_t.rca_summary, onboarding_t.rca_handoff,
             onboarding_t.web_summary, onboarding_t.business_profile,
             onboarding_t.website_audit, onboarding_t.web_scrap_done,
+            onboarding_t.scraped_page_ids,
         )
         .where(onboarding_t.id == Parameter("%s")),
         [onboarding_id],

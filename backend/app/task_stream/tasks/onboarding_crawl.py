@@ -253,27 +253,25 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 except Exception:
                     pass
 
-        # Fetch recent rows and pick summary pages:
-        # homepage + non-legal content pages first.
-        await send("stage", stage="summarizing", label="Building web summary")
+        # Fetch the 5 most recent unique scraped pages for this website URL
+        # and store their IDs on the onboarding row.
+        await send("stage", stage="summarizing", label="Indexing scraped pages")
         pool = get_pool()
         async with pool.acquire() as conn:
-            rows = await pages_repo.find_by_base_url(conn, website_url, limit=30)
+            selected_rows = await pages_repo.fetch_recent_unique_by_base_url(
+                conn, website_url, limit=5
+            )
             # Playwright follows redirects — www.example.com may be stored as example.com.
             # Try the alternate www/non-www variant if we got nothing.
-            if not rows:
+            if not selected_rows:
                 parsed_wurl = urlparse(website_url)
                 netloc = parsed_wurl.netloc.lower()
-                if netloc.startswith("www."):
-                    alt_netloc = netloc[4:]
-                else:
-                    alt_netloc = "www." + netloc
+                alt_netloc = netloc[4:] if netloc.startswith("www.") else "www." + netloc
                 alt_url = f"{parsed_wurl.scheme}://{alt_netloc}"
-                rows = await pages_repo.find_by_base_url(conn, alt_url, limit=30)
+                selected_rows = await pages_repo.fetch_recent_unique_by_base_url(
+                    conn, alt_url, limit=5
+                )
 
-        selected_rows = _pick_rows_for_summary(rows, website_url, limit=5)
-
-        # Persist which page IDs were selected for the summary
         if onboarding_id and selected_rows:
             selected_ids = [int(r["id"]) for r in selected_rows if r.get("id") is not None]
             if selected_ids:
@@ -284,99 +282,7 @@ async def onboarding_crawl_task(send, payload: dict[str, Any]) -> dict[str, Any]
                 except Exception:
                     pass
 
-        parts = [
-            str(row["markdown"] or "").strip()
-            for row in selected_rows
-            if str(row.get("markdown") or "").strip()
-        ]
-
-        # Fallback: if pages exist but markdown is empty, extract from raw data directly.
-        if not parts and rows:
-            for row in rows[:5]:
-                raw = _safe_raw(row)
-                title = str(raw.get("title") or "").strip()
-                meta = str(raw.get("meta_description") or "").strip()
-                body = str(raw.get("body_text") or "").strip()[:3000]
-                url_label = str(row.get("url") or raw.get("url") or "").strip()
-                raw_parts = [p for p in [
-                    f"URL: {url_label}" if url_label else "",
-                    f"Title: {title}" if title else "",
-                    f"Description: {meta}" if meta else "",
-                    body,
-                ] if p]
-                if raw_parts:
-                    parts.append("\n".join(raw_parts))
-
-        # Last resort: scraper got 0 pages — do a simple HTTP fetch for OG/meta tags.
-        if not parts:
-            try:
-                import re as _re
-                import httpx as _httpx
-
-                headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
-                    "Accept-Language": "en-US,en;q=0.9",
-                }
-                async with _httpx.AsyncClient(
-                    follow_redirects=True, timeout=15.0, headers=headers
-                ) as client:
-                    resp = await client.get(website_url)
-                    html = resp.text
-
-                def _og(prop: str) -> str:
-                    m = _re.search(
-                        rf'<meta[^>]+(?:property|name)=["\']og:{prop}["\'][^>]+content=["\']([^"\']+)["\']',
-                        html, _re.I,
-                    ) or _re.search(
-                        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:{prop}["\']',
-                        html, _re.I,
-                    )
-                    return m.group(1).strip() if m else ""
-
-                def _meta(name: str) -> str:
-                    m = _re.search(
-                        rf'<meta[^>]+name=["\']{name}["\'][^>]+content=["\']([^"\']+)["\']',
-                        html, _re.I,
-                    ) or _re.search(
-                        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{name}["\']',
-                        html, _re.I,
-                    )
-                    return m.group(1).strip() if m else ""
-
-                def _tag(tag: str) -> str:
-                    m = _re.search(rf'<{tag}[^>]*>([^<]+)</{tag}>', html, _re.I)
-                    return m.group(1).strip() if m else ""
-
-                title = _og("title") or _tag("title") or _meta("title") or ""
-                desc = _og("description") or _meta("description") or ""
-                og_type = _og("type") or ""
-                og_site = _og("site_name") or ""
-
-                # Also grab h1/h2 headings from the page
-                headings = _re.findall(r'<h[12][^>]*>([^<]+)</h[12]>', html, _re.I)
-                headings_text = "\n".join(
-                    f"- {h.strip()}" for h in headings[:10] if h.strip()
-                )
-
-                fetch_parts = [p for p in [
-                    f"Website: {website_url}",
-                    f"Title: {title}" if title else "",
-                    f"Site name: {og_site}" if og_site else "",
-                    f"Type: {og_type}" if og_type else "",
-                    f"Description: {desc}" if desc else "",
-                    f"Headings:\n{headings_text}" if headings_text else "",
-                ] if p]
-                if len(fetch_parts) > 1:
-                    parts = ["\n".join(fetch_parts)]
-            except Exception:
-                pass
-
-        web_summary = "\n\n".join(parts) if parts else f"Website: {website_url}"
+        web_summary = f"Website: {website_url}"
 
     # ── Stage 2: Build business_profile and persist ───────────────────────────
     await send("stage", stage="business_profile", label="Building business profile")

@@ -12,7 +12,8 @@
       "Bash(grep -E \"\\\\.py$\")",
       "Bash(grep -l \"skill_calls\\\\|SkillCall\" /Users/harshkanjariya/Documents/ikshan-ai/life-Sorter-ji/backend/app/services/*.py)",
       "Bash(grep:*)",
-      "Bash(psql:*)"
+      "Bash(psql:*)",
+      "Bash(PGPASSWORD='2cU#FE3`\\)J\\)jOvDa' psql -h 35.200.170.233 -U ikshan-local-user -d ikshan-dev -c \"\\\\dt\" 2>&1)"
     ]
   }
 }

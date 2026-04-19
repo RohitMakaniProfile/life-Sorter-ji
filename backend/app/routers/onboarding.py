@@ -13,7 +13,7 @@ from app.middleware.auth_context import get_request_user, require_request_user
 from app.middleware.rate_limit import limiter
 from app.models.session import DynamicQuestion
 from app.services import onboarding_service
-from app.services.claude_rca_service import generate_website_audit, generate_web_summary_llm
+from app.services.claude_rca_service import generate_website_audit
 from app.services.onboarding_question_service import generate_next_rca_question_for_onboarding
 
 logger = structlog.get_logger()
@@ -715,6 +715,8 @@ async def stream_website_audit_endpoint(
     pool = get_pool()
 
     async def generate():
+        from app.repositories import scraped_pages_repository as scraped_pages_repo
+
         # 1. Fetch context row
         async with pool.acquire() as conn:
             row = await onboarding_repo.find_website_audit_context(conn, onboarding_id)
@@ -724,25 +726,35 @@ async def stream_website_audit_endpoint(
 
             row_dict = dict(row)
             existing_audit = str(row_dict.get("website_audit") or "").strip()
-            web_summary_now = str(row_dict.get("web_summary") or "").strip()
+            scraped_page_ids = list(row_dict.get("scraped_page_ids") or [])
 
         # 2. Return cached audit only if:
         #    - not force_fresh, AND
-        #    - we actually had web data when it was generated
-        #      (proxy: web_summary is non-empty now, meaning crawl completed)
-        if existing_audit and not force_fresh and web_summary_now:
+        #    - we have scraped page data (crawl completed)
+        if existing_audit and not force_fresh and scraped_page_ids:
             yield f"data: {json.dumps({'type': 'done', 'full_text': existing_audit})}\n\n"
             return
 
         # If force_fresh or crawl data is now available but audit was stale, clear old audit
-        if existing_audit and (force_fresh or web_summary_now):
+        if existing_audit and (force_fresh or scraped_page_ids):
             try:
                 async with pool.acquire() as conn:
                     await onboarding_repo.save_website_audit(conn, onboarding_id, "")
             except Exception:
                 pass
 
-        # 3. Otherwise stream from LLM
+        # 3. Fetch scraped page markdowns
+        pages_markdown: list[dict] = []
+        if scraped_page_ids:
+            async with pool.acquire() as conn:
+                pages = await scraped_pages_repo.fetch_by_ids(conn, scraped_page_ids)
+            pages_markdown = [
+                {"url": str(p["url"] or ""), "markdown": str(p["markdown"] or "")}
+                for p in pages
+                if str(p.get("markdown") or "").strip()
+            ]
+
+        # 4. Stream from LLM
         outcome = str(row_dict.get("outcome") or "").strip()
         domain = str(row_dict.get("domain") or "").strip()
         task = str(row_dict.get("task") or "").strip()
@@ -751,37 +763,14 @@ async def stream_website_audit_endpoint(
         rca_qa_raw = _as_list(row_dict.get("rca_qa")) or []
         rca_summary = str(row_dict.get("rca_summary") or "").strip()
         rca_handoff = str(row_dict.get("rca_handoff") or "").strip()
-        web_summary = str(row_dict.get("web_summary") or "").strip()
-        business_profile = str(row_dict.get("business_profile") or "").strip()
 
         queue: asyncio.Queue = asyncio.Queue()
 
         async def on_token(token: str) -> None:
             await queue.put(("token", token))
 
-        async def run_web_summary_bg() -> None:
-            """Generate LLM web summary in background and save to DB."""
-            try:
-                summary = await generate_web_summary_llm(
-                    raw_web_summary=web_summary,
-                    outcome=outcome,
-                    domain=domain,
-                    task=task,
-                    business_profile=business_profile,
-                    onboarding_id=onboarding_id,
-                )
-                if summary:
-                    async with pool.acquire() as conn:
-                        await onboarding_repo.save_web_summary(conn, onboarding_id, summary)
-                    logger.info("Web summary saved", onboarding_id=onboarding_id, length=len(summary))
-            except Exception as e:
-                logger.error("Background web summary failed", error=str(e))
-
         async def run_llm() -> None:
             try:
-                # Fire web summary generation in background (does not block streaming)
-                asyncio.create_task(run_web_summary_bg())
-
                 result = await generate_website_audit(
                     outcome=outcome,
                     domain=domain,
@@ -791,8 +780,7 @@ async def stream_website_audit_endpoint(
                     rca_history=rca_qa_raw,
                     rca_summary=rca_summary,
                     rca_handoff=rca_handoff,
-                    web_summary=web_summary,
-                    business_profile=business_profile,
+                    pages_markdown=pages_markdown,
                     onboarding_id=onboarding_id,
                     on_token=on_token,
                 )

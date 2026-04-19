@@ -292,6 +292,42 @@ async def fetch_by_user_id(
     return list(rows), int(total or 0)
 
 
+async def fetch_recent_unique_by_base_url(conn, base_url: str, *, limit: int = 5) -> list[Any]:
+    """
+    Return the most recent `limit` rows with distinct URLs matching the base_url origin.
+    Uses LIKE for prefix match, deduplicates by URL keeping the most recent row per URL.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(str(base_url or "").strip())
+        origin_prefix = (
+            f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+            if parsed.scheme and parsed.netloc
+            else str(base_url or "").strip().rstrip("/")
+        )
+    except Exception:
+        origin_prefix = str(base_url or "").strip().rstrip("/")
+
+    if not origin_prefix:
+        return []
+
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT ON (url) id, url, markdown, page_title, created_at
+        FROM scraped_pages
+        WHERE url LIKE $1
+          AND crawl_status = 'done'
+          AND markdown IS NOT NULL
+          AND markdown <> ''
+        ORDER BY url, created_at DESC
+        """,
+        origin_prefix + "%",
+    )
+    # Sort by created_at DESC and take the most recent `limit` unique URLs
+    sorted_rows = sorted(rows, key=lambda r: r["created_at"], reverse=True)
+    return list(sorted_rows[:limit])
+
+
 async def fetch_by_ids(conn, page_ids: list[int]) -> list[Any]:
     """
     Fetch scraped pages by an array of IDs.

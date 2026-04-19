@@ -1472,8 +1472,7 @@ async def generate_website_audit(
     rca_history: list[dict] | None = None,
     rca_summary: str = "",
     rca_handoff: str = "",
-    web_summary: str = "",
-    business_profile: str = "",
+    pages_markdown: list[dict] | None = None,
     onboarding_id: str | None = None,
     on_token=None,
 ) -> str | None:
@@ -1481,6 +1480,7 @@ async def generate_website_audit(
     Generate a website audit using the 'website-audit' DB prompt.
     Pass on_token callback to stream tokens; otherwise returns the full text.
     Returns the audit text string, or None on failure.
+    pages_markdown: list of {"url": str, "markdown": str} dicts from scraped_pages.
     """
     from app.config import get_settings
     from app.services.token_usage_service import log_onboarding_token_usage, STAGE_WEBSITE_AUDIT
@@ -1517,8 +1517,7 @@ async def generate_website_audit(
             "rca_history": rca_history or [],
             "rca_summary": str(rca_summary or "").strip(),
             "rca_handoff": str(rca_handoff or "").strip(),
-            "web_summary": str(web_summary or "").strip(),
-            "business_profile": str(business_profile or "").strip(),
+            "scraped_pages": pages_markdown or [],
         }
 
         t0 = time.monotonic()
@@ -1607,89 +1606,6 @@ async def generate_website_audit(
             latency_ms=latency_ms,
         )
 
-        return None
-    """
-    Generate a website audit using the 'website-audit' DB prompt.
-    Returns the audit text string, or None on failure.
-    """
-    from app.config import get_settings
-    from app.services.token_usage_service import log_onboarding_token_usage, STAGE_WEBSITE_AUDIT
-
-    settings = get_settings()
-    api_key = getattr(settings, "OPENROUTER_API_KEY", None)
-    model = settings.OPENROUTER_CLAUDE_MODEL
-
-    if not api_key:
-        logger.warning("OpenRouter API key not configured — skipping website audit")
-        return None
-
-    input_tokens = 0
-    output_tokens = 0
-    content = ""
-
-    try:
-        from app.services.prompts_service import get_prompt
-
-        system_prompt = await get_prompt(
-            "website-audit",
-            default=_WEBSITE_AUDIT_PROMPT_DEFAULT,
-        )
-
-        user_payload = {
-            "outcome": str(outcome or "").strip(),
-            "domain": str(domain or "").strip(),
-            "task": str(task or "").strip(),
-            "website_url": str(website_url or "").strip(),
-            "scale_answers": scale_answers or {},
-            "rca_history": rca_history or [],
-            "rca_summary": str(rca_summary or "").strip(),
-            "rca_handoff": str(rca_handoff or "").strip(),
-            "web_summary": str(web_summary or "").strip(),
-            "business_profile": str(business_profile or "").strip(),
-        }
-
-        t0 = time.monotonic()
-        result = await _call_openrouter_with_retry(
-            model=model,
-            system_prompt=system_prompt,
-            user_content=json.dumps(user_payload, ensure_ascii=True),
-            temperature=0.4,
-            max_tokens=2000,
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        content = str(result.get("message") or "").strip()
-        usage = result.get("usage") or {}
-        input_tokens = int(usage.get("prompt_tokens") or 0)
-        output_tokens = int(usage.get("completion_tokens") or 0)
-
-        logger.info("Website audit generated", length=len(content), latency_ms=latency_ms)
-
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_WEBSITE_AUDIT,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=True,
-            )
-
-        return content or None
-
-    except Exception as e:
-        logger.error("Website audit generation failed", error=str(e))
-        if onboarding_id:
-            await log_onboarding_token_usage(
-                onboarding_id=onboarding_id,
-                stage=STAGE_WEBSITE_AUDIT,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                success=False,
-                error_msg=str(e),
-                raw_output=content,
-            )
         return None
 
 
