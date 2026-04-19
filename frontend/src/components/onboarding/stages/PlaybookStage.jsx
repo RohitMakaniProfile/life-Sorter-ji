@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -8,7 +7,6 @@ const PLAYBOOK_DELIMITER = '---SECTION:playbook---';
 function extractPlaybookContent(text) {
   const idx = text.indexOf(PLAYBOOK_DELIMITER);
   if (idx !== -1) return text.slice(idx + PLAYBOOK_DELIMITER.length).trim();
-  // Strip all section delimiters and return full text
   return text.replace(/---SECTION:[a-z_]+---/g, '').trim();
 }
 
@@ -64,12 +62,9 @@ export default function PlaybookStage({
     ? (playbookResult?.playbook || extractPlaybookContent(playbookText || ''))
     : extractPlaybookContent(playbookText || '');
 
-  // Derive task label: prefer prop, then extract from playbook h1
-  // New prompt writes: # The "[Task Name]" Playbook
   const taskLabel = (() => {
     if (task) return task;
     const src = playbookContent || playbookText || '';
-    // Match: # The "XYZ" Playbook  or  # The XYZ Playbook
     const m = src.match(/^#\s+The\s+"([^"]+)"\s+Playbook/im)
       || src.match(/^#\s+The\s+([^#\n]+?)\s+Playbook/im);
     return m ? m[1].trim() : null;
@@ -78,7 +73,6 @@ export default function PlaybookStage({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 
-      {/* ── Task header bar ── */}
       <div style={{
         flexShrink: 0,
         padding: '12px 24px',
@@ -117,108 +111,107 @@ export default function PlaybookStage({
         )}
       </div>
 
-      {/* ── Scrollable content ── */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
 
-      {showCancelModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="mx-4 w-full max-w-sm rounded-2xl border border-white/10 bg-[#1a1030] p-6 shadow-2xl">
-            <h3 className="m-0 mb-2 text-lg font-bold text-white">Cancel Playbook?</h3>
-            <p className="m-0 mb-6 text-sm text-white/50">Your playbook is being generated. What would you like to do?</p>
-            <div className="flex flex-col gap-3">
+        {showCancelModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="mx-4 w-full max-w-sm rounded-2xl border border-white/10 bg-[#1a1030] p-6 shadow-2xl">
+              <h3 className="m-0 mb-2 text-lg font-bold text-white">Cancel Playbook?</h3>
+              <p className="m-0 mb-6 text-sm text-white/50">Your playbook is being generated. What would you like to do?</p>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={() => { setShowCancelModal(false); if (onRetryPlaybook) onRetryPlaybook(); }}
+                  className="w-full cursor-pointer rounded-xl border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-3 text-sm font-bold text-white"
+                >
+                  Retry — Generate Again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowCancelModal(false); if (onCancel) onCancel(); }}
+                  className="w-full cursor-pointer rounded-xl border border-white/15 bg-white/[0.05] py-3 text-sm font-semibold text-white/70 transition hover:bg-white/[0.10] hover:text-white"
+                >
+                  Start New Journey
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCancelModal(false)}
+                  className="w-full cursor-pointer rounded-xl border-none bg-transparent py-2 text-sm text-white/30 transition hover:text-white/50"
+                >
+                  Keep Waiting
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div ref={scrollContainerRef} className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
+          {playbookStreaming && !playbookText && (
+            <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
+          )}
+
+          {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
+            <div className="pt-10 text-center">
+              <p className="m-0 text-sm text-white/50">No active playbook run found. Please click retry to start again.</p>
               <button
                 type="button"
-                onClick={() => { setShowCancelModal(false); if (onRetryPlaybook) onRetryPlaybook(); }}
-                className="w-full cursor-pointer rounded-xl border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-3 text-sm font-bold text-white"
+                onClick={onRetry}
+                className="mt-4 cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] px-6 py-3 text-sm font-extrabold text-white"
               >
-                Retry — Generate Again
+                {retryLabel}
               </button>
+            </div>
+          )}
+
+          {(playbookText || (playbookDone && playbookContent)) && (
+            <div className="rounded-2xl border border-white/[0.07] bg-[#111318] px-6 py-7">
+              {playbookStreaming && !playbookDone && (
+                <div className="mb-4 flex items-center gap-2 text-xs text-white/40">
+                  <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+                  Generating…
+                </div>
+              )}
+              <div className="playbook-markdown leading-relaxed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {playbookContent + (playbookStreaming && !playbookDone ? '\n\n▍' : '')}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          {playbookText && playbookStreaming && !playbookDone && (
+            <div className="mt-4 flex justify-center">
               <button
                 type="button"
-                onClick={() => { setShowCancelModal(false); if (onCancel) onCancel(); }}
-                className="w-full cursor-pointer rounded-xl border border-white/15 bg-white/[0.05] py-3 text-sm font-semibold text-white/70 transition hover:bg-white/[0.10] hover:text-white"
+                onClick={() => setShowCancelModal(true)}
+                className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {playbookDone && (
+            <div className="mt-5 flex flex-row gap-4">
+              {onDeepAnalysis && (
+                <button
+                  type="button"
+                  onClick={onDeepAnalysis}
+                  className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-2.5 px-8 text-[14px] font-extrabold text-white"
+                >
+                  Deep Analysis
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onGoHome}
+                className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
               >
                 Start New Journey
               </button>
-              <button
-                type="button"
-                onClick={() => setShowCancelModal(false)}
-                className="w-full cursor-pointer rounded-xl border-none bg-transparent py-2 text-sm text-white/30 transition hover:text-white/50"
-              >
-                Keep Waiting
-              </button>
             </div>
-          </div>
+          )}
         </div>
-      )}
-
-      <div ref={scrollContainerRef} className="mx-auto w-full max-w-[720px] flex-1 overflow-auto">
-        {playbookStreaming && !playbookText && (
-          <div className="pt-10 text-center text-sm text-white/40">Thinking…</div>
-        )}
-
-        {!playbookStreaming && !playbookDone && !playbookText && showRetry && (
-          <div className="pt-10 text-center">
-            <p className="m-0 text-sm text-white/50">No active playbook run found. Please click retry to start again.</p>
-            <button
-              type="button"
-              onClick={onRetry}
-              className="mt-4 cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] px-6 py-3 text-sm font-extrabold text-white"
-            >
-              {retryLabel}
-            </button>
-          </div>
-        )}
-
-        {(playbookText || (playbookDone && playbookContent)) && (
-          <div className="rounded-2xl border border-white/[0.07] bg-[#111318] px-6 py-7">
-            {playbookStreaming && !playbookDone && (
-              <div className="mb-4 flex items-center gap-2 text-xs text-white/40">
-                <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
-                Generating…
-              </div>
-            )}
-            <div className="playbook-markdown leading-relaxed">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {playbookContent + (playbookStreaming && !playbookDone ? '\n\n▍' : '')}
-              </ReactMarkdown>
-            </div>
-          </div>
-        )}
-
-        {playbookText && playbookStreaming && !playbookDone && (
-          <div className="mt-4 flex justify-center">
-            <button
-              type="button"
-              onClick={() => setShowCancelModal(true)}
-              className="cursor-pointer rounded-lg border border-white/15 bg-white/[0.05] px-6 py-2.5 text-sm text-white/50 transition hover:bg-white/[0.10] hover:text-white/80"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-
-        {playbookDone && (
-          <div className="mt-5 flex flex-row gap-4">
-            {onDeepAnalysis && (
-              <button
-                type="button"
-                onClick={onDeepAnalysis}
-                className="w-full cursor-pointer rounded-[10px] border-none bg-gradient-to-r from-[#857BFF] to-[#BF69A2] py-2.5 px-8 text-[14px] font-extrabold text-white"
-              >
-                Deep Analysis
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onGoHome}
-              className="w-full cursor-pointer rounded-[10px] border border-white/15 bg-transparent py-2.5 px-8 text-[14px] font-semibold text-white/50 transition hover:text-white/80"
-            >
-              Start New Journey
-            </button>
-          </div>
-        )}
-      </div>
       </div>
     </div>
   );

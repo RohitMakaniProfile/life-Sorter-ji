@@ -111,10 +111,9 @@ async def handle_send_message_for_problem_identifier_agent(
             await _append_journey_message(conversation_id, next_msg)
             return await _journey_response(conversation_id, next_msg)
 
-    # ── Free-text: diagnostic / gap steps ──
+    # ── Free-text: diagnostic step ──
     _FREE_TEXT_STEPS = {
         journey_service.JOURNEY_STEP_DIAGNOSTIC,
-        journey_service.JOURNEY_STEP_GAP,
     }
     if step in _FREE_TEXT_STEPS and user_text and last_assistant_message.get("allowCustomAnswer"):
         await append_message(conversation_id, "user", user_text)

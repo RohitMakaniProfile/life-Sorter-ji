@@ -24,7 +24,6 @@ from app.services.journey_service import (
     JOURNEY_STEP_URL,
     JOURNEY_STEP_SCALE,
     JOURNEY_STEP_DIAGNOSTIC,
-    JOURNEY_STEP_GAP,
     JOURNEY_STEP_PLAYBOOK,
     get_outcome_options,
     get_domain_options,
@@ -82,7 +81,7 @@ def _has_onboarding_markers(messages: list[dict[str, Any]]) -> bool:
         mid = str(msg.get("messageId") or "")
         if step in (JOURNEY_STEP_OUTCOME, JOURNEY_STEP_DOMAIN, JOURNEY_STEP_TASK,
                     JOURNEY_STEP_URL, JOURNEY_STEP_SCALE, JOURNEY_STEP_DIAGNOSTIC,
-                    JOURNEY_STEP_GAP, JOURNEY_STEP_PLAYBOOK):
+                    JOURNEY_STEP_PLAYBOOK):
             return True
         if mid.startswith("onboarding:"):
             return True
@@ -125,19 +124,6 @@ async def _attach_onboarding_transcript(
     website_url = str(row.get("website_url") or "").strip()
     scale_answers = _as_dict(row.get("scale_answers"))
     rca_qa = _as_list(row.get("rca_qa"))
-    gap_questions = _as_list(row.get("gap_questions"))
-    gap_answers_raw = str(row.get("gap_answers") or "").strip()
-
-    # Parse gap_answers (can be JSON dict like {"Q1": "A", "Q2": "B"})
-    gap_answers_map: dict[str, str] = {}
-    if gap_answers_raw:
-        try:
-            parsed = json.loads(gap_answers_raw)
-            if isinstance(parsed, dict):
-                gap_answers_map = {str(k): str(v) for k, v in parsed.items()}
-        except Exception:
-            pass
-
     onboarding_msgs: list[dict[str, Any]] = []
     created_at = now_iso()
     acc: dict[str, Any] = {"onboardingSessionId": sid}
@@ -294,46 +280,6 @@ async def _attach_onboarding_transcript(
                 "content": answer,
                 "createdAt": created_at,
                 "messageId": f"onboarding:{sid}:diagnostic:{idx}:a",
-            })
-
-    # ── Gap Q&A ──
-    for idx, gq in enumerate(gap_questions):
-        question = str(gq.get("question") or "").strip()
-        options = gq.get("options") or []
-        q_id = str(gq.get("id") or f"Q{idx+1}")
-
-        # Find matching answer from gap_answers_map
-        answer = gap_answers_map.get(q_id, "")
-        # Also try by index
-        if not answer:
-            for opt in options:
-                if opt.startswith(f"{answer})"):
-                    break
-
-        if question:
-            onboarding_msgs.append({
-                "role": "assistant",
-                "content": question,
-                "options": options,
-                "allowCustomAnswer": True,
-                "journeyStep": JOURNEY_STEP_GAP,
-                "journeySelections": acc,
-                "kind": "final",
-                "createdAt": created_at,
-                "messageId": f"onboarding:{sid}:gap:{idx}:q",
-            })
-        if answer:
-            # Convert answer key to full option text if possible
-            answer_text = answer
-            for opt in options:
-                if opt.startswith(f"{answer})"):
-                    answer_text = opt
-                    break
-            onboarding_msgs.append({
-                "role": "user",
-                "content": answer_text,
-                "createdAt": created_at,
-                "messageId": f"onboarding:{sid}:gap:{idx}:a",
             })
 
     # ── Playbook Placeholder ──

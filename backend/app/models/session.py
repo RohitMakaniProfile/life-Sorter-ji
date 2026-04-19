@@ -34,7 +34,7 @@ class LLMCallLog(BaseModel):
     timestamp: str = ""
     service: str = ""            # e.g. "openrouter"
     model: str = ""
-    purpose: str = ""            # "early_recommendations", "rca_question", "gap_questions", etc.
+    purpose: str = ""            # "early_recommendations", "rca_question", etc.
     system_prompt: str = ""
     user_message: str = ""
     temperature: float = 0.0
@@ -130,9 +130,7 @@ class SessionContext(BaseModel):
     agent_conversation: list[dict[str, str]] = []
 
     # ── Playbook Pipeline State ────────────────────────────────
-    playbook_stage: str = ""                             # "gap_questions", "waiting_gap_answers", "generating", "complete"
-    playbook_gap_questions: str = ""                      # Phase 0 / Agent 2 gap questions text
-    playbook_gap_answers: str = ""                        # User's gap question answers
+    playbook_stage: str = ""                             # "generating", "complete"
     playbook_agent1_output: str = ""                      # Context Brief + ICP from Agent A (Sonnet)
     playbook_agent2_output: str = ""                      # ICP Card portion from Agent A
     playbook_agent3_output: str = ""                      # 10-step Playbook from Agent C (Sonnet)

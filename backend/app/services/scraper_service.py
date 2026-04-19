@@ -42,6 +42,9 @@ async def run_scraper(
     conversation_id: str | None = None,
     message_id: str | None = None,
     user_id: str | None = None,
+    # Optional per-page event hook: async callable(event: str, url: str)
+    # events: "discovered" | "scraping" | "summarizing" | "page_data"
+    on_page_event=None,
 ) -> SkillRunResult:
     """
     Run the scrape-playwright skill.
@@ -128,6 +131,15 @@ async def run_scraper(
                        event_type=event_type,
                        url=meta.get("url"),
                        message=event.get("message", "")[:200])
+        # Forward discovered/goto events to task stream
+        if on_page_event and event_type in ("discovered", "goto"):
+            page_url = meta.get("url")
+            if page_url:
+                try:
+                    fwd = "discovered" if event_type == "discovered" else "scraping"
+                    await on_page_event(fwd, page_url)
+                except Exception:
+                    pass
 
     async def _on_page(page: dict[str, Any]) -> None:
         """Called once per page as it arrives. LLM-summarises then stores immediately."""
@@ -143,6 +155,13 @@ async def run_scraper(
         page_error: str | None = None
         page_status: str = "done"
         markdown: str = ""
+
+        # Page data received from Playwright → LLM summarization starting immediately
+        if on_page_event:
+            try:
+                await on_page_event("summarizing", page_url)
+            except Exception:
+                pass
 
         try:
             markdown = await _summarize_one_page(
@@ -204,6 +223,13 @@ async def run_scraper(
                    url=page_url,
                    skill_call_id=skill_call_id,
                    status=page_status)
+
+        # Notify: page fully processed and stored
+        if on_page_event:
+            try:
+                await on_page_event("page_data", page_url)
+            except Exception:
+                pass
 
     # ── Run the skill ─────────────────────────────────────────────────────────
     logger.info("run_scraper_executing_skill", url=url)

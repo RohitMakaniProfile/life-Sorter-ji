@@ -141,7 +141,21 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
                     stage: stage || "scraping",
                     type: "url",
                     message: `Processing: ${e.current_page}`,
-                    meta: { url: String(e.current_page) },
+                    meta: { event: "scraping", url: String(e.current_page) },
+                  },
+                ]);
+              }
+
+              // 🌐 If stage event has a url → show it in CrawlUrlList
+              if (e.url) {
+                const urlEvent = stage === 'scraping' ? 'scraping' : 'discovered';
+                setCrawlProgressEvents((prev) => [
+                  ...prev,
+                  {
+                    stage: stage || "scraping",
+                    type: "url",
+                    message: `${urlEvent}: ${e.url}`,
+                    meta: { event: urlEvent, url: String(e.url) },
                   },
                 ]);
               }

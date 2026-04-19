@@ -32,17 +32,9 @@ export const INITIAL_ONBOARDING_STATE = {
   questionIndex: 0,
   loading: false,
 
-  // Gap questions
-  showGapQuestions: false,
-  gapQuestions: [],
-  gapAnswers: {},
-  gapCurrentIndex: 0,
-  gapSavingIndex: null,
-
   // Playbook
   showPlaybook: false,
   showTransitionMessages: false,
-  checkingGapQuestions: false,
 
   // Analysis transition
   showAnalysisTransition: false,
@@ -85,17 +77,9 @@ export function useOnboardingState() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  // Gap questions
-  const [showGapQuestions, setShowGapQuestions] = useState(false);
-  const [gapQuestions, setGapQuestions] = useState([]);
-  const [gapAnswers, setGapAnswers] = useState({});
-  const [gapCurrentIndex, setGapCurrentIndex] = useState(0);
-  const [gapSavingIndex, setGapSavingIndex] = useState(null);
-
   // Playbook
   const [showPlaybook, setShowPlaybook] = useState(false);
   const [showTransitionMessages, setShowTransitionMessages] = useState(false);
-  const [checkingGapQuestions, setCheckingGapQuestions] = useState(false);
 
   // Analysis transition
   const [showAnalysisTransition, setShowAnalysisTransition] = useState(false);
@@ -106,13 +90,6 @@ export function useOnboardingState() {
 
   // Error
   const [error, setError] = useState(null);
-
-  // Clear gap saving index after timeout
-  useEffect(() => {
-    if (gapSavingIndex == null) return undefined;
-    const t = setTimeout(() => setGapSavingIndex(null), 3000);
-    return () => clearTimeout(t);
-  }, [gapSavingIndex]);
 
   /**
    * Reset all journey UI state to initial values
@@ -126,13 +103,8 @@ export function useOnboardingState() {
     setShowDiagnostic(false);
     setShowComplete(false);
     setShowPlaybook(false);
-    setShowGapQuestions(false);
     setShowTransitionMessages(false);
-    setCheckingGapQuestions(false);
     setScaleAnswers({});
-    setGapAnswers({});
-    setGapCurrentIndex(0);
-    setGapSavingIndex(null);
     setCurrentQuestion(null);
     setQuestionIndex(0);
   }, []);
@@ -146,7 +118,6 @@ export function useOnboardingState() {
     setShowDiagnostic(false);
     setShowComplete(false);
     setShowTransitionMessages(false);
-    setCheckingGapQuestions(false);
     setEarlyTools([]);
   }, []);
 
@@ -208,17 +179,9 @@ export function useOnboardingState() {
     questionIndex, setQuestionIndex,
     loading, setLoading,
 
-    // Gap questions
-    showGapQuestions, setShowGapQuestions,
-    gapQuestions, setGapQuestions,
-    gapAnswers, setGapAnswers,
-    gapCurrentIndex, setGapCurrentIndex,
-    gapSavingIndex, setGapSavingIndex,
-
     // Playbook
     showPlaybook, setShowPlaybook,
     showTransitionMessages, setShowTransitionMessages,
-    checkingGapQuestions, setCheckingGapQuestions,
 
     // Analysis transition
     showAnalysisTransition, setShowAnalysisTransition,

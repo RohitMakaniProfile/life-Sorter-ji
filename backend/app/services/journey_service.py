@@ -32,7 +32,6 @@ JOURNEY_STEP_TASK       = "task"
 JOURNEY_STEP_URL        = "url"
 JOURNEY_STEP_SCALE      = "scale"
 JOURNEY_STEP_DIAGNOSTIC = "diagnostic"
-JOURNEY_STEP_GAP        = "gap"
 JOURNEY_STEP_PLAYBOOK   = "playbook"
 JOURNEY_STEP_COMPLETE   = "complete"
 
@@ -160,27 +159,6 @@ def _diagnostic_message(question: dict[str, Any], acc: dict[str, Any]) -> dict[s
     }
 
 
-def _gap_question_message(
-    q: dict[str, Any], index: int, all_questions: list[dict[str, Any]], acc: dict[str, Any]
-) -> dict[str, Any]:
-    options = list(q.get("options") or [])
-    label = str(q.get("label") or "")
-    question = str(q.get("question") or "")
-    content = f"**{label}**\n\n{question}" if label else question
-    return {
-        "content": content,
-        "options": options,
-        "allowCustomAnswer": True,
-        "journeyStep": JOURNEY_STEP_GAP,
-        "journeySelections": {
-            **acc,
-            "gapIndex": index,
-            "gapQuestions": all_questions,
-        },
-        "kind": "final",
-    }
-
-
 async def _ensure_onboarding_session(acc: dict[str, Any]) -> str:
     """
     Create (or reuse) an onboarding session for the journey.
@@ -209,13 +187,6 @@ async def _ensure_onboarding_session(acc: dict[str, Any]) -> str:
 
     await upsert_onboarding_patch(sid, patch)
     return sid
-
-
-# ── gap questions ──────────────────────────────────────────────────────────────
-
-async def _gap_start(acc: dict[str, Any]) -> dict[str, Any]:
-    """Gap questions are now handled via the REST API (/gap-questions/start). Go straight to playbook."""
-    return await _playbook_start(acc)
 
 
 # ── playbook stream ────────────────────────────────────────────────────────────
@@ -370,7 +341,7 @@ async def next_step(
             return _diagnostic_message(q_dict, acc)
 
         # RCA returned complete immediately — move to gap/playbook
-        return await _gap_start(acc)
+        return await _playbook_start(acc)
 
     # ── Diagnostic (RCA) ─────────────────────────────────────────────────────
     if current_step == JOURNEY_STEP_DIAGNOSTIC:
@@ -389,48 +360,8 @@ async def next_step(
                 q_dict = q_dict.__dict__
             return _diagnostic_message(q_dict, {**prev})
 
-        # Diagnostic complete → start gap/playbook
-        return await _gap_start({**prev})
-
-    # ── Gap questions ────────────────────────────────────────────────────────
-    if current_step == JOURNEY_STEP_GAP:
-        from app.db import get_pool
-        from app.repositories import onboarding_repository as onboarding_repo
-
-        gap_index = int(prev.get("gapIndex", 0))
-        gap_questions: list[dict[str, Any]] = list(prev.get("gapQuestions") or [])
-        gap_answers: dict[str, Any] = dict(prev.get("gapAnswers") or {})
-
-        # Record the current answer
-        if gap_index < len(gap_questions):
-            current_q = gap_questions[gap_index]
-            q_id = str(current_q.get("id") or str(gap_index))
-            gap_answers[q_id] = {
-                "label": str(current_q.get("label") or ""),
-                "question": str(current_q.get("question") or ""),
-                "answer": selected_option,
-            }
-
-        next_idx = gap_index + 1
-        if next_idx < len(gap_questions):
-            acc = {**prev, "gapIndex": next_idx, "gapAnswers": gap_answers}
-            return _gap_question_message(gap_questions[next_idx], next_idx, gap_questions, acc)
-
-        # All gap questions answered — format and persist
-        formatted_lines = []
-        for qa in gap_answers.values():
-            label = str(qa.get("label") or "")
-            answer = str(qa.get("answer") or "")
-            formatted_lines.append(f"{label}: {answer}" if label else answer)
-        formatted_answers = "\n".join(formatted_lines)
-
-        sid = str(prev.get("onboardingSessionId") or "").strip()
-        if sid:
-            pool = get_pool()
-            async with pool.acquire() as conn:
-                await onboarding_repo.set_gap_answers_ready(conn, sid, formatted_answers)
-
-        return await _playbook_start({**prev, "gapAnswers": gap_answers})
+        # Diagnostic complete → start playbook
+        return await _playbook_start({**prev})
 
     return None
 

@@ -25,8 +25,6 @@ export function useSessionRestore({
   setShowUrlForm,
   setShowDeeperDive,
   setShowDiagnostic,
-  setShowPrecision,
-  setShowPlaybook,
   setCurrentQuestion,
   setQuestionIndex,
   setEarlyTools,

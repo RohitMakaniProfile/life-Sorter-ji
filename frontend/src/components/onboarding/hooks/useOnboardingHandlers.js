@@ -47,7 +47,6 @@ export function useOnboardingHandlers({
     setCurrentQuestion,
     setQuestionIndex,
     loading, setLoading,
-    setShowTransitionMessages,
     setShowAnalysisTransition,
     setRcaCalling,
     setShowWebsiteAudit,
@@ -258,16 +257,6 @@ export function useOnboardingHandlers({
     window.location.href = `/playbook-view/${oid}`;
   }, [otpVerified, onboardingIdRef, ensureSession]);
 
-  const handleTransitionComplete = useCallback(() => {
-    setShowTransitionMessages(false);
-    setTimeout(scrollToEnd, 50);
-  }, [setShowTransitionMessages, scrollToEnd]);
-
-  const handleGapAnswer = useCallback(async () => {
-    // Gap questions are now handled on the dedicated PlaybookPage.
-    // This handler is kept as a no-op for compatibility.
-  }, []);
-
   // Scale submit
   const handleScaleSubmit = useCallback(async () => {
     setLoading(true);
@@ -351,7 +340,7 @@ export function useOnboardingHandlers({
 
     // Fresh crawl with the corrected URL
     startCrawlForSession(sid, { websiteUrl: trimmed, forceFresh: true }).catch(() => {});
-    const crawlSucceeded = await waitForCrawlDone(90000);
+    const crawlSucceeded = await waitForCrawlDone();
 
     setShowAnalysisTransition(false);
 
@@ -480,8 +469,6 @@ export function useOnboardingHandlers({
     handleScaleSelect,
     handleScaleSubmit,
     handleStartPlaybook,
-    handleTransitionComplete,
-    handleGapAnswer,
     handleDiagnosticAnswer,
     handleWebsiteAuditContinue,
     handleReScanWebsite,

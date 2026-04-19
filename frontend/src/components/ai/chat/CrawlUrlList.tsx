@@ -1,6 +1,6 @@
 import type { ProgressEvent } from '../../../api/types';
 
-type UrlState = 'discovered' | 'scraping' | 'done';
+type UrlState = 'discovered' | 'scraping' | 'summarizing' | 'done';
 
 interface UrlEntry {
   url: string;
@@ -18,9 +18,10 @@ function trimUrl(url: string): string {
 }
 
 const STATE_CONFIG: Record<UrlState, { dot: string; label: string }> = {
-  discovered: { dot: 'bg-slate-500',   label: 'queued'   },
-  scraping:   { dot: 'bg-violet-400 animate-pulse', label: 'scraping' },
-  done:       { dot: 'bg-emerald-400', label: 'done'     },
+  discovered:  { dot: 'bg-slate-500',                     label: 'queued'      },
+  scraping:    { dot: 'bg-violet-400 animate-pulse',       label: 'scraping'    },
+  summarizing: { dot: 'bg-amber-400 animate-pulse',        label: 'summarizing' },
+  done:        { dot: 'bg-emerald-400',                    label: 'done'        },
 };
 
 interface CrawlUrlListProps {
@@ -31,6 +32,14 @@ export default function CrawlUrlList({ progressEvents }: CrawlUrlListProps) {
   // Build ordered URL list from progress events
   const entries = (() => {
     const map = new Map<string, UrlState>();
+    const ORDER: UrlState[] = ['discovered', 'scraping', 'summarizing', 'done'];
+    const rank = (s: UrlState) => ORDER.indexOf(s);
+
+    const advance = (url: string, next: UrlState) => {
+      const cur = map.get(url);
+      if (!cur || rank(next) > rank(cur)) map.set(url, next);
+    };
+
     for (const ev of progressEvents) {
       const meta = ev.meta as Record<string, unknown> | undefined;
       if (!meta) continue;
@@ -38,26 +47,11 @@ export default function CrawlUrlList({ progressEvents }: CrawlUrlListProps) {
       const url = String(meta.url ?? '').trim();
       if (!url) continue;
 
-      if (event === 'discovered' && !map.has(url)) {
-        map.set(url, 'discovered');
-      } else if (event === 'page_data') {
-        map.set(url, 'done');
-      } else if (event === 'started' || (event === 'info' && map.get(url) === 'discovered')) {
-        // no-op
-      }
-    }
-
-    // Mark currently scraping: discovered URLs that appear as message text in a
-    // running event but haven't received page_data yet
-    for (const ev of progressEvents) {
-      const meta = ev.meta as Record<string, unknown> | undefined;
-      if (!meta) continue;
-      const event = String(meta.event ?? '');
-      const url = String(meta.url ?? '').trim();
-      if (!url) continue;
-      if (event === 'scraping' || event === 'goto') {
-        if (map.get(url) === 'discovered') map.set(url, 'scraping');
-      }
+      // discovered → queued | scraping (goto) → scraping | summarizing → summarizing | page_data → done
+      if (event === 'discovered')              { if (!map.has(url)) map.set(url, 'discovered'); }
+      else if (event === 'scraping')           { advance(url, 'scraping');    }
+      else if (event === 'summarizing')        { advance(url, 'summarizing'); }
+      else if (event === 'page_data')          { advance(url, 'done');        }
     }
 
     const result: UrlEntry[] = [];

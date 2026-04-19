@@ -43,7 +43,6 @@ _SQL_RESET_FULL = (
     "    website_url = NULL, gbp_url = NULL, "
     "    questions_answers = '[]'::jsonb, rca_qa = '[]'::jsonb, "
     "    scale_answers = '{}'::jsonb, business_profile = '', "
-    "    gap_questions = '[]'::jsonb, gap_answers = '', "
     "    rca_summary = '', rca_handoff = '', "
 "    playbook_status = 'not_started', playbook_started_at = NULL, "
     "    playbook_completed_at = NULL, playbook_error = '', "
@@ -62,7 +61,6 @@ _SQL_RESET_TASK_DOWNSTREAM = (
     "    scale_answers = '{}'::jsonb, web_scrap_done = false, "
     "    rca_qa = '[]'::jsonb, rca_summary = '', rca_handoff = '', "
     "    web_summary = '', business_profile = '', "
-    "    gap_questions = '[]'::jsonb, gap_answers = '', "
     "    playbook_status = 'not_started', playbook_started_at = NULL, "
     "    playbook_completed_at = NULL, playbook_error = '', "
     "    crawl_run_id = NULL, crawl_cache_key = NULL, "
@@ -117,8 +115,7 @@ async def find_transcript_fields(conn, onboarding_id: str) -> Any:
         .select(
             onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
             onboarding_t.website_url, onboarding_t.gbp_url, onboarding_t.scale_answers,
-            onboarding_t.rca_qa, onboarding_t.gap_questions,
-            onboarding_t.gap_answers,
+            onboarding_t.rca_qa,
         )
         .where(onboarding_t.id == Parameter("%s")).limit(1),
         [onboarding_id],
@@ -237,8 +234,6 @@ _STATE_COLS = (
     onboarding_t.rca_handoff,
     onboarding_t.playbook_status,
     onboarding_t.playbook_error,
-    onboarding_t.gap_questions,
-    onboarding_t.gap_answers,
     onboarding_t.onboarding_completed_at,
     onboarding_t.website_audit,
     onboarding_t.web_scrap_done,
@@ -326,18 +321,6 @@ async def find_all_by_user_paginated(conn, user_id: str, limit: int, offset: int
 
 # ── Playbook launch helpers ───────────────────────────────────────────────────
 
-async def find_gap_launch_state(conn, onboarding_id: str) -> Any:
-    """Fetch gap_questions, gap_answers, playbook_status for playbook launch."""
-    q = build_query(
-        PostgreSQLQuery.from_(onboarding_t)
-        .select(onboarding_t.id, onboarding_t.gap_questions,
-                onboarding_t.gap_answers, onboarding_t.playbook_status)
-        .where(onboarding_t.id == Parameter("%s")),
-        [onboarding_id],
-    )
-    return await conn.fetchrow(q.sql, *q.params)
-
-
 async def set_playbook_starting(conn, onboarding_id: str) -> None:
     """Mark onboarding playbook as starting."""
     q = build_query(
@@ -361,45 +344,6 @@ async def set_conversation_id(conn, onboarding_id: str, conversation_id: str) ->
         .set(onboarding_t.updated_at, fn.Now())
         .where(onboarding_t.id == Parameter("%s")),
         [conversation_id, onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-# ── Gap answers ───────────────────────────────────────────────────────────────
-
-async def set_gap_answers_ready(conn, onboarding_id: str, answers: str) -> None:
-    """Persist gap answers and mark onboarding as ready for playbook."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.gap_answers, Parameter("%s"))
-        .set(onboarding_t.playbook_status, "ready")
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [answers, onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-async def find_mcq_gap_state(conn, onboarding_id: str) -> Any:
-    """Fetch gap_questions and gap_answers for MCQ answer endpoint."""
-    q = build_query(
-        PostgreSQLQuery.from_(onboarding_t)
-        .select(onboarding_t.id, onboarding_t.gap_questions, onboarding_t.gap_answers)
-        .where(onboarding_t.id == Parameter("%s")).limit(1),
-        [onboarding_id],
-    )
-    return await conn.fetchrow(q.sql, *q.params)
-
-
-async def update_gap_answers(conn, onboarding_id: str, answers: str, status: str) -> None:
-    """Update gap_answers and playbook_status (MCQ answer endpoint)."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.gap_answers, Parameter("%s"))
-        .set(onboarding_t.playbook_status, Parameter("%s"))
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [answers, status, onboarding_id],
     )
     await conn.execute(q.sql, *q.params)
 
@@ -436,50 +380,6 @@ async def save_website_audit(conn, onboarding_id: str, audit_text: str) -> None:
     await conn.execute(q.sql, *q.params)
 
 
-# ── Gap questions generation ──────────────────────────────────────────────────
-
-async def find_gap_questions_context(conn, onboarding_id: str) -> Any:
-    """Fetch context for gap question generation."""
-    q = build_query(
-        PostgreSQLQuery.from_(onboarding_t)
-        .select(
-            onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
-            onboarding_t.scale_answers, onboarding_t.rca_qa,
-            onboarding_t.rca_summary, onboarding_t.rca_handoff,
-            onboarding_t.web_summary,
-        )
-        .where(onboarding_t.id == Parameter("%s")),
-        [onboarding_id],
-    )
-    return await conn.fetchrow(q.sql, *q.params)
-
-
-async def set_gap_questions_ready(conn, onboarding_id: str) -> None:
-    """Persist empty gap questions and mark onboarding as ready for playbook."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.gap_questions, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.playbook_status, "ready")
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [json.dumps([]), onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
-async def set_gap_questions_awaiting(conn, onboarding_id: str, questions_json: str) -> None:
-    """Persist gap questions and mark onboarding as awaiting gap answers."""
-    q = build_query(
-        PostgreSQLQuery.update(onboarding_t)
-        .set(onboarding_t.gap_questions, _cast_jsonb(Parameter("%s")))
-        .set(onboarding_t.playbook_status, "awaiting_gap_answers")
-        .set(onboarding_t.updated_at, fn.Now())
-        .where(onboarding_t.id == Parameter("%s")),
-        [questions_json, onboarding_id],
-    )
-    await conn.execute(q.sql, *q.params)
-
-
 # ── Playbook generation task ──────────────────────────────────────────────────
 
 async def find_for_playbook_generation(conn, onboarding_id: str) -> Any:
@@ -491,7 +391,7 @@ async def find_for_playbook_generation(conn, onboarding_id: str) -> Any:
             onboarding_t.outcome, onboarding_t.domain, onboarding_t.task,
             onboarding_t.website_url, onboarding_t.scale_answers,
             onboarding_t.rca_qa, onboarding_t.rca_summary, onboarding_t.rca_handoff,
-            onboarding_t.gap_answers, onboarding_t.web_summary,
+            onboarding_t.web_summary,
         )
         .where(onboarding_t.id == Parameter("%s")).limit(1),
         [onboarding_id],

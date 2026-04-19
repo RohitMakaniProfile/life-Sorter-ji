@@ -32,10 +32,6 @@ export function useOnboardingFlowState() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  // Playbook
-  const [showPlaybook, setShowPlaybook] = useState(false);
-  const [showTransitionMessages, setShowTransitionMessages] = useState(false);
-
   // Analysis transition
   const [showAnalysisTransition, setShowAnalysisTransition] = useState(false);
   const [rcaCalling, setRcaCalling] = useState(false);
@@ -54,7 +50,6 @@ export function useOnboardingFlowState() {
   const [viewingRunId, setViewingRunId] = useState(null);
 
   // Refs
-  const pendingPlaybookLaunchRef = useRef(false);
   const pendingTaskNodeTransitionRef = useRef(null);
   const urlStageTaskNodeRef = useRef(null);
   const taskToolsCacheRef = useRef(new Map());
@@ -78,8 +73,6 @@ export function useOnboardingFlowState() {
     setShowDeeperDive(false);
     setShowDiagnostic(false);
     setShowComplete(false);
-    setShowPlaybook(false);
-    setShowTransitionMessages(false);
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
     setScaleAnswers({});
@@ -93,7 +86,6 @@ export function useOnboardingFlowState() {
     setShowDeeperDive(false);
     setShowDiagnostic(false);
     setShowComplete(false);
-    setShowTransitionMessages(false);
     setShowWebsiteAudit(false);
     setWebsiteAuditText('');
     setEarlyTools([]);
@@ -132,10 +124,6 @@ export function useOnboardingFlowState() {
     questionIndex, setQuestionIndex,
     loading, setLoading,
 
-    // Playbook
-    showPlaybook, setShowPlaybook,
-    showTransitionMessages, setShowTransitionMessages,
-
     // Analysis
     showAnalysisTransition, setShowAnalysisTransition,
     rcaCalling, setRcaCalling,
@@ -152,7 +140,6 @@ export function useOnboardingFlowState() {
     viewingRunId, setViewingRunId,
 
     // Refs
-    pendingPlaybookLaunchRef,
     pendingTaskNodeTransitionRef,
     urlStageTaskNodeRef,
     taskToolsCacheRef,

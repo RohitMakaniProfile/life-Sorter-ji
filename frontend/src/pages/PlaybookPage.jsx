@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Navbar from '../components/onboarding/components/Navbar';
 import PlaybookStage from '../components/onboarding/stages/PlaybookStage';
-import { getPlaybookStatus, coreApi } from '../api/index';
+import { getPlaybookStatus } from '../api/index';
 import { runResumableTaskStream } from '../api/index';
 import { DOMAIN_TASKS } from '../components/onboarding/onboardingJourneyData';
 import { useDeepAnalysis } from '../components/onboarding/hooks/useDeepAnalysis';
@@ -94,7 +94,7 @@ export default function PlaybookPage() {
   const { onboardingId } = useParams();
 
   // ── Page-level state ──────────────────────────────────────────────────────
-  const [pageState, setPageState] = useState('loading'); // loading|not_found|gap_questions|streaming|complete|error
+  const [pageState, setPageState] = useState('loading'); // loading|not_found|streaming|complete|error
   const [pageError, setPageError] = useState(null);
 
   // ── Pre-loaded content (when playbook already complete) ────────────────
@@ -107,12 +107,6 @@ export default function PlaybookPage() {
     getWebsiteUrl: useCallback(() => websiteUrl, [websiteUrl]),
     setError: setPageError,
   });
-
-  // ── Gap questions ─────────────────────────────────────────────────────────
-  const [gapQuestions, setGapQuestions] = useState([]);
-  const [gapAnswers, setGapAnswers] = useState({});
-  const [gapCurrentIndex, setGapCurrentIndex] = useState(0);
-  const [gapSavingIndex, setGapSavingIndex] = useState(null);
 
   // ── Streaming ─────────────────────────────────────────────────────────────
   const stream = usePlaybookStream(onboardingId);
@@ -165,45 +159,6 @@ export default function PlaybookPage() {
           return;
         }
 
-        // Gap questions outstanding
-        if (data.playbook_status === 'awaiting_gap_answers') {
-          try {
-            const gapData = await coreApi.onboardingGapQuestionsStart({ onboarding_id: onboardingId });
-            const questions = gapData.questions || [];
-            if (questions.length > 0) {
-              setGapQuestions(questions);
-              // Restore any previously saved answers
-              const savedMap = gapData.gap_answers_parsed || {};
-              const indexed = {};
-              Object.entries(savedMap).forEach(([k, v]) => {
-                const idx = Number(String(k).replace(/^Q/i, '')) - 1;
-                if (Number.isFinite(idx) && idx >= 0) indexed[idx] = String(v);
-              });
-              setGapAnswers(indexed);
-              let next = 0;
-              while (next < questions.length && indexed[next]) next++;
-              setGapCurrentIndex(next);
-              setPageState('gap_questions');
-              return;
-            }
-          } catch {
-            // fallthrough to launch
-          }
-        }
-
-        // Check gap questions (fresh / error / ready / no status)
-        try {
-          const gapData = await coreApi.onboardingGapQuestionsStart({ onboarding_id: onboardingId });
-          const questions = gapData.questions || [];
-          if (questions.length > 0) {
-            setGapQuestions(questions);
-            setPageState('gap_questions');
-            return;
-          }
-        } catch {
-          // If gap questions check fails, proceed to launch
-        }
-
         await launchAndStream();
       } catch (err) {
         const msg = String(err?.message || err || '');
@@ -237,33 +192,6 @@ export default function PlaybookPage() {
       setPageState('complete');
     }
   }, [stream.done, pageState]);
-
-  // ── Gap question handler ──────────────────────────────────────────────────
-  const handleGapAnswer = useCallback(
-    async (index, answerKey, answerText) => {
-      setGapSavingIndex(index);
-      try {
-        await coreApi.onboardingPlaybookMcqAnswer({
-          onboarding_id: onboardingId,
-          question_index: index,
-          answer_key: answerKey,
-          answer_text: answerText,
-        });
-        setGapAnswers((prev) => ({ ...prev, [index]: answerKey }));
-        const next = index + 1;
-        if (next >= gapQuestions.length) {
-          await launchAndStream();
-        } else {
-          setGapCurrentIndex(next);
-        }
-      } catch {
-        setPageError('Failed to save answer.');
-      } finally {
-        setGapSavingIndex(null);
-      }
-    },
-    [onboardingId, gapQuestions.length, launchAndStream],
-  );
 
   const handleRetry = useCallback(() => {
     launchAndStream({ forceFresh: true });
@@ -456,16 +384,10 @@ export default function PlaybookPage() {
     );
   }
 
-  // gap_questions | streaming states — reuse PlaybookStage
+  // streaming state — render PlaybookStage
   return wrapPage(
     <PlaybookStage
       task={completedTask}
-      showGapQuestions={pageState === 'gap_questions'}
-      gapQuestions={gapQuestions}
-      gapAnswers={gapAnswers}
-      gapCurrentIndex={gapCurrentIndex}
-      gapSavingIndex={gapSavingIndex}
-      onGapAnswer={handleGapAnswer}
       playbookStreaming={stream.streaming}
       playbookText={stream.text}
       playbookDone={stream.done}

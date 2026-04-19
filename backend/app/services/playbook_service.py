@@ -83,7 +83,6 @@ def _build_playbook_input(
     rca_summary: str,
     crawl_summary: str | dict[str, Any],
     scale_answers: dict[str, Any],
-    gap_answers: str = "",
     rca_handoff: str = "",
 ) -> str:
     label_map = {
@@ -121,8 +120,6 @@ def _build_playbook_input(
     elif isinstance(crawl_summary, dict) and crawl_summary.get("points"):
         pts = crawl_summary["points"]
         parts.append("\nCRAWL[{}]:\n".format(len(pts)) + "\n".join(str(p) for p in pts))
-    if gap_answers:
-        parts.append(f"\nGAP_ANSWERS:\n{gap_answers}")
     return "\n".join(p for p in parts if p)
 
 
@@ -309,7 +306,6 @@ async def run_single_prompt_stream(
     rca_summary: str,
     crawl_summary: str | dict[str, Any],
     recommended_tools: str = "",
-    gap_answers: str = "",
     rca_handoff: str = "",
     on_token=None,
     onboarding_id: str = "",
@@ -345,7 +341,6 @@ async def run_single_prompt_stream(
         rca_summary=rca_summary,
         crawl_summary=crawl_summary,
         scale_answers=business_profile,
-        gap_answers=gap_answers,
         rca_handoff=rca_handoff,
     )
     if recommended_tools:
