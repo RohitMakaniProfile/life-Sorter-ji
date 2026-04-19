@@ -42,6 +42,9 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
   const crawlDoneRef = useRef(false);
   const crawlStageRef = useRef('');
   const crawlStreamingRef = useRef(false);
+  // Updated on every event so waitForCrawlDone can use an idle timeout instead
+  // of a fixed absolute deadline.
+  const lastActivityRef = useRef(Date.now());
   useLayoutEffect(() => { crawlDoneRef.current = crawlDone; }, [crawlDone]);
   useLayoutEffect(() => { crawlStageRef.current = crawlStage; }, [crawlStage]);
   useLayoutEffect(() => { crawlStreamingRef.current = crawlStreaming; }, [crawlStreaming]);
@@ -80,6 +83,9 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
             // 🛑 Validate event
             if (!e || typeof e !== "object") return;
+
+            // 📍 Track activity time for idle timeout in waitForCrawlDone
+            if (e.type !== 'ping') lastActivityRef.current = Date.now();
 
             const streamId = e.stream_id ? String(e.stream_id) : undefined;
 
@@ -240,9 +246,13 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
 
   // Wait until the crawl stream ends for any reason — done, error, or disconnect.
   // Resolves true if crawl completed successfully, false otherwise.
-  // No fixed timeout: resolves as soon as streaming stops so the caller never
-  // waits longer than the crawl actually takes.
-  // A large absolute safety timeout (10 min) guards against a stuck stream.
+  //
+  // Uses an activity-based idle timeout: the timer resets on every new event
+  // (discovered, scraping, summarizing, page_data, etc.).  If no event arrives
+  // for IDLE_MS (5 min) the wait is abandoned and the caller proceeds.
+  // This handles slow crawls where each page takes 60-90 s without hitting a
+  // fixed absolute ceiling.
+  const IDLE_MS = 5 * 60 * 1000; // 5 minutes of silence → give up
   const waitForCrawlDone = useCallback(
     () =>
       new Promise((resolve) => {
@@ -250,16 +260,20 @@ export function useCrawlTaskStream({ ensureSession, setError }) {
         if (crawlDoneRef.current) { resolve(true); return; }
         if (!crawlStreamingRef.current) { resolve(false); return; }
 
-        const deadline = setTimeout(() => resolve(false), 600000); // 10-min absolute safety
+        // Seed activity time so a fresh crawl doesn't immediately time out.
+        lastActivityRef.current = Date.now();
+
         const t = window.setInterval(() => {
           if (crawlDoneRef.current) {
             window.clearInterval(t);
-            clearTimeout(deadline);
             resolve(true);
           } else if (!crawlStreamingRef.current) {
             // Stream ended (error / disconnect) without setting done
             window.clearInterval(t);
-            clearTimeout(deadline);
+            resolve(false);
+          } else if (Date.now() - lastActivityRef.current > IDLE_MS) {
+            // No event for 5 minutes — assume stuck, proceed anyway
+            window.clearInterval(t);
             resolve(false);
           }
         }, 300);

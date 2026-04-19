@@ -131,8 +131,8 @@ async def run_scraper(
                        event_type=event_type,
                        url=meta.get("url"),
                        message=event.get("message", "")[:200])
-        # Forward discovered/goto events to task stream
-        if on_page_event and event_type in ("discovered", "goto"):
+        # Forward discovered/scraping events to task stream
+        if on_page_event and event_type in ("discovered", "goto", "scraping"):
             page_url = meta.get("url")
             if page_url:
                 try:

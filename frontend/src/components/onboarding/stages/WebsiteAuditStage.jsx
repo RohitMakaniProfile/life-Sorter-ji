@@ -561,7 +561,7 @@ export default function WebsiteAuditStage({ auditText, loading, onContinue, webs
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input
-                      type="url"
+                      type="text"
                       value={reScanUrl}
                       onChange={(e) => setReScanUrl(e.target.value)}
                       placeholder="https://example.com"

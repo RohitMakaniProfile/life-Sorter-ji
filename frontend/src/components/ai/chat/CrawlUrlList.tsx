@@ -44,7 +44,7 @@ export default function CrawlUrlList({ progressEvents }: CrawlUrlListProps) {
       const meta = ev.meta as Record<string, unknown> | undefined;
       if (!meta) continue;
       const event = String(meta.event ?? '');
-      const url = String(meta.url ?? '').trim();
+      const url = String(meta.url ?? '').trim().replace(/\/+$/, '');
       if (!url) continue;
 
       // discovered → queued | scraping (goto) → scraping | summarizing → summarizing | page_data → done

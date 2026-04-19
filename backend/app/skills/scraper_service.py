@@ -14,6 +14,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -101,8 +102,15 @@ async def _route_page_or_progress(
         page_url = str(item.get("url") or "").strip().rstrip("/")
         if page_url and page_url not in existing_urls and page_url not in seen_in_stream:
             seen_in_stream.add(page_url)
+            # Synthesize discovered + scraping so the UI shows the URL before summarizing fires
+            for evt in ("discovered", "scraping"):
+                await _emit(on_progress, {
+                    "stage": "running", "type": "info",
+                    "message": page_url,
+                    "meta": {"event": evt, "url": page_url, "streamKind": "info"},
+                })
             await on_page(item)
-        # Always emit a lightweight progress event so the UI can track URLs
+        # Always emit lightweight progress for tracking
         await _emit(on_progress, {
             "stage": "running", "type": "info",
             "message": str(item.get("url") or "page scraped"),
@@ -127,8 +135,17 @@ async def _run_remote(
     """
     Call the remote scraper SSE endpoint and stream progress events back.
 
+    Uses two concurrent asyncio tasks to prevent LLM summarization from blocking
+    SSE event delivery:
+    - Reader task: eagerly reads all SSE lines, emits discovered/info events
+      immediately, and enqueues data (page) events for processing.
+    - Processor task: drains the queue and calls on_page (LLM + DB) for each page.
+
+    This ensures discovered/scraping events appear in the UI in real-time even
+    when LLM summarization takes 10-15s per page.
+
     When on_page is provided:
-    - Page events (streamKind=="data") are routed to on_page one at a time.
+    - Page events are routed to on_page one at a time via the queue.
     - The final result has pages stripped (they are in DB via on_page).
 
     When on_page is None (legacy callers):
@@ -180,11 +197,110 @@ async def _run_remote(
     if deduped_skip:
         payload["skipUrls"] = deduped_skip
 
+    # Sentinel placed in the queue by the reader when SSE stream ends.
+    _QUEUE_DONE = object()
+
     done_result: dict[str, Any] | None = None
     err: str | None = None
     # Track URLs already processed via individual streaming events so we
     # don't double-process them when they also appear in the "done" payload.
     seen_in_stream: set[str] = set()
+
+    # Queue for handing data (page) items from reader → processor.
+    page_queue: asyncio.Queue = asyncio.Queue()
+
+    async def _reader(resp: httpx.Response) -> None:
+        """
+        Eagerly read every SSE line.
+        - Info/progress events → emit immediately to on_progress.
+        - Data (page) events → emit 'discovered' immediately, then enqueue for
+          sequential on_page processing so LLM calls don't block this reader.
+        """
+        nonlocal done_result
+
+        async for line in resp.aiter_lines():
+            if not line or line.startswith(":") or not line.startswith("data:"):
+                continue
+            raw = line[len("data:"):].strip()
+            if not raw:
+                continue
+            try:
+                meta = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(meta, dict):
+                continue
+
+            # Recover nested JSON progress from info.message strings
+            if str(meta.get("event") or "").strip().lower() == "info" and isinstance(meta.get("message"), str):
+                nested, _ = _extract_json_objects_from_text(str(meta.get("message") or ""))
+                if nested:
+                    for item in nested:
+                        item["streamKind"] = _progress_stream_kind(item)
+                        await _reader_route(item)
+                    continue
+
+            if str(meta.get("event") or "").strip().lower() == "done" and isinstance(meta.get("result"), dict):
+                done_result = meta["result"]
+                continue
+
+            meta["streamKind"] = _progress_stream_kind(meta)
+            await _reader_route(meta)
+
+        # Signal processor that no more pages are coming.
+        await page_queue.put(_QUEUE_DONE)
+
+    async def _reader_route(item: dict[str, Any]) -> None:
+        """
+        Route a single parsed SSE item.
+        - Data events (streamKind=="data"): emit 'discovered' immediately, then
+          enqueue for on_page processing.
+        - Everything else: emit to on_progress immediately (no blocking).
+        """
+        if on_page is not None and item.get("streamKind") == "data":
+            page_url = str(item.get("url") or "").strip().rstrip("/")
+            if page_url and page_url not in existing_urls and page_url not in seen_in_stream:
+                seen_in_stream.add(page_url)
+                # Emit 'discovered' right now — before the LLM even starts.
+                await _emit(on_progress, {
+                    "stage": "running", "type": "info",
+                    "message": page_url,
+                    "meta": {"event": "discovered", "url": page_url, "streamKind": "info"},
+                })
+                # Enqueue for sequential on_page processing (LLM won't block us).
+                await page_queue.put(item)
+            # Always emit a lightweight tracking event.
+            await _emit(on_progress, {
+                "stage": "running", "type": "info",
+                "message": str(item.get("url") or "page scraped"),
+                "meta": {"event": "page_scraped", "url": item.get("url"), "streamKind": "info"},
+            })
+        else:
+            msg_text = str(item.get("url") or item.get("message") or item.get("event", "info"))
+            await _emit(on_progress, {
+                "stage": "running", "type": "info",
+                "message": msg_text, "meta": item,
+            })
+
+    async def _processor() -> None:
+        """
+        Drain the page queue and call on_page for each item.
+        Emits 'scraping' just before calling on_page so the UI advances the
+        URL from discovered → scraping before LLM work starts.
+        """
+        while True:
+            item = await page_queue.get()
+            if item is _QUEUE_DONE:
+                break
+            page_url = str(item.get("url") or "").strip().rstrip("/")
+            # Advance UI: discovered → scraping (Playwright done, about to summarize)
+            if page_url:
+                await _emit(on_progress, {
+                    "stage": "running", "type": "info",
+                    "message": page_url,
+                    "meta": {"event": "scraping", "url": page_url, "streamKind": "info"},
+                })
+            await on_page(item)
 
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
@@ -202,42 +318,48 @@ async def _run_remote(
                     duration_ms=int((time.time() - started) * 1000),
                 )
 
-            async for line in resp.aiter_lines():
-                if not line or line.startswith(":") or not line.startswith("data:"):
-                    continue
-                raw = line[len("data:"):].strip()
-                if not raw:
-                    continue
-                try:
-                    meta = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(meta, dict):
-                    continue
-
-                # Recover nested JSON progress from info.message strings
-                if str(meta.get("event") or "").strip().lower() == "info" and isinstance(meta.get("message"), str):
-                    nested, _ = _extract_json_objects_from_text(str(meta.get("message") or ""))
-                    if nested:
-                        for item in nested:
-                            item["streamKind"] = _progress_stream_kind(item)
-                            await _route_page_or_progress(
-                                item,
-                                on_page=on_page, on_progress=on_progress,
-                                existing_urls=existing_urls, seen_in_stream=seen_in_stream,
-                            )
+            if on_page is not None:
+                # Concurrent: reader eagerly forwards events; processor handles LLM.
+                reader_task = asyncio.create_task(_reader(resp))
+                await _processor()
+                await reader_task
+            else:
+                # Legacy path (no on_page): read sequentially, collect pages in memory.
+                async for line in resp.aiter_lines():
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:"):].strip()
+                    if not raw:
+                        continue
+                    try:
+                        meta = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(meta, dict):
                         continue
 
-                if str(meta.get("event") or "").strip().lower() == "done" and isinstance(meta.get("result"), dict):
-                    done_result = meta["result"]
-                    continue
+                    if str(meta.get("event") or "").strip().lower() == "info" and isinstance(meta.get("message"), str):
+                        nested, _ = _extract_json_objects_from_text(str(meta.get("message") or ""))
+                        if nested:
+                            for item in nested:
+                                item["streamKind"] = _progress_stream_kind(item)
+                                await _route_page_or_progress(
+                                    item,
+                                    on_page=None, on_progress=on_progress,
+                                    existing_urls=existing_urls, seen_in_stream=seen_in_stream,
+                                )
+                            continue
 
-                meta["streamKind"] = _progress_stream_kind(meta)
-                await _route_page_or_progress(
-                    meta,
-                    on_page=on_page, on_progress=on_progress,
-                    existing_urls=existing_urls, seen_in_stream=seen_in_stream,
-                )
+                    if str(meta.get("event") or "").strip().lower() == "done" and isinstance(meta.get("result"), dict):
+                        done_result = meta["result"]
+                        continue
+
+                    meta["streamKind"] = _progress_stream_kind(meta)
+                    await _route_page_or_progress(
+                        meta,
+                        on_page=None, on_progress=on_progress,
+                        existing_urls=existing_urls, seen_in_stream=seen_in_stream,
+                    )
 
     if done_result is None:
         return SkillRunResult(
